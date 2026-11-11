@@ -40,3 +40,7 @@ Why: three stacked PRs conflicted at once after one squash merge.
 ## 9. Claude Code draws the envelope inside a reply box (2026-11-11, quack)
 A reply renders as `│ SUPERSET_WORKER_DONE task: x summary: ...` with the side pane on the same line, so a regex that wants the name alone on its line never matches, and every fire is the idle fallback (late, and false while a background shell runs). Strip the box characters and the side pane, find the name anywhere, read its `task:` value, and test the parser on a captured screen.
 Why: six watcher fires in a row were idle fallbacks; three of them hid real envelopes.
+
+## 10. The boss's own work is invisible: put it in a workspace (2026-11-11, quack)
+The boss fixed two prod bugs, resolved five merge conflicts and ran a research agent inside its own session. None of it showed on the board, and the user asked to watch the research. Only boss-level work stays in the boss session (template section 5 rule 0); a prod fix gets a new workspace at once, a PR's conflicts go to its owner.
+Why: the user said "everything boss does should be a separate workspace; only high level boss tasks are done on the boss itself".
