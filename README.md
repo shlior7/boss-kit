@@ -148,7 +148,7 @@ If you cloned the kit somewhere else, `export BOSS_KIT_HOME=/path/to/boss-kit`. 
    With the skill (it resolves the project itself and applies the lessons budget):
 
    ```markdown
-   # Boss workspace
+   # Boss workspace <workspace id>
 
    At the start of every session, run the /boss skill and follow what it loads.
    ```
@@ -156,7 +156,7 @@ If you cloned the kit somewhere else, `export BOSS_KIT_HOME=/path/to/boss-kit`. 
    Or with imports (explicit paths, no budget: the whole shared lessons file loads):
 
    ```markdown
-   # Boss workspace
+   # Boss workspace <workspace id>
 
    @~/.claude/boss-kit/BOSS-template.md
    @~/.claude/boss/widgets/BOSS.md
@@ -164,7 +164,7 @@ If you cloned the kit somewhere else, `export BOSS_KIT_HOME=/path/to/boss-kit`. 
    @~/.claude/boss/lessons.md
    ```
 
-   The `# Boss workspace` heading is what makes boss-deck load there and nowhere else. At the start of each session the pane renames that Paradev workspace to **BOSS**, so it stands out in the sidebar.
+   Put the boss's own workspace id after the heading (`echo $SUPERSET_WORKSPACE_ID` in its terminal). The heading with that id is what makes a session the boss, and only there: the pane, its heartbeat and the rename. That matters because `CLAUDE.local.md` travels. Every workspace on the same checkout reads it, and a new workspace's setup can copy it into its worktree. Any session whose `$SUPERSET_WORKSPACE_ID` doesn't match stays a normal session: no pane, no heartbeat, and `/boss` and the template tell it it isn't the boss. A bare `# Boss workspace` still works outside Paradev, where there is no workspace id, but then every session on that checkout is a boss. At the start of each session the pane renames that Paradev workspace to **BOSS**, so it stands out in the sidebar.
 
 4. **Optional:** sync the tracker at session start, from that worktree's `.claude/settings.local.json`:
 
@@ -364,7 +364,8 @@ A quiet pane: grey by default, color only for what needs you. Here with a worker
 | All watchers vanished | Restarting the boss session kills background watchers. On resume, read each worker's screen for envelopes that landed meanwhile, then re-arm |
 | A worker stopped "waiting for CI" without an envelope | Ask it to report pending checks as pending and finish with the envelope |
 | PR links in the pane print the whole URL | Terminals without OSC 8 hyperlinks draw `Link` as text plus URL. The pane uses chrome-free `Button plain` instead and opens URLs with `open` |
-| The pane doesn't appear | It loads only where `CLAUDE.local.md` contains `# Boss workspace`. Check `BOSS_KIT_HOME`, then run `python3 bin/boss-deck-data.py` by hand to see its error |
+| The pane doesn't appear | It loads only where `CLAUDE.local.md` has `# Boss workspace <id>` and `<id>` is this session's `$SUPERSET_WORKSPACE_ID`. Check both, and `BOSS_KIT_HOME`, then run `python3 bin/boss-deck-data.py` by hand: it says why |
+| Workers show up as bosses, or rename themselves BOSS | Their worktrees have a copy of the boss's `CLAUDE.local.md` with a bare `# Boss workspace`. Add the boss's workspace id to the heading, in the boss's file and in the copies |
 | "no project for …" | Project resolution found nothing. Set `BOSS_PROJECT`, add a `.boss` file (`project: <name>`), or check `config.repo` against `git remote get-url origin` |
 | Mail "no boss registered" | A boss registers on its first pane refresh. Open the target boss's session, or address its boss id instead |
 

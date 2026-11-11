@@ -130,3 +130,9 @@ export function footer(d: Pick<Deck, 'board' | 'lessonsNew'>): string {
   const lessons = d.lessonsNew ? `${d.lessonsNew} new shared lesson${d.lessonsNew === 1 ? '' : 's'}` : ''
   return [tracker, lessons].filter(Boolean).join(' · ')
 }
+
+/** Whether this session is the boss: CLAUDE.local.md has the marker and, when it names a workspace, this is that one. */
+export function isBoss(local: string, workspace: string | undefined): boolean {
+  const m = /^# Boss workspace(?:[ \t]+(\S+))?[ \t]*$/m.exec(local)
+  return !!m && (!m[1] || m[1] === workspace)
+}

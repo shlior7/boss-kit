@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { footer, mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from '../hooks/details'
+import { footer, isBoss, mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from '../hooks/details'
 import type { Pr } from '../types'
 
 const worker = { ws: '1a2b3c4d', id: 'x', term: 'y', name: 'api', branch: 'feat/a', task: 'restack-42', ledger: 'DISPATCHED', date: '', state: 'working', watched: true, proof: [] }
@@ -67,4 +67,13 @@ test("a worker's details keep the ledger's whole task cell", () => {
   const rows = workerDetails({ ...worker, task: 'retry-43', taskText: 'retry-43 (queued after fix-42)' }, '')
   expect(rows[0]).toEqual({ label: 'task', value: 'retry-43 (queued after fix-42)' })
   expect(workerDetails(worker, '').some(r => r.label === 'task')).toBe(false)
+})
+
+test('only the workspace the marker names is the boss; a bare marker is any session there', () => {
+  expect(isBoss('# Boss workspace ws-a\n', 'ws-a')).toBe(true)
+  expect(isBoss('# Boss workspace ws-a\n', 'ws-b')).toBe(false)
+  expect(isBoss('# Boss workspace ws-a\n', undefined)).toBe(false)
+  expect(isBoss('notes\n# Boss workspace\n', 'ws-b')).toBe(true)
+  expect(isBoss('# Boss workspaces are listed below\n', 'ws-b')).toBe(false)
+  expect(isBoss('', 'ws-a')).toBe(false)
 })

@@ -35,6 +35,7 @@ cat <<MSG
 Created $DEST
 Next:
   1. Fill in $DEST/BOSS.md and $DEST/config.json (repo, base_branch, me, superset_host, tracker).
-  2. In the worktree that will be the boss, add a gitignored CLAUDE.local.md (see README: Make a worktree the boss).
+  2. In the worktree that will be the boss, add a gitignored CLAUDE.local.md headed
+     '# Boss workspace <its \$SUPERSET_WORKSPACE_ID>' (see README: Make a worktree the boss).
   3. Project resolution: \$BOSS_PROJECT, then the worktree's .boss file, then its git remote vs config.repo.
 MSG

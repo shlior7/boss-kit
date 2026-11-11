@@ -297,6 +297,8 @@ def main():
     if arg("--workspace"):
         os.environ["SUPERSET_WORKSPACE_ID"] = arg("--workspace")
     ctx = bosskit.load(arg("--cwd"))
+    if not bosskit.is_boss(ctx):
+        sys.exit(bosskit.not_boss_note(ctx))  # no heartbeat, no rename: another workspace is the boss
     cfg = ctx.cfg
     tasks = ledger_tasks(os.path.join(ctx.pdir, cfg.get("ledger", "ledger.md")))
     # Watchers are host-wide; keep the ones on this boss's dispatches (rows without a Boss belong to every boss).

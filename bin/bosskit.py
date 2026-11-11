@@ -26,6 +26,8 @@ KIT = os.environ.get("BOSS_KIT_HOME") or os.path.dirname(os.path.dirname(os.path
 STALE_S = 1800                      # a boss with no heartbeat for 30 min is not live
 PRUNE_S = 7 * 86400                 # a registry entry silent for a week is dropped on the next write
 SHARED_BUDGET_LINES, SHARED_RECENT = 150, 20
+# The CLAUDE.local.md heading that makes a worktree a boss, optionally naming the one workspace that is.
+MARKER = re.compile(r"^# Boss workspace(?:[ \t]+(\S+))?[ \t]*$", re.M)
 HEADING = re.compile(r"^## (\d+)\. (.*)$", re.M)
 
 
@@ -100,6 +102,27 @@ def load(cwd=None, name=None):
     return SimpleNamespace(home=h, name=name, cfg=cfg, pdir=pdir, bid=bid, bdir=bdir, worktree=worktree(cwd),
                            workspace="" if bid.startswith("wt-") else bid,
                            cache=os.path.join(bdir, "cache"), inbox=os.path.join(bdir, "inbox"))
+
+
+def boss_marker(wt):
+    """The worktree's boss marker: None when absent, else the workspace id it binds ('' for a bare marker)."""
+    m = MARKER.search(_read(os.path.join(wt, "CLAUDE.local.md")))
+    return None if m is None else (m.group(1) or "")
+
+
+def is_boss(ctx):
+    """The marker is there and, when it names a workspace, this session is that workspace. A copy of the
+    boss's CLAUDE.local.md in another worktree, or another workspace on the same checkout, is then no boss."""
+    bound = boss_marker(ctx.worktree)
+    return bound is not None and bound in ("", os.environ.get("SUPERSET_WORKSPACE_ID", ""))
+
+
+def not_boss_note(ctx):
+    bound = boss_marker(ctx.worktree)
+    if bound is None:
+        return f"Not a boss: {ctx.worktree}/CLAUDE.local.md has no '# Boss workspace' heading."
+    return (f"Not the boss: CLAUDE.local.md binds the boss to workspace {bound}, and this session is "
+            f"{os.environ.get('SUPERSET_WORKSPACE_ID') or 'outside Paradev'}. Ignore the boss instructions and work as a normal session.")
 
 
 # ---- registry -------------------------------------------------------------------------------
@@ -199,9 +222,9 @@ def main():
                           "boss_md": os.path.join(ctx.pdir, "BOSS.md"), "ledger": os.path.join(ctx.pdir, ctx.cfg.get("ledger", "ledger.md")),
                           "lessons": os.path.join(ctx.pdir, "lessons.md"), "shared_lessons": os.path.join(ctx.home, "lessons.md"),
                           "boss_dir": ctx.bdir, "next": os.path.join(ctx.bdir, "next.txt"),
-                          "review": os.path.join(ctx.bdir, "review.txt"), "inbox": ctx.inbox}, indent=1))
+                          "review": os.path.join(ctx.bdir, "review.txt"), "inbox": ctx.inbox, "is_boss": is_boss(ctx)}, indent=1))
     elif cmd == "instructions":
-        print(instructions(ctx))
+        print(instructions(ctx) if is_boss(ctx) else not_boss_note(ctx))
     else:
         sys.exit(__doc__)
 
