@@ -1,28 +1,36 @@
 #!/bin/bash
 # boss-watch-done.sh <workspaceId> <terminalId>   (run with run_in_background; never edit while one runs)
-# Skips envelope templates whose fields are still <placeholders>, so the dispatch prompt never fires it.
-# Env: BOSS_HOST = Superset host id (default: first host from `superset hosts list --json`).
-# Fires on: a NEW line-anchored SUPERSET_WORKER_DONE/BLOCKED envelope (compared by its task: line),
-#           agent state `blocked`, or 3 idle polls with an unchanged screen (agent asked in plain text).
-# Needs: superset CLI, jq. Poll 30 s, timeout 2 h.
+# 2026-11-11: the old envelope regex only matched the name alone on its own line, but Claude Code
+# draws the reply in a box ("│ SUPERSET_WORKER_DONE task: x ...") with a side pane on the same line, so it never saw
+# an envelope and only ever fired on its idle fallback. Now it strips the box and side pane, finds the name anywhere,
+# reads its task, skips <placeholder> templates, and fires the moment the latest envelope differs from the start.
+# Idle fallback: 3 idle polls with an unchanged screen (10 if a background shell or monitor is still running).
+# Env: BOSS_HOST (default: first host). Poll 20 s, timeout 3 h. Needs superset CLI, jq.
 W=$1; T=$2
 H=${BOSS_HOST:-$(superset hosts list --json | jq -r 'if type=="array" then .[0].id else .hosts[0].id end')}
-RE='^[[:space:]⏺]*SUPERSET_WORKER_(DONE|BLOCKED)[[:space:]]*$'
-scr(){ superset terminals read --workspace "$W" --host "$H" --terminal "$T" --max-lines 3000 --json | jq -r .text; }
-sig(){ awk -v re="$RE" '{l[NR]=$0} END{ for(n=NR;n>0;n--) if(l[n] ~ re){ ph=0; s=l[n]; t=""; for(i=n+1;i<=n+5 && i<=NR;i++){ if(l[i] ~ /: *</) ph=1; if(t=="" && l[i] ~ /task/) t=l[i] } if(!ph){ print s t; exit } } }'; }
+scr(){ superset terminals read --workspace "$W" --host "$H" --terminal "$T" --max-lines 600 --json 2>/dev/null | jq -r '.text // empty'; }
+sig(){ awk '{ gsub(/││.*$/, ""); gsub(/[│╭╮╰╯⏺]/, " "); l[NR]=$0 }
+  END { for (n = NR; n > 0; n--) if (match(l[n], /SUPERSET_WORKER_(DONE|BLOCKED)/)) {
+    k = substr(l[n], RSTART + 16, RLENGTH - 16); b = ""
+    for (i = n; i <= n + 6 && i <= NR; i++) b = b " " l[i]
+    if (b ~ /<[a-z][a-z ]*>/) continue
+    t = "?"; if (match(b, /task:? +[A-Za-z0-9._-]+/)) { t = substr(b, RSTART, RLENGTH); sub(/task:? +/, "", t) }
+    print k "|" t; exit } }'; }
 base=$(scr | sig); idle=0; lasth=""
-for i in $(seq 1 240); do
-  sleep 30
-  txt=$(scr); cur=$(echo "$txt" | sig)
+for i in $(seq 1 540); do
+  sleep 20
+  txt=$(scr); [ -z "$txt" ] && { echo "TERMINAL GONE (session ended or host restarted)"; exit 0; }
+  cur=$(echo "$txt" | sig)
   if [ -n "$cur" ] && [ "$cur" != "$base" ]; then
-    n=$(echo "$txt" | grep -nE "$RE" | tail -1 | cut -d: -f1)
-    echo "ENVELOPE"; echo "$txt" | tail -n +$n | head -70; exit 0
+    n=$(echo "$txt" | grep -n "SUPERSET_WORKER_" | tail -1 | cut -d: -f1)
+    echo "ENVELOPE $cur"; echo "$txt" | tail -n +$n | sed 's/││.*$//' | head -60; exit 0
   fi
-  st=$(superset snapshot --host "$H" --json | jq -r --arg t "$T" '.. | objects | select(.terminalId? == $t or .id? == $t) | .agent.state // empty' | head -1)
-  if [ "$st" = blocked ]; then echo "AGENT BLOCKED ON INPUT"; echo "$txt" | tail -30; exit 0; fi
+  st=$(superset snapshot --host "$H" --json 2>/dev/null | jq -r --arg t "$T" '.. | objects | select(.terminalId? == $t or .id? == $t) | .agent.state // empty' | head -1)
+  if [ "$st" = blocked ]; then echo "AGENT BLOCKED ON INPUT"; echo "$txt" | tail -30 | sed 's/││.*$//'; exit 0; fi
   h=$(echo "$txt" | tail -25 | cksum)
   if [ "$st" = idle ] && [ "$h" = "$lasth" ]; then idle=$((idle+1)); else idle=0; fi
   lasth=$h
-  if [ "$idle" -ge 3 ]; then echo "AGENT IDLE WITHOUT ENVELOPE (probably waiting for the user)"; echo "$txt" | tail -40; exit 0; fi
+  need=3; echo "$txt" | tail -6 | grep -qE "[0-9]+ (shells?|monitors?)" && need=10
+  if [ "$idle" -ge "$need" ]; then echo "AGENT IDLE WITHOUT ENVELOPE"; echo "$txt" | tail -40 | sed 's/││.*$//'; exit 0; fi
 done
 echo TIMEOUT
