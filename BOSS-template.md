@@ -43,11 +43,11 @@ Project facts: repo [PATH], GitHub [OWNER/REPO], base branch [master|main], task
    - The worker puts every proof URL in the envelope's `proof:` field and in a PR comment. The boss checks that each URL exists before believing it (section 7).
 
 ## 6. Completion envelope + watcher (mandatory on every dispatch)
-Workers end with exactly one of (line-anchored):
+Workers end with exactly one of (the watcher finds the name anywhere on a line, also inside Claude Code's reply box):
 SUPERSET_WORKER_DONE / task / summary / files / checks / proof / handoff   (proof = demo video and page URLs, or "none: <why>")
 SUPERSET_WORKER_BLOCKED / task / reason / needs
 
-In the SAME turn as the dispatch, arm a background watcher, `bin/boss-watch-done.sh <workspace> <terminal>` (`run_in_background`, never `&`): every 30 s read the terminal (--max-lines 3000), take the latest line-anchored envelope, fire when its `task:` line differs from the one at start or the agent state is `blocked`. Timeout ~2 h.
+In the SAME turn as the dispatch, arm a background watcher, `bin/boss-watch-done.sh <workspace> <terminal>` (`run_in_background`, never `&`): every 20 s read the terminal (--max-lines 600), strip the reply box and side pane, take the latest envelope with its `task:` value (skipping `<placeholder>` templates), fire when it differs from the one at start, when the agent state is `blocked`, or after 3 idle polls with an unchanged screen (10 while a background shell or monitor runs). It also fires when the terminal is gone. Timeout ~3 h.
 Lessons: don't count envelope lines (old ones scroll out); don't match the envelope name anywhere (matches your own prompt); never edit the script while watchers run (write a new versioned file, re-arm); idle detection misfires during long CI waits, so on a fire without an envelope read the screen and GitHub first. Never say "I'll report back" without an armed watcher. A session restart kills every watcher: on resume, read each worker's screen for an envelope that landed meanwhile, then re-arm.
 On fire: verify independently, update the ledger, report unprompted.
 

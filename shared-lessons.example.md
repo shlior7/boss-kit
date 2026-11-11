@@ -36,3 +36,7 @@ Why: an in-place edit broke watchers that were mid-poll.
 ## 8. Squash merges make every stacked PR conflict (seed)
 After a base PR is squash-merged, its stacked PRs carry the base's original commits. Merging master gives real conflicts in every file both touched. Resolve by taking master's version of everything the base owned, then re-applying only the stacked PR's own change, and prove it with `git diff origin/<base>...HEAD`.
 Why: three stacked PRs conflicted at once after one squash merge.
+
+## 9. Claude Code draws the envelope inside a reply box (2026-11-11, quack)
+A reply renders as `│ SUPERSET_WORKER_DONE task: x summary: ...` with the side pane on the same line, so a regex that wants the name alone on its line never matches, and every fire is the idle fallback (late, and false while a background shell runs). Strip the box characters and the side pane, find the name anywhere, read its `task:` value, and test the parser on a captured screen.
+Why: six watcher fires in a row were idle fallbacks; three of them hid real envelopes.

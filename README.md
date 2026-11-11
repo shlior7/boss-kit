@@ -240,7 +240,7 @@ BOSS_HOST=<host id> ~/.claude/boss-kit/bin/boss-watch-done.sh <workspace id> <te
 ```
 
 It polls every 30 s, for up to 2 h, and exits (which wakes the boss) when:
-- a **new** line-anchored `SUPERSET_WORKER_DONE` or `SUPERSET_WORKER_BLOCKED` appears, compared by its `task:` line, so old envelopes in scrollback don't count;
+- a **new** `SUPERSET_WORKER_DONE` or `SUPERSET_WORKER_BLOCKED` appears (found anywhere on a line, including inside Claude Code's reply box, with the side pane stripped), compared by its `task:` value, so old envelopes in scrollback don't count and `<placeholder>` templates are skipped;
 - the agent's state becomes `blocked`;
 - the agent sits idle on an unchanged screen for 3 polls.
 
