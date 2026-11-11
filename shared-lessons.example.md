@@ -51,4 +51,4 @@ Why: a Paradev host restart ended four worker sessions mid-task.
 
 ## 12. Close done workspaces as you go (2026-11-11, quack)
 Retire a workspace the moment its PRs are merged (or its research page is published) and sweep the board at every status report. Copy any ignored output worth keeping (a rendered video, audio) out of the worktree first: archiving deletes the folder.
-Why: finished workspaces piled up on the board and the user had to ask for them to be closed.
+Why: finished workspaces piled up on the board and the user had to ask for them to be closed. Then the boss archived a research workspace the moment it reported DONE while the user was still working in it; a local archive deletes the worktree, and only `claude --continue` in a new workspace on the same branch and path got the conversation back.
