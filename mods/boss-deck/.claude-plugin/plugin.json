@@ -1,6 +1,6 @@
 {
   "name": "boss-deck",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Boss workspace panel: what needs you, dispatched Paradev workers, watchers, PRs and tracker, read-only",
   "author": { "name": "Lior Steinberg" },
   "license": "MIT",

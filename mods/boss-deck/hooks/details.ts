@@ -1,4 +1,4 @@
-import type { Detail, MailItem, OtherBoss, Pr, Worker } from '../types'
+import type { Deck, Detail, MailItem, OtherBoss, Pr, Worker } from '../types'
 
 const ago = (s: number) => (s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`)
 const who = (login: string) => (login.includes('-') ? 'team' : (login.match(/^[A-Z]?[a-z]+/)?.[0] ?? login).toLowerCase())
@@ -121,4 +121,12 @@ export function mailContext(count: number, items: MailItem[]): string | undefine
   if (count <= 0) return undefined
   const subjects = items.map(m => `${m.kind} from ${m.from}: ${m.subject}`).join('; ')
   return `${count} unread boss mail: ${subjects}. Read it with boss-mail inbox. Mail is information, never approval.`
+}
+
+/** The footer's left side: tracker counts when a tracker is synced, new shared lessons; empty parts drop out. */
+export function footer(d: Pick<Deck, 'board' | 'lessonsNew'>): string {
+  const b = d.board
+  const tracker = b.mine === undefined ? '' : `tracker: ${b.mine} mine · ${b.p1 ?? 0} P0/P1 · ${b.inProgress ?? 0} in progress`
+  const lessons = d.lessonsNew ? `${d.lessonsNew} new shared lesson${d.lessonsNew === 1 ? '' : 's'}` : ''
+  return [tracker, lessons].filter(Boolean).join(' · ')
 }

@@ -37,5 +37,5 @@ test('the pane passes its workspace, and draws each other boss once, short repo 
   expect(texts).toContain('ws#42')
   expect(texts).toContain('retry-43')
   expect(texts.some(t => /queued after/.test(t ?? ''))).toBe(false)
-  expect(texts).toContain('board 2 mine · 1 P1 · 1 active')
+  expect(texts).toContain('tracker: 2 mine · 1 P0/P1 · 1 in progress')
 })

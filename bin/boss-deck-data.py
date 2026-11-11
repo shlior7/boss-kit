@@ -8,7 +8,8 @@ this boss's inbox, and the registry of other bosses. Each run is also this boss'
 Paths and project resolution: bin/bosskit.py.
 
 usage: boss-deck-data.py [--session-start] [--workspace ID] [--cwd DIR] [--selftest]
-  --session-start: also mark this boss's new session (the base for "lessons +N")
+  --session-start: also mark this boss's new session (the base for "N new shared lessons"), and
+                   rename this boss's own Paradev workspace to BOSS
   --workspace, --cwd: the session's workspace id and directory, which the mod passes so its process
                       resolves the same boss as the session's shell
 """
@@ -24,6 +25,8 @@ import bosskit  # noqa: E402
 
 PR_TTL_S = 300
 MAX_WORKERS = 8
+# What a boss names its own Paradev workspace at session start.
+BOSS_NAME = "BOSS"
 # ponytail: a watcher is "stale" by age or an idle worker; a real liveness probe would read the terminal
 STALE_AGE_S = 7200
 IDLE_STALE_S = 1800
@@ -137,6 +140,13 @@ def host(cfg):
         return ""
 
 
+def name_boss_workspace(cfg):
+    """Names this boss's own Paradev workspace BOSS, so it stands out in the sidebar. Every session, so a rename back heals."""
+    ws = os.environ.get("SUPERSET_WORKSPACE_ID")
+    if ws:
+        run(["superset", "workspaces", "update", ws, "--host", host(cfg), "--name", BOSS_NAME], timeout=20)
+
+
 def snapshot(cfg):
     raw = run(["superset", "snapshot", "--host", host(cfg), "--json"])
     try:
@@ -198,10 +208,12 @@ def prs(cfg, cache_dir):
 
 def board(cfg, snapshot):
     """Counts of my open tracker tasks, from boss-tasks.py's snapshot."""
-    if not isinstance(snapshot, dict):
+    tracker = cfg.get("tracker") or {}
+    me = tracker.get("assignee")
+    # A tracker switched off leaves its old snapshot behind; without an assignee, unassigned tasks would count as mine.
+    if not isinstance(snapshot, dict) or tracker.get("type") == "none" or not me:
         return {}
     tasks = snapshot.values()
-    me = (cfg.get("tracker") or {}).get("assignee")
     mine = [t for t in tasks if t.get("assignee") == me and t.get("status") not in ("Done", "Cancelled")]
     return {
         "mine": len(mine),
@@ -287,7 +299,9 @@ def main():
     ctx = bosskit.load(arg("--cwd"))
     cfg = ctx.cfg
     tasks = ledger_tasks(os.path.join(ctx.pdir, cfg.get("ledger", "ledger.md")))
-    armed = watchers()
+    # Watchers are host-wide; keep the ones on this boss's dispatches (rows without a Boss belong to every boss).
+    mine = {p for p, row in tasks.items() if not row[4] or row[4] == ctx.bid}
+    armed = [w for w in watchers() if w["ws"][:8] in mine]
     spaces = snapshot(cfg)
     by_prefix = {w["id"][:8]: w for w in spaces}
     watched = {w["ws"][:8] for w in armed}
@@ -331,6 +345,8 @@ def main():
     working = sum(w["state"] == "working" for w in workers)
     for_you = sum(a["level"] == "act" for a in todo)
     bosskit.heartbeat(ctx, host(cfg), {"working": working, "forYou": for_you})
+    if "--session-start" in sys.argv:
+        name_boss_workspace(cfg)
     print(json.dumps({
         "at": int(time.time()), "me": {"id": ctx.bid, "project": ctx.name}, "next": now_line, "review": review,
         "attention": todo, "workers": workers, "watchers": armed, "prs": pr_rows, "board": board(cfg, bosskit.tracker_snapshot(ctx)),

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Deck, Detail, Pr, ProofLink, Worker } from '../types'
-import { mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from './details'
+import { footer, mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from './details'
 import type { PrView } from './details'
 
 const PANE = 'boss-deck'
@@ -80,7 +80,8 @@ async function toggle(
   if (shown?.key === key) return update($, peek, () => null)
   await update($, peek, () => ({ key, rows: [{ label: '', value: 'loading…' }] }))
   const got = await load().catch(() => ({ rows: [{ label: 'error', value: 'could not load', color: 'error' }] }))
-  await update($, peek, () => ({ key, ...got }))
+  // Closed, or another row opened, while this one loaded: keep what is shown now.
+  await update($, peek, cur => (cur?.key === key ? { key, ...got } : cur))
 }
 
 async function workerPeek($: EngineInterface, w: Worker) {
@@ -173,7 +174,8 @@ export const register: Register = on => {
         <Text color="suggestion">{label}</Text>
       </Button>
     )
-    const details = (rows: Detail[], url?: string, links: ProofLink[] = [], workerProof = false) => (
+    // `open` is the expanded row's way out: a PR's GitHub page, a worker's workspace.
+    const details = (rows: Detail[], open?: { key: string; label: string; press: () => void }, links: ProofLink[] = [], workerProof = false) => (
       <Box flexDirection="column" paddingLeft={4} marginBottom={1}>
         {rows.map(r => (
           <Box flexDirection="row">
@@ -181,15 +183,16 @@ export const register: Register = on => {
             {rest(text(r.value, !r.color, r.color))}
           </Box>
         ))}
-        {links.length > 0 && (
+        {/* Proof links and the way out share one line, wrapping only when the pane is too narrow. */}
+        {(links.length > 0 || open) && (
           <Box flexDirection="row" columnGap={2} flexWrap="wrap">
             {links.map((l, i) => linkButton(`proof-${l.url}-${i}`, workerProof ? `proof ↗ ${l.label}` : `${l.label} ↗`, l.url))}
+            {open && (
+              <Button plain key={open.key} onPress={open.press}>
+                <Text color="suggestion">{open.label}</Text>
+              </Button>
+            )}
           </Box>
-        )}
-        {url && (
-          <Button plain key={`gh-${url}`} onPress={() => void openUrl($, url)}>
-            <Text color="suggestion">open on GitHub ↗</Text>
-          </Button>
         )}
       </Box>
     )
@@ -202,27 +205,27 @@ export const register: Register = on => {
     const worker = (w: Worker, i: number) => {
       const dim = w.state !== 'working' && w.state !== 'blocked'
       const color = w.state === 'blocked' ? 'error' : undefined
+      const key = `w-${w.ws}`
+      const open = shown?.key === key
       return (
         <Box flexDirection="column">
           <Box flexDirection="row">
             {cell(2, text(STATE_MARK[w.state] ?? '○', dim, color))}
-            {cell(
-              23,
-              <Button plain key={`open-${w.ws}`} hotkey={i < 9 ? String(i + 1) : undefined} onPress={() => void openWorkspace($, w.id)}>
-                <Text dimColor={dim} color={color}>
-                  {w.name.slice(0, i < 9 ? 18 : 21)}
-                </Text>
-              </Button>,
-            )}
+            {/* The whole row expands; the workspace opens from the details. A hotkey's "1: " takes 3 of the name's 23 cells. */}
             {rest(
-              <Button plain key={`peek-${w.ws}`} onPress={() => void toggle($, `w-${w.ws}`, () => workerPeek($, w))}>
+              <Button plain key={`peek-${w.ws}`} hotkey={i < 9 ? String(i + 1) : undefined} onPress={() => void toggle($, key, () => workerPeek($, w))}>
+                <Text dimColor={dim} color={color} bold={open}>
+                  {w.name.slice(0, i < 9 ? 18 : 21).padEnd(i < 9 ? 20 : 23)}
+                </Text>
                 <Text dimColor={dim} color={color} wrap="truncate-end">
                   {w.task}
                 </Text>
               </Button>,
             )}
           </Box>
-          {shown?.key === `w-${w.ws}` && details(shown.rows, undefined, shown.links, true)}
+          {open &&
+            shown &&
+            details(shown.rows, { key: `open-${w.ws}`, label: 'open workspace ↗', press: () => void openWorkspace($, w.id) }, shown.links, true)}
         </Box>
       )
     }
@@ -247,7 +250,8 @@ export const register: Register = on => {
             {cell(11, text(prStatus(p), !color, color))}
             {rest(text(shortTitle(p.title), true))}
           </Box>
-          {shown?.key === key && details(shown.rows, shown.url, shown.links)}
+          {shown?.key === key &&
+            details(shown.rows, shown.url ? { key: `gh-${shown.url}`, label: 'open on GitHub ↗', press: () => void openUrl($, shown.url ?? '') } : undefined, shown.links)}
         </Box>
       )
     }
@@ -312,15 +316,19 @@ export const register: Register = on => {
           </Box>
         )}
 
-        <Box flexDirection="row" justifyContent="space-between" marginTop={1}>
-          {text(
-            `board ${d.board.mine ?? '?'} mine · ${d.board.p1 ?? '?'} P1 · ${d.board.inProgress ?? '?'} active` +
-              (d.lessonsNew ? ` · lessons +${d.lessonsNew}` : ''),
-            true,
-          )}
-          <Text dimColor>{ago(now - d.at)}</Text>
+        {/* One quiet line when it fits: the tracker and the hint flow on the left, wrapping whole, the age stays right. */}
+        <Box flexDirection="row" justifyContent="space-between" columnGap={2} marginTop={1}>
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2} flexShrink={1}>
+            {[footer(d), 'press a worker or a PR # for details'].filter(Boolean).map(t => (
+              <Box flexShrink={0}>
+                <Text dimColor>{t}</Text>
+              </Box>
+            ))}
+          </Box>
+          <Box flexShrink={0}>
+            <Text dimColor>{`${ago(now - d.at)} ago`}</Text>
+          </Box>
         </Box>
-        {text('name opens workspace · task or # expands', true)}
       </Box>
     )
   })
