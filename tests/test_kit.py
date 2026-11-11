@@ -111,7 +111,24 @@ class Registry(Home):
         bosskit.heartbeat(mod)
         self.assertEqual(list(bosskit.registry()), ["ws-a"])
 
-    def test_heartbeat_prunes_entries_silent_for_a_week(self):
+    def test_only_the_bound_workspace_on_a_checkout_is_the_boss(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        local = os.path.join(self.wt, "CLAUDE.local.md")
+        os.environ["SUPERSET_WORKSPACE_ID"] = "ws-a"
+        self.assertFalse(bosskit.is_boss(bosskit.load(self.wt)))  # no marker
+        open(local, "w").write("# Boss workspace\n")
+        self.assertTrue(bosskit.is_boss(bosskit.load(self.wt)))  # a bare marker: any session here
+        open(local, "w").write("# Boss workspace ws-a\n")
+        self.assertTrue(bosskit.is_boss(bosskit.load(self.wt)))
+        os.environ["SUPERSET_WORKSPACE_ID"] = "ws-b"  # a second workspace on the checkout, or a copied file
+        other = bosskit.load(self.wt)
+        self.assertFalse(bosskit.is_boss(other))
+        self.assertIn("binds the boss to workspace ws-a", bosskit.not_boss_note(other))
+        out = subprocess.run([sys.executable, os.path.join(BIN, "boss-deck-data.py"), "--cwd", self.wt],
+                             capture_output=True, text=True)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertEqual(bosskit.registry(), {})  # it never heartbeats
+
         os.environ["BOSS_PROJECT"] = "widgets"
         now = time.time()
         json.dump({"old": {"project": "x", "heartbeat": now - bosskit.PRUNE_S - 1}, "recent": {"project": "y", "heartbeat": now - 3600}},

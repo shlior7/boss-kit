@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Deck, Detail, Pr, ProofLink, Worker } from '../types'
-import { footer, mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from './details'
+import { footer, isBoss, mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from './details'
 import type { PrView } from './details'
 
 const PANE = 'boss-deck'
@@ -106,7 +106,8 @@ async function prPeek($: EngineInterface, p: Pr) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const local = await $.fs.read('CLAUDE.local.md').catch(() => '')
-    if (!local.includes('# Boss workspace')) return next(e)
+    // A copy of the boss's CLAUDE.local.md, or another workspace on its checkout, stays quiet: no pane, no heartbeat.
+    if (!isBoss(local, await $.env.get('SUPERSET_WORKSPACE_ID'))) return next(e)
 
     await $.command.register({ name: 'boss-deck', description: 'Open the boss pane and refresh it now' })
     void $.ui.open({ id: PANE, title: TITLE })
