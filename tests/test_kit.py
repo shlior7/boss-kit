@@ -257,6 +257,9 @@ class Deck(Home):
         self.assertEqual(deck.board(cfg, bosskit.tracker_snapshot(ctx)), {"mine": 2, "p1": 1, "inProgress": 1})
         json.dump({"a": task("P0", "Todo")}, open(os.path.join(ctx.cache, "tracker.json"), "w"))  # boss-tasks.py's
         self.assertEqual(deck.board(cfg, bosskit.tracker_snapshot(ctx)), {"mine": 1, "p1": 1, "inProgress": 0})
+        snap = bosskit.tracker_snapshot(ctx)  # a tracker switched off, or no assignee: no counts from the old snapshot
+        self.assertEqual(deck.board({"tracker": {"type": "none", "assignee": "Me"}}, snap), {})
+        self.assertEqual(deck.board({"tracker": {}}, snap), {})
 
     def test_repo_tag_and_task_id(self):
         deck = load_script("boss-deck-data.py")

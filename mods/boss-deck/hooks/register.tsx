@@ -80,7 +80,8 @@ async function toggle(
   if (shown?.key === key) return update($, peek, () => null)
   await update($, peek, () => ({ key, rows: [{ label: '', value: 'loading…' }] }))
   const got = await load().catch(() => ({ rows: [{ label: 'error', value: 'could not load', color: 'error' }] }))
-  await update($, peek, () => ({ key, ...got }))
+  // Closed, or another row opened, while this one loaded: keep what is shown now.
+  await update($, peek, cur => (cur?.key === key ? { key, ...got } : cur))
 }
 
 async function workerPeek($: EngineInterface, w: Worker) {
@@ -182,15 +183,16 @@ export const register: Register = on => {
             {rest(text(r.value, !r.color, r.color))}
           </Box>
         ))}
-        {links.length > 0 && (
+        {/* Proof links and the way out share one line, wrapping only when the pane is too narrow. */}
+        {(links.length > 0 || open) && (
           <Box flexDirection="row" columnGap={2} flexWrap="wrap">
             {links.map((l, i) => linkButton(`proof-${l.url}-${i}`, workerProof ? `proof ↗ ${l.label}` : `${l.label} ↗`, l.url))}
+            {open && (
+              <Button plain key={open.key} onPress={open.press}>
+                <Text color="suggestion">{open.label}</Text>
+              </Button>
+            )}
           </Box>
-        )}
-        {open && (
-          <Button plain key={open.key} onPress={open.press}>
-            <Text color="suggestion">{open.label}</Text>
-          </Button>
         )}
       </Box>
     )
@@ -314,11 +316,17 @@ export const register: Register = on => {
           </Box>
         )}
 
-        <Box flexDirection="column" marginTop={1}>
-          {footer(d) && text(footer(d), true)}
-          <Box flexDirection="row" justifyContent="space-between">
-            {text('press a row for details', true)}
-            <Text dimColor>{`updated ${ago(now - d.at)} ago`}</Text>
+        {/* One quiet line when it fits: the tracker and the hint flow on the left, wrapping whole, the age stays right. */}
+        <Box flexDirection="row" justifyContent="space-between" columnGap={2} marginTop={1}>
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2} flexShrink={1}>
+            {[footer(d), 'press a worker or a PR # for details'].filter(Boolean).map(t => (
+              <Box flexShrink={0}>
+                <Text dimColor>{t}</Text>
+              </Box>
+            ))}
+          </Box>
+          <Box flexShrink={0}>
+            <Text dimColor>{`${ago(now - d.at)} ago`}</Text>
           </Box>
         </Box>
       </Box>

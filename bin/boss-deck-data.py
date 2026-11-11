@@ -208,10 +208,12 @@ def prs(cfg, cache_dir):
 
 def board(cfg, snapshot):
     """Counts of my open tracker tasks, from boss-tasks.py's snapshot."""
-    if not isinstance(snapshot, dict):
+    tracker = cfg.get("tracker") or {}
+    me = tracker.get("assignee")
+    # A tracker switched off leaves its old snapshot behind; without an assignee, unassigned tasks would count as mine.
+    if not isinstance(snapshot, dict) or tracker.get("type") == "none" or not me:
         return {}
     tasks = snapshot.values()
-    me = (cfg.get("tracker") or {}).get("assignee")
     mine = [t for t in tasks if t.get("assignee") == me and t.get("status") not in ("Done", "Cancelled")]
     return {
         "mine": len(mine),
@@ -297,8 +299,9 @@ def main():
     ctx = bosskit.load(arg("--cwd"))
     cfg = ctx.cfg
     tasks = ledger_tasks(os.path.join(ctx.pdir, cfg.get("ledger", "ledger.md")))
-    # Watchers are host-wide; keep this project's (its ledger names the workspace), not another boss's.
-    armed = [w for w in watchers() if w["ws"][:8] in tasks]
+    # Watchers are host-wide; keep the ones on this boss's dispatches (rows without a Boss belong to every boss).
+    mine = {p for p, row in tasks.items() if not row[4] or row[4] == ctx.bid}
+    armed = [w for w in watchers() if w["ws"][:8] in mine]
     spaces = snapshot(cfg)
     by_prefix = {w["id"][:8]: w for w in spaces}
     watched = {w["ws"][:8] for w in armed}

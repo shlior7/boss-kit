@@ -53,7 +53,7 @@
 <span class="ok">⏺</span> <span class="b">Bash</span>(gh pr view 57 --repo acme/widgets --json headRefOid,statusCheckRollup,…)
   <span class="d">⎿  head 8c41d2e07 · 14 checks · MERGEABLE · CLEAN</span>
 
-<span class="ok">⏺</span> <span class="b">Bash</span>(git revert --no-commit 8c41d2e &amp;&amp; make test-http; git revert --abort)
+<span class="ok">⏺</span> <span class="b">Bash</span>(git -C /tmp/rev-57 revert --no-edit 8c41d2e &amp;&amp; make -C /tmp/rev-57 test-http)
   <span class="d">⎿  FAIL tests/http/test_login_limit.py::test_sixth_attempt_is_429</span>
      <span class="d">revert proves red ✓</span>
 
@@ -101,9 +101,10 @@ const detail = (label, value, c = 'd') => line(seg('    ' + pad(label, 9), 'd'),
 const head = () =>
   line(seg('review ↗ 2026-11-10', 'su')) +
   line(seg('mail 1 ↗', 'su'))
-const foot = ago =>
-  '\n' + line(seg('tracker: 6 mine · 2 P0/P1 · 1 in progress', 'd')) +
-  justify('press a row for details', `updated ${ago} ago`, 'd', 'd')
+// The footer: tracker and hint flow left and wrap whole, the age stays right on the first line.
+const foot = (ago, tracker) => '\n' + (tracker
+  ? justify(tracker, `${ago} ago`, 'd', 'd') + line(seg('press a worker or a PR # for details', 'd'))
+  : justify('press a worker or a PR # for details', `${ago} ago`, 'd', 'd'))
 
 const main =
   head() +
@@ -121,7 +122,7 @@ const main =
   pr('✗', 0, '#61', 'review', 'warm the cache on deploy', 'er') +
   pr('✓', 0, 'ws#7', 'approved', 'client for the retry API', 'ok') +
   '\n' + line(seg('gadgets · 2 working · 1 for you ↗', 'd')) +
-  foot('12s')
+  foot('12s', 'tracker: 6 mine · 2 P0/P1 · 1 in progress')
 
 const peek =
   head() +
@@ -134,8 +135,7 @@ const peek =
   detail('last', 'done fix-38: Retry-After as seconds or date') +
   detail('context', '212k · 21%') +
   detail('watcher', 'armed') +
-  line(seg('    '), seg('proof ↗ page', 'su')) +
-  line(seg('    '), seg('open workspace ↗', 'su')) +
+  line(seg('    '), seg('proof ↗ page', 'su'), seg('  '), seg('open workspace ↗', 'su')) +
   '\n' +
   worker('●', 2, 'cache-warmup', 'fix-61-ci') +
   worker('·', 3, 'web-login', 'ready-57', 'd') +
@@ -147,8 +147,7 @@ const peek =
   detail('size', '+148 −21 in 6 files') +
   detail('branch', 'fix/retry-backoff → main') +
   detail('head', '3f2a1c94b · updated 6m ago') +
-  line(seg('    '), seg('page ↗', 'su'), seg('  '), seg('demo ↗', 'su')) +
-  line(seg('    '), seg('open on GitHub ↗', 'su')) +
+  line(seg('    '), seg('page ↗', 'su'), seg('  '), seg('demo ↗', 'su'), seg('  '), seg('open on GitHub ↗', 'su')) +
   '\n' +
   pr('✓', 1, '#43', 'draft', 'backoff jitter', 'f') +
   pr('✓', 0, '#57', 'no proof', 'login rate limit', 'wa') +
