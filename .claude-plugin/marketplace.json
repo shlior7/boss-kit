@@ -1,0 +1,13 @@
+{
+  "name": "boss-kit",
+  "owner": { "name": "Lior Steinberg", "url": "https://github.com/shlior7" },
+  "description": "Boss orchestrator kit for Claude Code + Paradev: the boss-deck pane",
+  "plugins": [
+    {
+      "name": "boss-deck",
+      "source": "./mods/boss-deck",
+      "description": "Quiet boss pane: what needs you, Paradev workers, watchers, PRs and the tracker",
+      "version": "0.3.0"
+    }
+  ]
+}

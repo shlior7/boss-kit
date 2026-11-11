@@ -1,0 +1,38 @@
+#!/bin/bash
+# boss-init <project> [--repo owner/repo] [--base main] [--me github-login]
+# Scaffolds projects/<project>/ from projects/_template: BOSS.md, config.json, ledger.md, prompts/.
+# projects/<project>/ is gitignored: your project facts, prompts and ledger stay local.
+set -euo pipefail
+KIT=${BOSS_KIT_HOME:-$(cd "$(dirname "$0")/.." && pwd)}
+NAME=${1:?usage: boss-init <project> [--repo owner/repo] [--base main] [--me login]}; shift
+case "$NAME" in _*|*/*|.*) echo "boss-init: bad project name: $NAME" >&2; exit 2;; esac
+DEST="$KIT/projects/$NAME"
+[ -e "$DEST" ] && { echo "boss-init: $DEST already exists" >&2; exit 1; }
+REPO=""; BASE=""; ME=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) REPO=$2; shift 2;; --base) BASE=$2; shift 2;; --me) ME=$2; shift 2;;
+    *) echo "boss-init: unknown option $1" >&2; exit 2;;
+  esac
+done
+cp -R "$KIT/projects/_template" "$DEST"
+rm -f "$DEST/prompts/.gitkeep"
+for f in BOSS.md ledger.md; do sed -i.bak "s/{{PROJECT}}/$NAME/g" "$DEST/$f" && rm "$DEST/$f.bak"; done
+python3 - "$DEST/config.json" "$REPO" "$BASE" "$ME" <<'PY'
+import json, sys
+p, repo, base, me = sys.argv[1:]
+c = json.load(open(p))
+c.update({k: v for k, v in (("repo", repo), ("base_branch", base), ("me", me)) if v})
+json.dump(c, open(p, "w"), indent=2); open(p, "a").write("\n")
+PY
+mkdir -p "$KIT/state/$NAME"
+cat <<MSG
+Created $DEST
+Next:
+  1. Fill in $DEST/BOSS.md and $DEST/config.json (repo, base_branch, me, superset_host, tracker).
+  2. In the worktree that will be the boss, add a gitignored CLAUDE.local.md:
+       # Boss workspace
+       @$KIT/BOSS-template.md
+       @$DEST/BOSS.md
+  3. export BOSS_PROJECT=$NAME   (only needed when you have more than one project)
+MSG

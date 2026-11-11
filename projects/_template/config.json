@@ -1,0 +1,14 @@
+{
+  "repo": "acme/widgets",
+  "base_branch": "main",
+  "me": "your-github-login",
+  "extra_prs": [],
+  "superset_host": "",
+  "tracker": {
+    "type": "none",
+    "url_env": "BOSS_TRACKER_URL",
+    "token_env": "BOSS_TRACKER_TOKEN",
+    "assignee": "Your Name"
+  },
+  "ledger": "ledger.md"
+}

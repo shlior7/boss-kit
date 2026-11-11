@@ -1,0 +1,10 @@
+# Project facts, prompts and ledgers are local workspace info: never pushed.
+projects/*
+!projects/_template/
+# Runtime data: caches, tracker snapshots, the pane's next line.
+state/
+*.local.md
+*.bak*
+mods/*/.claude-plugin/types/
+node_modules/
+__pycache__/
