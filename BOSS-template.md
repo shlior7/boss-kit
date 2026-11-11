@@ -25,7 +25,7 @@ Project facts: repo [PATH], GitHub [OWNER/REPO], base branch [master|main], task
 
 ## 4. Control surface (Superset CLI, --local)
 - `superset workspaces list --local --json`; `terminals list --workspace <id>`; `terminals read --max-lines N`; `terminals send --text "..."` (submits by default; `--no-submit` stages only). Clear a staged input line first with `--keys ctrl+u`: an idle session often shows an auto-suggestion that is not yours. Use the FULL terminal UUID, never the short id.
-- `superset agents create --workspace <id> --agent <preset id> [--model <m>] --prompt "..." --json` (keep `sessionId`). New agents may start in default or auto permission mode; a permission prompt reads as agent state `blocked`. Answer read-only command prompts with "Yes, and switch to auto mode", never bypass. `superset snapshot --host <id> --json` shows every worker's state in one call.
+- `superset agents create --workspace <id> --agent <preset id> [--model <m>] --prompt "..." --json` (keep `sessionId`). New agents start in the user's default permission mode; a permission prompt reads as agent state `blocked`. Answer a read-only command prompt with the option that stops asking in the mode the user runs (auto, or bypass when that is their default); anything that writes, ask me. `superset snapshot --host <id> --json` shows every worker's state in one call.
 - Presets: claude (default), codex, gemini, antigravity/agy, amp, copilot, opencode (`superset agents list --local --json`). Drive codex as a terminal agent.
 - Reports are Superset pages: `superset pages publish scratch/pages/<f>.html --title ... --description ...` (self-contained HTML, no remote scripts/fetch/eval).
 
