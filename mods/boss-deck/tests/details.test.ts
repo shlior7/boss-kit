@@ -56,3 +56,9 @@ test('unread mail becomes one context line, none when the inbox is empty', () =>
   expect(line.startsWith('1 unread boss mail: question from gadgets: is #42 safe to merge?')).toBe(true)
   expect(line.includes('never approval')).toBe(true)
 })
+
+test("a worker's details keep the ledger's whole task cell", () => {
+  const rows = workerDetails({ ...worker, task: 'retry-43', taskText: 'retry-43 (queued after fix-42)' }, '')
+  expect(rows[0]).toEqual({ label: 'task', value: 'retry-43 (queued after fix-42)' })
+  expect(workerDetails(worker, '').some(r => r.label === 'task')).toBe(false)
+})

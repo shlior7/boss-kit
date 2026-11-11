@@ -48,7 +48,7 @@ $BOSS_HOME/
 
 **Which project?** In this order: `$BOSS_PROJECT`; a `.boss` file in the worktree root (`project: widgets`); the worktree's git remote matched against each project's `config.repo`; the only project, when there is one.
 
-**Which boss?** `$SUPERSET_WORKSPACE_ID` inside a Paradev workspace, else a short hash of the worktree path. Every pane refresh writes a heartbeat to `bosses.json`; a boss silent for 30 minutes counts as not live.
+**Which boss?** `$SUPERSET_WORKSPACE_ID` inside a Paradev workspace, else the workspace this worktree last registered under, else a short hash of the worktree path. The pane passes its session's workspace and directory, so it is the same boss as the session's shell. Every pane refresh writes a heartbeat to `bosses.json`; a boss silent for 30 minutes counts as not live.
 
 `bin/bosskit.py show` prints everything resolved for the current directory.
 
@@ -105,7 +105,7 @@ If you cloned the kit somewhere else, `export BOSS_KIT_HOME=/path/to/boss-kit`. 
    ```
 
    - `me`: only your PRs are synced and pushed; other authors' PRs are report-only.
-   - `extra_prs`: PRs in other repos that the pane should track.
+   - `extra_prs`: PRs in other repos that the pane should track. They show as a short tag, the repo name's initials (`acme/widgets-sdk#7` → `ws#7`); `"repo_aliases": {"acme/widgets-sdk": "sdk"}` sets your own.
    - `superset_host`: leave empty to use your first host.
    - `wake`: let mail to this project's bosses type one line into an idle boss's terminal.
 
@@ -274,7 +274,7 @@ Kits up to v0.4 kept project data inside the kit: `projects/<name>/` and `state/
 | `bin/boss-migrate [--kit DIR] [--boss ID] [--apply]` | Migration, above |
 | `bin/boss-watch-done.sh <ws> <term>` | The watcher above. Env: `BOSS_HOST` (default: first host). Needs `jq` |
 | `bin/boss-sync.py --only=N,N [--push]` | Run inside the repo. For each listed PR (stacked ones after their base), merges `origin/<base>` into the branch in a throwaway worktree and reports `up to date`, `merged clean` or `REAL CONFLICT: files`. Dry run by default; `--push` pushes (plain push, never force). `--gen=FILES --regen="cmd"` auto-resolves conflicts only in generated files; `--if-moved` exits early when the base hasn't moved. **Use `--only` with your own PR numbers.** `--all` would push to teammates' branches |
-| `bin/boss-tasks.py [--quiet]` | Read-only tracker sync into this boss's `cache/tracker.json`. Prints what changed, your open tasks, team P0/P1 and In Review |
+| `bin/boss-tasks.py [--quiet]` | Read-only tracker sync into this boss's `cache/tracker.json` (a migrated `bosses/<id>/tracker.json` is read when that is missing). Prints what changed, your open tasks, team P0/P1 and In Review |
 | `bin/boss-deck-data.py [--selftest]` | Prints the JSON the pane draws, and writes this boss's heartbeat. `--selftest` runs its checks |
 
 Tests: `python3 -m unittest discover -s tests` (stdlib only, temp `$BOSS_HOME`), `python3 bin/boss-deck-data.py --selftest`, and `claude plugin test mods/boss-deck`.
@@ -313,7 +313,7 @@ tracker 6 mine · 2 P1 · 1 active · lessons +2     12s
 - **Other live bosses** get one quiet line each, `<project> · N working · M for you ↗`. Press it to open that boss's workspace.
 - **`lessons +N`** in the footer: shared lessons added since this boss's last session.
 - **PR status colors:** green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. Stacked PRs nest under their base. PRs idle for 10+ days fold into one line.
-- **Refresh:** every 60 s, plus right after the boss dispatches, merges, comments or syncs. `/boss-deck` refreshes on demand. The status line shows `boss · N working · N for you`.
+- **Refresh:** every 60 s, plus right after the boss dispatches, merges, comments or syncs. `/boss-deck` refreshes on demand. The pane writes no status line.
 
 ## Safety rules (from the template; worth knowing before you start)
 

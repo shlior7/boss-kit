@@ -6,7 +6,10 @@ export type Worker = {
   term: string
   name: string
   branch: string
+  /** the task id, the ledger cell's first token */
   task: string
+  /** the ledger's whole task cell, for the details */
+  taskText?: string
   ledger: string
   date: string
   state: string
@@ -17,6 +20,8 @@ export type Watcher = { ws: string; term: string; ageS: number; stale: boolean }
 export type Pr = {
   /** owner/repo */
   repo: string
+  /** short repo tag for other repos' PRs: config's repo_aliases, else the repo name's initials */
+  tag?: string
   /** the project's own repo (its PRs show as plain #N) */
   primary: boolean
   num: number

@@ -96,6 +96,30 @@ class Registry(Home):
         self.assertEqual(reg[ctx.bid]["project"], "widgets")
         self.assertEqual(bosskit.live(reg, now, project="gadgets"), {})
 
+    def test_a_process_without_the_workspace_env_is_the_same_boss(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        stray = bosskit.load(self.wt)  # a mod's process before 0.5.1: no workspace id, a wt- hash
+        self.assertTrue(stray.bid.startswith("wt-"))
+        bosskit.heartbeat(stray)
+        os.environ["SUPERSET_WORKSPACE_ID"] = "ws-a"
+        shell = bosskit.load(self.wt)
+        bosskit.heartbeat(shell)
+        self.assertEqual(list(bosskit.registry()), ["ws-a"])  # the wt- duplicate is pruned on write
+        del os.environ["SUPERSET_WORKSPACE_ID"]
+        mod = bosskit.load(self.wt)
+        self.assertEqual((mod.bid, mod.workspace), ("ws-a", "ws-a"))  # found by worktree in the registry
+        bosskit.heartbeat(mod)
+        self.assertEqual(list(bosskit.registry()), ["ws-a"])
+
+    def test_heartbeat_prunes_entries_silent_for_a_week(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        now = time.time()
+        json.dump({"old": {"project": "x", "heartbeat": now - bosskit.PRUNE_S - 1}, "recent": {"project": "y", "heartbeat": now - 3600}},
+                  open(os.path.join(self.home, "bosses.json"), "w"))
+        ctx = bosskit.load(self.wt)
+        bosskit.heartbeat(ctx, now=now)
+        self.assertEqual(sorted(bosskit.registry()), sorted(["recent", ctx.bid]))
+
 
 class Mail(Home):
     def boss(self, project, wt):
@@ -203,12 +227,44 @@ class Deck(Home):
                "b": {"project": "gadgets", "workspace": "ws-b", "heartbeat": now - 120, "working": 1, "forYou": 2},
                "gone": {"project": "gizmos", "heartbeat": now - 7200}}
         self.assertEqual([o["project"] for o in deck.others(reg, "me", now)], ["gadgets"])
+
+    def test_others_never_lists_self_and_lists_each_workspace_once(self):
+        deck = load_script("boss-deck-data.py")
+        now = time.time()
+        reg = {"ws-me": {"project": "widgets", "workspace": "ws-me", "worktree": "/w/me", "heartbeat": now},
+               "wt-1234abcd": {"project": "widgets", "workspace": "", "worktree": "/w/me", "heartbeat": now},
+               "ws-b": {"project": "gadgets", "workspace": "ws-b", "worktree": "/w/b", "heartbeat": now - 30, "working": 1},
+               "ws-b-old": {"project": "gadgets", "workspace": "ws-b", "worktree": "/w/b", "heartbeat": now - 300},
+               "wt-99": {"project": "gizmos", "workspace": "", "worktree": "/w/c", "heartbeat": now}}
+        got = deck.others(reg, "wt-5678", now, workspace="ws-me", wt="/w/me")  # self by workspace and worktree
+        self.assertEqual([(o["id"], o["project"], o["working"]) for o in got], [("ws-b", "gadgets", 1), ("wt-99", "gizmos", 0)])
         os.environ["BOSS_PROJECT"] = "widgets"
         ctx = bosskit.load(self.wt)
         for i in range(3):
             json.dump({"id": f"m{i}", "kind": "fyi", "from_project": "gadgets", "subject": f"s{i}"},
                       open(os.path.join(ctx.inbox, f"m{i}.json"), "w"))
         self.assertEqual(deck.mail(ctx.inbox)["count"], 3)
+
+    def test_board_reads_the_tracker_snapshot_or_the_migrated_one(self):
+        deck = load_script("boss-deck-data.py")
+        os.environ["BOSS_PROJECT"] = "widgets"
+        ctx = bosskit.load(self.wt)
+        cfg = {"tracker": {"assignee": "Me"}}
+        self.assertEqual(deck.board(cfg, bosskit.tracker_snapshot(ctx)), {})
+        task = lambda pri, st: {"assignee": "Me", "priority": pri, "status": st}
+        json.dump({"a": task("P1", "In Progress"), "b": task("P2", "Todo"), "c": task("P1", "Done")},
+                  open(os.path.join(ctx.bdir, "tracker.json"), "w"))  # where boss-migrate left it
+        self.assertEqual(deck.board(cfg, bosskit.tracker_snapshot(ctx)), {"mine": 2, "p1": 1, "inProgress": 1})
+        json.dump({"a": task("P0", "Todo")}, open(os.path.join(ctx.cache, "tracker.json"), "w"))  # boss-tasks.py's
+        self.assertEqual(deck.board(cfg, bosskit.tracker_snapshot(ctx)), {"mine": 1, "p1": 1, "inProgress": 0})
+
+    def test_repo_tag_and_task_id(self):
+        deck = load_script("boss-deck-data.py")
+        self.assertEqual(deck.repo_tag("acme/widgets-sdk"), "ws")
+        self.assertEqual(deck.repo_tag("acme/widgets"), "w")
+        self.assertEqual(deck.repo_tag("acme/widgets-sdk", {"acme/widgets-sdk": "m"}), "m")
+        self.assertEqual(deck.task_id("retry-43 (queued after fix-42)"), "retry-43")
+        self.assertEqual(deck.task_id("fix-42: retry"), "fix-42")
 
     def test_lessons_counter_moves_only_at_session_start(self):
         deck = load_script("boss-deck-data.py")
