@@ -236,11 +236,14 @@ needs: <what>
 **2. Watch.** In the same turn, the boss arms a watcher as a background command (never `&`):
 
 ```bash
-BOSS_HOST=<host id> ~/.claude/boss-kit/bin/boss-watch-done.sh <workspace id> <terminal id>
+BOSS_HOST=<host id> ~/.claude/boss-kit/bin/boss-watch-done.sh <workspace id> <terminal id> [<branch>]
 ```
 
+The boss always uses this script for done-watching, never `superset terminals wait --match`: a one-line regex misses envelopes drawn above a short read window or split over two lines, and `terminals read` only returns the visible screen. Pass the worker's `<branch>` (run from the repo, or set `GH_REPO`) to also catch the PR: every ~3rd poll it runs `gh pr list --head <branch> --state all` and fires `PR READY #n` when a PR turns non-draft or merged, whatever the screen shows.
+
 It polls every 30 s, for up to 2 h, and exits (which wakes the boss) when:
-- a **new** `SUPERSET_WORKER_DONE` or `SUPERSET_WORKER_BLOCKED` appears (found anywhere on a line, including inside Claude Code's reply box, with the side pane stripped), compared by its `task:` value, so old envelopes in scrollback don't count and `<placeholder>` templates are skipped;
+- a **new** `SUPERSET_WORKER_DONE` or `SUPERSET_WORKER_BLOCKED` appears (inside Claude Code's reply box, side pane stripped, on one line or split over two), counted only when the token is directly followed by `task: <id>`, so prose that merely mentions it never fires; compared by `task:` value, so old envelopes in scrollback don't count and `<placeholder>` templates are skipped;
+- with a `<branch>`, a PR on it becomes non-draft or merged (`PR READY #n`);
 - the agent's state becomes `blocked`;
 - the agent sits idle on an unchanged screen for 3 polls.
 
@@ -322,7 +325,7 @@ Kits up to v0.4 kept project data inside the kit: `projects/<name>/` and `state/
 | `bin/boss-mail send \| inbox \| read \| reply \| done` | Boss mail, above |
 | `bin/boss-lesson add \| list \| promote` | Lessons, above |
 | `bin/boss-migrate [--kit DIR] [--boss ID] [--apply]` | Migration, above |
-| `bin/boss-watch-done.sh <ws> <term>` | The watcher above. Env: `BOSS_HOST` (default: first host). Needs `jq` |
+| `bin/boss-watch-done.sh <ws> <term> [<branch>]` | The watcher above; `--sig < screen` prints the envelope it would fire on (`bin/test-boss-watch.sh` checks it). Env: `BOSS_HOST` (default: first host). Needs `jq`, and `gh` for `<branch>` |
 | `bin/boss-sync.py --only=N,N [--push]` | Run inside the repo. For each listed PR (stacked ones after their base), merges `origin/<base>` into the branch in a throwaway worktree and reports `up to date`, `merged clean` or `REAL CONFLICT: files`. Dry run by default; `--push` pushes (plain push, never force). `--gen=FILES --regen="cmd"` auto-resolves conflicts only in generated files; `--if-moved` exits early when the base hasn't moved. **Use `--only` with your own PR numbers.** `--all` would push to teammates' branches |
 | `bin/boss-tasks.py [--quiet]` | Read-only tracker sync into this boss's `cache/tracker.json` (a migrated `bosses/<id>/tracker.json` is read when that is missing). Prints what changed, your open tasks, team P0/P1 and In Review |
 | `bin/boss-deck-data.py [--session-start] [--workspace ID] [--cwd DIR] [--selftest]` | Prints the JSON the pane draws, and writes this boss's heartbeat. `--session-start` (the pane's first refresh) also marks a new session and renames this boss's Paradev workspace to `BOSS`. `--workspace` and `--cwd` are what the pane passes so it resolves the same boss as the session. `--selftest` runs its checks |
