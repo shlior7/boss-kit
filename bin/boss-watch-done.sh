@@ -8,12 +8,13 @@
 #     screen loses its first line before a 20 s poll sees it.
 # So: (a) `sig` strips the box and side pane, joins the token with the next non-empty line, and counts an envelope only when
 # the token is directly followed by `task: <id>` (prose like "the SUPERSET_WORKER_DONE envelope for task x" never fires;
-# templates with <placeholder> fields are skipped); (b) the optional <branch> adds a check that does not depend on the screen:
+# templates whose field value is <placeholder> or literally "..." are skipped); (b) the optional <branch> adds a check that does not depend on the screen:
 # about every 3rd poll, `gh pr list --head <branch> --state all` fires "PR READY #n" when a PR becomes non-draft or merged
 # and was not so at start (run from the repo, or set GH_REPO).
 # Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen, 18 (6 min) if a background shell or monitor runs; envelopes fire at once, so a long fallback costs nothing.
 # Env: BOSS_HOST (default: first host). Poll 20 s, timeout 3 h. Needs superset CLI, jq (gh for <branch>).
-# `boss-watch-done.sh --sig < screen` prints "DONE|<id>" or "BLOCKED|<id>" for the latest envelope, nothing if none (bin/test-boss-watch.sh).
+# `sig` is "DONE|<id>|<first 30 chars of summary>" (or BLOCKED), so a new envelope with an already-seen task id still differs from the
+# baseline (a dispatch message that quotes the done-message once poisoned it). `boss-watch-done.sh --sig < screen` prints it, nothing if none (bin/test-boss-watch.sh).
 sig(){ awk '{ gsub(/││.*$/, ""); gsub(/[│╭╮╰╯⏺]/, " "); l[NR]=$0 }
   END { for (n = NR; n > 0; n--) if (match(l[n], /SUPERSET_WORKER_(DONE|BLOCKED)/)) {
     k = substr(l[n], RSTART + 16, RLENGTH - 16); r = substr(l[n], RSTART + RLENGTH)
@@ -21,9 +22,10 @@ sig(){ awk '{ gsub(/││.*$/, ""); gsub(/[│╭╮╰╯⏺]/, " "); l[NR]=$0
     if (m <= NR) r = r " " l[m]
     if (r !~ /^[ \t]*task:[ \t]*[A-Za-z0-9._-]/) continue
     b = ""; for (i = n; i <= n + 6 && i <= NR; i++) b = b " " l[i]
-    if (b ~ /(task|summary|files|checks|proof|handoff|reason|needs):? *<[a-z]/) continue
+    if (b ~ /(task|summary|files|checks|proof|handoff|reason|needs):? *(<[a-z]|\.\.\.)/) continue
     sub(/^[ \t]*task:[ \t]*/, "", r); sub(/[^A-Za-z0-9._-].*$/, "", r)
-    print k "|" r; exit } }'; }
+    su = ""; if (match(b, /summary:? +/)) { su = substr(b, RSTART + RLENGTH, 30); gsub(/[ \t]+/, " ", su) }
+    print k "|" r "|" su; exit } }'; }
 [ "$1" = --sig ] && { sig; exit; }
 W=$1; T=$2; B=$3
 H=${BOSS_HOST:-$(superset hosts list --json | jq -r 'if type=="array" then .[0].id else .hosts[0].id end')}
