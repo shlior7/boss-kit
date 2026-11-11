@@ -36,6 +36,7 @@ export function workerDetails(w: Worker, screen: string): Detail[] {
     { label: 'state', value: w.state === 'working' && spin ? `working ${spin}` : w.state, color: w.state === 'blocked' ? 'error' : undefined },
     { label: 'branch', value: w.branch || '—' },
   ]
+  if (w.taskText && w.taskText !== w.task) rows.unshift({ label: 'task', value: w.taskText })
   if (doing) rows.push({ label: 'doing', value: doing })
   if (said && said !== doing) rows.push({ label: 'said', value: said })
   if (envelope) rows.push({ label: 'last', value: envelope, color: envelope.startsWith('blocked') ? 'error' : undefined })

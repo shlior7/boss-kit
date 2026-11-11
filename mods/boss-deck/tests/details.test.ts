@@ -62,3 +62,9 @@ test('the footer drops the tracker when none is synced, and spells out counts', 
   expect(footer({ board: {}, lessonsNew: 1 })).toBe('1 new shared lesson')
   expect(footer({ board: { mine: 6, p1: 2, inProgress: 1 }, lessonsNew: 2 })).toBe('tracker: 6 mine · 2 P0/P1 · 1 in progress · 2 new shared lessons')
 })
+
+test("a worker's details keep the ledger's whole task cell", () => {
+  const rows = workerDetails({ ...worker, task: 'retry-43', taskText: 'retry-43 (queued after fix-42)' }, '')
+  expect(rows[0]).toEqual({ label: 'task', value: 'retry-43 (queued after fix-42)' })
+  expect(workerDetails(worker, '').some(r => r.label === 'task')).toBe(false)
+})

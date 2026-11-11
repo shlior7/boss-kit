@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 KIT = os.environ.get("BOSS_KIT_HOME") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STALE_S = 1800                      # a boss with no heartbeat for 30 min is not live
+PRUNE_S = 7 * 86400                 # a registry entry silent for a week is dropped on the next write
 SHARED_BUDGET_LINES, SHARED_RECENT = 150, 20
 HEADING = re.compile(r"^## (\d+)\. (.*)$", re.M)
 
@@ -76,9 +77,14 @@ def project_name(cwd=None, h=None):
              % (wt, ", ".join(names) or "none"))
 
 
-def boss_id(cwd=None):
-    """The Paradev workspace id when running inside one, else a short hash of the worktree path."""
-    return os.environ.get("SUPERSET_WORKSPACE_ID") or "wt-" + hashlib.sha1(worktree(cwd).encode()).hexdigest()[:8]
+def boss_id(cwd=None, h=None):
+    """The Paradev workspace id when running inside one, else the workspace this worktree registered
+    under (a process started without the workspace's env, like a mod's), else a short hash of the path."""
+    if os.environ.get("SUPERSET_WORKSPACE_ID"):
+        return os.environ["SUPERSET_WORKSPACE_ID"]
+    wt = worktree(cwd)
+    known = [(b.get("heartbeat", 0), i) for i, b in registry(h).items() if b.get("worktree") == wt and b.get("workspace") == i]
+    return max(known)[1] if known else "wt-" + hashlib.sha1(wt.encode()).hexdigest()[:8]
 
 
 def load(cwd=None, name=None):
@@ -87,11 +93,12 @@ def load(cwd=None, name=None):
     pdir = os.path.join(h, name)
     with open(os.path.join(pdir, "config.json")) as f:
         cfg = json.load(f)
-    bid = boss_id(cwd)
+    bid = boss_id(cwd, h)
     bdir = os.path.join(pdir, "bosses", bid)
     for d in ("cache", "inbox/done"):
         os.makedirs(os.path.join(bdir, d), exist_ok=True)
     return SimpleNamespace(home=h, name=name, cfg=cfg, pdir=pdir, bid=bid, bdir=bdir, worktree=worktree(cwd),
+                           workspace="" if bid.startswith("wt-") else bid,
                            cache=os.path.join(bdir, "cache"), inbox=os.path.join(bdir, "inbox"))
 
 
@@ -113,18 +120,38 @@ def save_json(path, data):
 
 
 def heartbeat(ctx, host="", summary=None, now=None):
+    """Write this boss's entry, dropping entries silent past PRUNE_S and any other entry for this
+    boss's workspace or worktree (an id it was once known by)."""
     # ponytail: read-modify-write without a lock; a lost heartbeat is rewritten on the next refresh
     os.makedirs(ctx.home, exist_ok=True)
-    reg = registry(ctx.home)
-    reg[ctx.bid] = {"project": ctx.name, "workspace": os.environ.get("SUPERSET_WORKSPACE_ID", ""),
-                    "worktree": ctx.worktree, "host": host, "heartbeat": int(now or time.time()), **(summary or {})}
+    now = int(now or time.time())
+    reg = {i: b for i, b in registry(ctx.home).items()
+           if i != ctx.bid and now - b.get("heartbeat", 0) < PRUNE_S and not same_boss(b, ctx.workspace, ctx.worktree)}
+    reg[ctx.bid] = {"project": ctx.name, "workspace": ctx.workspace, "worktree": ctx.worktree, "host": host,
+                    "heartbeat": now, **(summary or {})}
     save_json(os.path.join(ctx.home, "bosses.json"), reg)
+
+
+def same_boss(entry, workspace, wt):
+    """Whether a registry entry names the boss of this workspace or worktree."""
+    return bool((workspace and entry.get("workspace") == workspace) or (wt and entry.get("worktree") == wt))
 
 
 def live(reg, now=None, project=None):
     now = now or time.time()
     return {i: b for i, b in reg.items()
             if now - b.get("heartbeat", 0) < STALE_S and (project is None or b.get("project") == project)}
+
+
+def tracker_snapshot(ctx):
+    """The tracker snapshot boss-tasks.py last wrote: cache/tracker.json, else the pre-0.5 one a
+    migration left in the boss dir. None when there is neither."""
+    for path in (os.path.join(ctx.cache, "tracker.json"), os.path.join(ctx.bdir, "tracker.json")):
+        try:
+            return json.load(open(path))
+        except (OSError, ValueError):
+            continue
+    return None
 
 
 # ---- lessons --------------------------------------------------------------------------------

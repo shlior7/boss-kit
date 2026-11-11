@@ -7,9 +7,11 @@ open PRs (cached 5 min so a 60 s refresh stays cheap), the tracker snapshot boss
 this boss's inbox, and the registry of other bosses. Each run is also this boss's heartbeat.
 Paths and project resolution: bin/bosskit.py.
 
-usage: boss-deck-data.py [--session-start] [--selftest]
+usage: boss-deck-data.py [--session-start] [--workspace ID] [--cwd DIR] [--selftest]
   --session-start: also mark this boss's new session (the base for "N new shared lessons"), and
                    rename this boss's own Paradev workspace to BOSS
+  --workspace, --cwd: the session's workspace id and directory, which the mod passes so its process
+                      resolves the same boss as the session's shell
 """
 import json
 import os
@@ -80,17 +82,31 @@ def ledger_tasks(path):
         ws = re.match(r"(?:NEW )?([0-9a-f]{8})", cols[3])
         if not ws:
             continue
-        task = cols[2].split(":", 1)[0].strip()
+        text = cols[2].strip()
         status = (cols[5].split()[0] if cols[5] else "?").rstrip(",:")
         # A Proof column (6th), or "proof: <url>" anywhere in the row.
         # Optional columns: Proof (6th), Boss (7th). Old rows have neither and still parse.
         proof = proof_links(" ".join(cols[6:7]) + " " + " ".join(re.findall(r"proof:\s*(\S+)", line)))
         boss = cols[7] if len(cols) >= 9 else ""
-        rows.append(((cols[1], prepends, -i if prepends else i), ws.group(1), task, status, cols[1], proof, boss))
+        rows.append(((cols[1], prepends, -i if prepends else i), ws.group(1), text, status, cols[1], proof, boss))
     tasks = {}
-    for _, prefix, task, status, date, proof, boss in sorted(rows, reverse=True, key=lambda r: r[0]):
-        tasks.setdefault(prefix, (task, status, date, proof, boss))
+    for _, prefix, text, status, date, proof, boss in sorted(rows, reverse=True, key=lambda r: r[0]):
+        tasks.setdefault(prefix, (task_id(text), status, date, proof, boss, text))
     return dict(sorted(tasks.items(), key=lambda kv: kv[1][2], reverse=True))
+
+
+def task_id(text):
+    """A ledger task cell's id, its first token: "fix-42 (queued after fix-41)" or "fix-42: x" -> "fix-42"."""
+    return re.split(r"[\s:]+", text.strip())[0] or "?"
+
+
+def repo_tag(repo, aliases=None):
+    """A short tag for a PR's repo: config's repo_aliases entry, else the first letter of each word of
+    its last path segment ("acme/widgets-sdk" -> "ws")."""
+    if (aliases or {}).get(repo):
+        return aliases[repo]
+    words = re.split(r"[-_.\s]+", repo.rsplit("/", 1)[-1])
+    return "".join(w[0] for w in words if w).lower() or repo
 
 
 def watchers():
@@ -190,11 +206,11 @@ def prs(cfg, cache_dir):
     return rows
 
 
-def board(cfg, cache_dir):
-    try:
-        tasks = json.load(open(os.path.join(cache_dir, "tracker.json"))).values()
-    except (OSError, ValueError):
+def board(cfg, snapshot):
+    """Counts of my open tracker tasks, from boss-tasks.py's snapshot."""
+    if not isinstance(snapshot, dict):
         return {}
+    tasks = snapshot.values()
     me = (cfg.get("tracker") or {}).get("assignee")
     mine = [t for t in tasks if t.get("assignee") == me and t.get("status") not in ("Done", "Cancelled")]
     return {
@@ -255,23 +271,39 @@ def lessons_new(home, bdir, session_start=False):
     return max(0, count - seen.get("base", count))
 
 
-def others(reg, me, now=None):
-    """One summary per other live boss, for the pane's quiet lines."""
+def others(reg, me, now=None, workspace="", wt=""):
+    """One summary per other live boss, for the pane's quiet lines: never this boss (by id, workspace
+    or worktree), and one per workspace, its newest heartbeat."""
+    best = {}
+    for i, b in bosskit.live(reg, now).items():
+        if i == me or bosskit.same_boss(b, workspace, wt):
+            continue
+        k = b.get("workspace") or i
+        if k not in best or b.get("heartbeat", 0) > best[k][1].get("heartbeat", 0):
+            best[k] = (i, b)
     return [{"id": i, "project": b.get("project", ""), "workspace": b.get("workspace", ""),
              "working": b.get("working", 0), "forYou": b.get("forYou", 0)}
-            for i, b in sorted(bosskit.live(reg, now).items()) if i != me]
+            for i, b in sorted(best.values(), key=lambda ib: ib[0])]
+
+
+def arg(name):
+    """The value after *name* on the command line, or None."""
+    return sys.argv[sys.argv.index(name) + 1] if name in sys.argv[:-1] else None
 
 
 def main():
-    ctx = bosskit.load()
+    if arg("--workspace"):
+        os.environ["SUPERSET_WORKSPACE_ID"] = arg("--workspace")
+    ctx = bosskit.load(arg("--cwd"))
     cfg = ctx.cfg
     tasks = ledger_tasks(os.path.join(ctx.pdir, cfg.get("ledger", "ledger.md")))
-    armed = watchers()
+    # Watchers are host-wide; keep this project's (its ledger names the workspace), not another boss's.
+    armed = [w for w in watchers() if w["ws"][:8] in tasks]
     spaces = snapshot(cfg)
     by_prefix = {w["id"][:8]: w for w in spaces}
     watched = {w["ws"][:8] for w in armed}
     workers = []
-    for prefix, (task, status, date, proof, boss) in list(tasks.items()):
+    for prefix, (task, status, date, proof, boss, text) in list(tasks.items()):
         if boss and boss != ctx.bid:
             continue  # another boss's dispatch
         if len(workers) >= MAX_WORKERS and prefix not in watched:
@@ -285,7 +317,7 @@ def main():
         workers.append({
             "ws": prefix, "id": (w or {}).get("id", ""), "term": agents[0]["id"] if agents else "",
             "name": (w or {}).get("name", "?")[:28], "branch": (w or {}).get("branch", ""),
-            "task": task, "ledger": status, "date": date, "state": state, "watched": prefix in watched,
+            "task": task, "taskText": text, "ledger": status, "date": date, "state": state, "watched": prefix in watched,
             "proof": proof,
         })
     states = {w["ws"]: w["state"] for w in workers}
@@ -293,6 +325,8 @@ def main():
         idle = states.get(w["ws"][:8]) not in ("working", None)
         w["stale"] = w["ageS"] > STALE_AGE_S or (idle and w["ageS"] > IDLE_STALE_S)
     pr_rows = prs(cfg, ctx.cache)
+    for p in pr_rows:
+        p["tag"] = repo_tag(p["repo"], cfg.get("repo_aliases"))
     try:
         now_line = open(os.path.join(ctx.bdir, "next.txt")).read().strip().splitlines()[0][:120]
     except (OSError, IndexError):
@@ -312,8 +346,8 @@ def main():
         name_boss_workspace(cfg)
     print(json.dumps({
         "at": int(time.time()), "me": {"id": ctx.bid, "project": ctx.name}, "next": now_line, "review": review,
-        "attention": todo, "workers": workers, "watchers": armed, "prs": pr_rows, "board": board(cfg, ctx.cache),
-        "others": others(bosskit.registry(ctx.home), ctx.bid), "mail": mail(ctx.inbox),
+        "attention": todo, "workers": workers, "watchers": armed, "prs": pr_rows, "board": board(cfg, bosskit.tracker_snapshot(ctx)),
+        "others": others(bosskit.registry(ctx.home), ctx.bid, workspace=ctx.workspace, wt=ctx.worktree), "mail": mail(ctx.inbox),
         "lessonsNew": lessons_new(ctx.home, ctx.bdir, "--session-start" in sys.argv),
     }))
 
@@ -347,10 +381,16 @@ if __name__ == "__main__":
                     "| 2026-01-02 | fix-42: do it | 1a2b3c4d / 5e6f | mid | DISPATCHED, watcher armed | https://app.superset.sh/page/p42 |\n"
                     "| 2026-01-01 | old-41: older | 1a2b3c4d / 5e6f | mid | DONE |\n")
         assert ledger_tasks(f.name) == {"1a2b3c4d": ("fix-42", "DISPATCHED", "2026-01-02",
-                                                     [{"label": "page", "url": "https://app.superset.sh/page/p42"}], "")}, ledger_tasks(f.name)
+                                                     [{"label": "page", "url": "https://app.superset.sh/page/p42"}], "", "fix-42: do it")}, ledger_tasks(f.name)
         with open(f.name, "a") as g:  # a newer row with a Boss column, for another boss
             g.write("| 2026-01-03 | fix-43: next | 1a2b3c4d / 5e6f | mid | DISPATCHED | | boss-b |\n")
         assert ledger_tasks(f.name)["1a2b3c4d"][4] == "boss-b"
+        with open(f.name, "a") as g:  # a task cell carrying the ledger's note
+            g.write("| 2026-01-04 | fix-44 (queued after fix-43) | 1a2b3c4d / 5e6f | mid | QUEUED |\n")
+        assert ledger_tasks(f.name)["1a2b3c4d"][0] == "fix-44" and ledger_tasks(f.name)["1a2b3c4d"][5] == "fix-44 (queued after fix-43)"
+        assert task_id("") == "?"
+        assert repo_tag("acme/widgets-sdk") == "ws" and repo_tag("acme/widgets") == "w" and repo_tag("acme/web_app.v2") == "wav"
+        assert repo_tag("acme/widgets-sdk", {"acme/widgets-sdk": "m"}) == "m" and repo_tag("acme/x", {"acme/y": "z"}) == "x"
         now = time.time()
         reg = {"me": {"project": "a", "heartbeat": now}, "b": {"project": "b", "workspace": "ws-b", "heartbeat": now - 60,
                "working": 2, "forYou": 1}, "old": {"project": "c", "heartbeat": now - 4000}}

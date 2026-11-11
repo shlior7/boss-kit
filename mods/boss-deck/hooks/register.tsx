@@ -13,7 +13,7 @@ const REFRESH_MS = 60_000
 // A PR untouched this long folds into one 'stale' line.
 const STALE_PR_DAYS = 10
 // Change a tag when its value's fields change: it declines what an earlier version stored.
-const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-6' })
+const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-7' })
 const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-3' })
 
 // Quiet by design: grey by default, color only for what needs attention.
@@ -41,7 +41,9 @@ const prStatus = (p: Pr) =>
   : p.review ? 'review' : ''
 
 async function refresh($: EngineInterface, sessionStart = false) {
-  const argv = sessionStart ? [...DATA_CMD, '--session-start'] : DATA_CMD
+  // The session's own workspace and directory, so the script resolves the boss the session's shell does.
+  const ws = await $.env.get('SUPERSET_WORKSPACE_ID')
+  const argv = [...DATA_CMD, '--cwd', await $.session.cwd(), ...(ws ? ['--workspace', ws] : []), ...(sessionStart ? ['--session-start'] : [])]
   const { exitCode, stdout, stderr } = await $.process.run(argv, { timeoutMs: 90_000 })
   const at = Math.floor((await $.clock.now()) / 1000)
   const fresh: Deck =
@@ -49,9 +51,6 @@ async function refresh($: EngineInterface, sessionStart = false) {
       ? JSON.parse(stdout)
       : { at, next: '', attention: [], workers: [], watchers: [], prs: [], board: {}, error: stderr.slice(0, 200) }
   await update($, deck, () => fresh)
-  const act = fresh.attention.filter(a => a.level === 'act').length
-  const working = fresh.workers.filter(w => w.state === 'working').length
-  await $.ui.status(`boss · ${working} working${act ? ` · ${act} for you` : ''}`)
 }
 
 async function openUrl($: EngineInterface, url: string) {
@@ -231,7 +230,7 @@ export const register: Register = on => {
 
     const pr = ([p, depth]: [Pr, number]) => {
       const color = prColor(p)
-      const tag = p.primary ? `#${p.num}` : `${p.repo.split('/')[1] ?? p.repo}#${p.num}`
+      const tag = p.primary ? `#${p.num}` : `${p.tag ?? p.repo}#${p.num}`
       const key = `p-${p.repo}-${p.num}`
       return (
         <Box flexDirection="column">
@@ -241,7 +240,9 @@ export const register: Register = on => {
             {cell(
               7,
               <Button plain key={key} onPress={() => void toggle($, key, () => prPeek($, p))}>
-                <Text bold={shown?.key === key}>{tag}</Text>
+                <Text bold={shown?.key === key} wrap="truncate-end">
+                  {tag}
+                </Text>
               </Button>,
             )}
             {cell(11, text(prStatus(p), !color, color))}

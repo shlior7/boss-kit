@@ -3,7 +3,8 @@
 
 Pulls every task, saves a snapshot, and prints what changed since
 the last run plus the open work that matters: my open tasks, P0/P1 across the team, In Review.
-The snapshot is per boss: $BOSS_HOME/<project>/bosses/<id>/cache/tracker.json.
+The snapshot is per boss: $BOSS_HOME/<project>/bosses/<id>/cache/tracker.json (a pre-0.5
+bosses/<id>/tracker.json left by boss-migrate is read when that is missing).
 
 Configured by `tracker` in $BOSS_HOME/<project>/config.json:
   {"type": "none"}                          -> prints a note and exits 0
@@ -54,10 +55,7 @@ def main():
     now = {t["id"]: {k: t.get(k) for k in TRACKED} | {
         "prs": sorted(set(re.findall(r"pull/(\d+)", (t.get("description") or "") + (t.get("body") or ""))))}
         for t in tasks}
-    try:
-        before = json.load(open(state))
-    except (OSError, ValueError):
-        before = None
+    before = bosskit.tracker_snapshot(ctx)
 
     def line(i, t):
         prs = f" PR#{',#'.join(t['prs'])}" if t["prs"] else ""
