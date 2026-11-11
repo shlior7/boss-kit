@@ -32,6 +32,7 @@ you ──► boss session ──dispatch──► worker A (workspace, branch, 
 - The Paradev (Superset) CLI 2.x, signed in (`superset --help`, `superset hosts list --json`)
 - `gh` (signed in), `git`, `jq`, Python 3.10+, macOS or Linux
 - Optional: a tracker endpoint and token (see `bin/boss-tasks.py`)
+- Optional: the **demo-recorder** Claude Code plugin, for UI proof. It records a narrated demo video of a flow in a running app and can post it to the PR (`/demo-recorder`). Without it, UI work proves itself with screenshots of each step on a Superset page.
 
 ## Install
 
@@ -118,6 +119,7 @@ A prompt names the task id, the objective, the files it may touch, how to verify
 Task id: fix-42 (PR #42 acme/widgets, branch fix/retry-backoff, this workspace).
 Goal: the retry loop honours Retry-After. Add a regression test that fails when reverted.
 Merge origin/main first (merge, never rebase or force). Run `make test`. Plain push.
+Proof: a Superset page with the test run, before and after, and the revert-proves-red output; link it in a PR comment.
 Files you may touch: src/http/** and tests/http/** only. Do not broaden scope.
 
 End your final message with exactly this envelope, each field on its own line, starting at column 0:
@@ -126,6 +128,7 @@ task: fix-42
 summary: <one line>
 files: <paths>
 checks: <commands and outcomes, incl. revert-proves-red>
+proof: <demo video and page URLs, or none: <why>>
 handoff: <head sha, CI state>
 or, if blocked:
 SUPERSET_WORKER_BLOCKED
@@ -147,7 +150,21 @@ It polls every 30 s, for up to 2 h, and exits (which wakes the boss) when:
 
 It skips envelope templates whose fields still read `<placeholder>`, so the prompt you just sent never fires it.
 
-**3. Verify.** The boss never trusts a DONE blindly. It reads the PR on GitHub (head sha against the worker's claim; CI failures and pending counted separately; mergeable), re-runs the regression test with the fix reverted when the change is risky, updates the ledger, and reports.
+**3. Verify.** The boss never trusts a DONE blindly. It opens every URL in `proof:` and checks it shows this change. It reads the PR on GitHub (head sha against the worker's claim; CI failures and pending counted separately; mergeable), re-runs the regression test with the fix reverted when the change is risky, updates the ledger, and reports.
+
+## Proof and reviews
+
+Every DONE carries a `proof:` field:
+
+| Change | Proof |
+|---|---|
+| UI | a demo from `/demo-recorder` (posted to the PR), or screenshots on a Superset page without the plugin |
+| Backend | a Superset page: tests run, before/after, the revert-proves-red output |
+| Read-only or docs | `proof: none: <why>` |
+
+Workers also post the links in a PR comment. The boss opens each one before believing it, and records them in the ledger's Proof column.
+
+After a batch of merges, or when you ask, the boss publishes a **review page**: the stack, what merged, what each PR proved (linked), open risks, and next actions. It uses `superset pages publish`, or a claude.ai artifact when that is what the session has, and writes the URL to `state/<name>/review.txt` for the pane.
 
 ## Scripts
 
@@ -164,8 +181,9 @@ It skips envelope templates whose fields still read `<placeholder>`, so the prom
 A quiet pane: grey by default, color only for what needs you.
 
 ```
+review ↗ 2026-01-02
 Wait for review on #42; fix-57 running
-› #57 approved + green: ready to merge
+› #57 approved + green: ready to merge (no proof)
 
 WORKERS                          1 working · 1 watched
 ● api-retries          fix-42
@@ -174,7 +192,7 @@ WORKERS                          1 working · 1 watched
 PULL REQUESTS                        2 open · 1 draft
 ✓ #42     → jane     retry loop honours Retry-After
 ✓   └ #43 draft      backoff jitter
-✓ #57     approved   login rate limit
+✓ #57     no proof   login rate limit
 
 tracker 6 mine · 2 P1 · 1 active                  12s
 ```
@@ -182,8 +200,10 @@ tracker 6 mine · 2 P1 · 1 active                  12s
 - **The top line** is the boss's last "Your move", read from `state/<name>/next.txt`.
 - **Press a workspace name** to open it in the Paradev app (`superset workspaces open`). Keys `1`–`9` do the same once the pane has focus.
 - **Press a task** for a summary: state and elapsed time, branch, what it's doing, its last envelope, context use (yellow at 60% or more), watcher.
-- **Press a PR number** for CI (pass / fail / pending with the failing names), mergeability, reviews, size and head, plus "open on GitHub".
-- **PR status colors:** green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. Stacked PRs nest under their base. PRs idle for 10+ days fold into one line.
+- **Press a PR number** for CI (pass / fail / pending with the failing names), mergeability, reviews, size and head, plus "open on GitHub" and its proof: `demo ↗`, `page ↗`, `artifact ↗`. Links are taken from the PR body and comments: Superset pages, claude.ai artifacts, video files, GitHub attachments and Loom.
+- A worker's summary also lists its proof (`proof ↗ page`), from the ledger's Proof column.
+- **`review ↗ <date>`** at the top opens the latest review page (`state/<name>/review.txt`).
+- **PR status colors:** green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. Stacked PRs nest under their base. PRs idle for 10+ days fold into one line.
 - **Refresh:** every 60 s, plus right after the boss dispatches, merges, comments or syncs. `/boss-deck` refreshes on demand. The status line shows `boss · N working · N for you`.
 
 ## Safety rules (from the template; worth knowing before you start)

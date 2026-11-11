@@ -24,7 +24,26 @@ MAX_WORKERS = 8
 STALE_AGE_S = 7200
 IDLE_STALE_S = 1800
 PR_FIELDS = ("number,title,isDraft,reviewDecision,mergeable,statusCheckRollup,reviewRequests,"
-             "url,baseRefName,headRefName,updatedAt")
+             "url,baseRefName,headRefName,updatedAt,body,comments")
+# Proof links a PR or a ledger row can carry: a published page, an artifact, a demo video.
+URL_RE = re.compile(r"https?://[^\s)<>\]\"']+")
+PROOF_KINDS = (
+    ("page", re.compile(r"^https://app\.superset\.sh/page/")),
+    ("artifact", re.compile(r"^https://claude\.ai/(?:code/)?artifact/")),
+    ("demo", re.compile(r"(?:\.(?:mp4|webm|mov|gif)(?:\?|$))|^https://github\.com/user-attachments/assets/|^https://(?:www\.)?loom\.com/share/")),
+)
+
+
+def proof_links(text):
+    """[{label, url}] for every proof link in *text*, deduplicated, in order of appearance."""
+    out, seen = [], set()
+    for url in URL_RE.findall(text or ""):
+        url = url.rstrip(".,;:")
+        kind = next((k for k, rx in PROOF_KINDS if rx.search(url)), None)
+        if kind and url not in seen:
+            seen.add(url)
+            out.append({"label": kind, "url": url})
+    return out
 
 
 def run(argv, timeout=40):
@@ -58,10 +77,12 @@ def ledger_tasks(path):
             continue
         task = cols[2].split(":", 1)[0].strip()
         status = (cols[5].split()[0] if cols[5] else "?").rstrip(",:")
-        rows.append(((cols[1], prepends, -i if prepends else i), ws.group(1), task, status, cols[1]))
+        # A Proof column (6th), or "proof: <url>" anywhere in the row.
+        proof = proof_links(" ".join(cols[6:-1]) + " " + " ".join(re.findall(r"proof:\s*(\S+)", line)))
+        rows.append(((cols[1], prepends, -i if prepends else i), ws.group(1), task, status, cols[1], proof))
     tasks = {}
-    for _, prefix, task, status, date in sorted(rows, reverse=True):
-        tasks.setdefault(prefix, (task, status, date))
+    for _, prefix, task, status, date, proof in sorted(rows, reverse=True, key=lambda r: r[0]):
+        tasks.setdefault(prefix, (task, status, date, proof))
     return dict(sorted(tasks.items(), key=lambda kv: kv[1][2], reverse=True))
 
 
@@ -121,7 +142,9 @@ def ci_summary(rollup):
 
 
 def pr_row(repo, p, primary):
+    text = " ".join([p.get("body") or ""] + [c.get("body") or "" for c in p.get("comments") or []])
     return {
+        "proof": proof_links(text),
         "repo": repo, "primary": primary, "num": p["number"], "title": p["title"][:60],
         "draft": p.get("isDraft", False), "review": p.get("reviewDecision") or "",
         "merge": p.get("mergeable") or "", "ci": ci_summary(p.get("statusCheckRollup")),
@@ -183,7 +206,8 @@ def attention(workers, armed, prs):
         if p["ci"] == "red" and not p["draft"]:
             items.append({"level": "act", "text": f"{tag} CI red"})
         elif p["review"] == "APPROVED" and p["ci"] == "green" and not p["draft"]:
-            items.append({"level": "act", "text": f"{tag} approved + green: ready to merge"})
+            items.append({"level": "act", "text": f"{tag} approved + green: ready to merge"
+                          + ("" if p.get("proof") else " (no proof)")})
     order = {"act": 0, "check": 1}
     return sorted(items, key=lambda i: order[i["level"]])
 
@@ -196,7 +220,7 @@ def main():
     by_prefix = {w["id"][:8]: w for w in spaces}
     watched = {w["ws"][:8] for w in armed}
     workers = []
-    for prefix, (task, status, date) in list(tasks.items()):
+    for prefix, (task, status, date, proof) in list(tasks.items()):
         if len(workers) >= MAX_WORKERS and prefix not in watched:
             continue
         w = by_prefix.get(prefix)
@@ -209,6 +233,7 @@ def main():
             "ws": prefix, "id": (w or {}).get("id", ""), "term": agents[0]["id"] if agents else "",
             "name": (w or {}).get("name", "?")[:28], "branch": (w or {}).get("branch", ""),
             "task": task, "ledger": status, "date": date, "state": state, "watched": prefix in watched,
+            "proof": proof,
         })
     states = {w["ws"]: w["state"] for w in workers}
     for w in armed:
@@ -219,8 +244,15 @@ def main():
         now_line = open(os.path.join(sdir, "next.txt")).read().strip().splitlines()[0][:120]
     except (OSError, IndexError):
         now_line = ""
+    review = None
+    rpath = os.path.join(sdir, "review.txt")
+    try:
+        url = open(rpath).read().split()[0]
+        review = {"url": url, "date": time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(rpath)))}
+    except (OSError, IndexError):
+        pass
     print(json.dumps({
-        "at": int(time.time()), "next": now_line, "attention": attention(workers, armed, pr_rows),
+        "at": int(time.time()), "next": now_line, "review": review, "attention": attention(workers, armed, pr_rows),
         "workers": workers, "watchers": armed, "prs": pr_rows, "board": board(cfg, sdir),
     }))
 
@@ -234,13 +266,27 @@ if __name__ == "__main__":
         w = {"name": "pr-1", "task": "t", "state": "idle", "ledger": "DISPATCHED", "watched": False}
         p = {"num": 9, "repo": "acme/widgets", "primary": True, "ci": "green", "review": "APPROVED", "draft": False}
         got = [i["text"] for i in attention([w], [], [p])]
-        assert got == ["#9 approved + green: ready to merge", "pr-1: idle, t has no watcher"], got
+        assert got == ["#9 approved + green: ready to merge (no proof)", "pr-1: idle, t has no watcher"], got
+        p["proof"] = [{"label": "page", "url": "https://app.superset.sh/page/x"}]
+        assert attention([], [], [p])[0]["text"] == "#9 approved + green: ready to merge"
+        text = ("Demo: https://github.com/user-attachments/assets/ab12 and page https://app.superset.sh/page/fix-42-ab3d. "
+                "Also (https://claude.ai/code/artifact/9f2e), a clip https://cdn.example.com/run.mp4?x=1, "
+                "plus junk: https://github.com/acme/widgets/pull/42 https://example.com/img.png and again "
+                "https://app.superset.sh/page/fix-42-ab3d.")
+        assert [(x["label"], x["url"]) for x in proof_links(text)] == [
+            ("demo", "https://github.com/user-attachments/assets/ab12"),
+            ("page", "https://app.superset.sh/page/fix-42-ab3d"),
+            ("artifact", "https://claude.ai/code/artifact/9f2e"),
+            ("demo", "https://cdn.example.com/run.mp4?x=1"),
+        ], proof_links(text)
+        assert proof_links("") == [] and proof_links(None) == []
         import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
             f.write("## Dispatches 2026-01-02\n\n| Date | Task | WS | Model | Status |\n|---|---|---|---|---|\n"
-                    "| 2026-01-02 | fix-42: do it | 1a2b3c4d / 5e6f | mid | DISPATCHED, watcher armed |\n"
+                    "| 2026-01-02 | fix-42: do it | 1a2b3c4d / 5e6f | mid | DISPATCHED, watcher armed | https://app.superset.sh/page/p42 |\n"
                     "| 2026-01-01 | old-41: older | 1a2b3c4d / 5e6f | mid | DONE |\n")
-        assert ledger_tasks(f.name) == {"1a2b3c4d": ("fix-42", "DISPATCHED", "2026-01-02")}, ledger_tasks(f.name)
+        assert ledger_tasks(f.name) == {"1a2b3c4d": ("fix-42", "DISPATCHED", "2026-01-02",
+                                                     [{"label": "page", "url": "https://app.superset.sh/page/p42"}])}, ledger_tasks(f.name)
         print("ok")
     else:
         main()

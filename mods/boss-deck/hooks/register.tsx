@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Deck, Detail, Pr, Worker } from '../types'
-import { prDetails, stack, workerDetails } from './details'
+import type { Deck, Detail, Pr, ProofLink, Worker } from '../types'
+import { needsProof, prDetails, stack, workerDetails } from './details'
 import type { PrView } from './details'
 
 const PANE = 'boss-deck'
@@ -13,8 +13,8 @@ const REFRESH_MS = 60_000
 // A PR untouched this long folds into one 'stale' line.
 const STALE_PR_DAYS = 10
 // Change a tag when its value's fields change: it declines what an earlier version stored.
-const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-4' })
-const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-2' })
+const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-5' })
+const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-3' })
 
 // Quiet by design: grey by default, color only for what needs attention.
 const STATE_MARK: Record<string, string> = { working: '●', idle: '·', blocked: '■' }
@@ -27,12 +27,14 @@ const who = (login: string) => (login.includes('-') ? 'team' : (login.match(/^[A
 const shortTitle = (t: string) => t.replace(/^\w+\([^)]*\): /, '').replace(/ #[\w-]+$/, '')
 const prColor = (p: Pr) =>
   p.ci === 'red' ? 'error'
+  : needsProof(p) ? 'warning'
   : p.draft ? 'subtle'
   : p.review === 'APPROVED' ? 'success'
   : p.merge === 'CONFLICTING' ? 'warning'
   : p.reviewers.length || p.review ? 'suggestion' : undefined
 const prStatus = (p: Pr) =>
-  p.draft ? 'draft'
+  needsProof(p) ? 'no proof'
+  : p.draft ? 'draft'
   : p.review === 'APPROVED' ? 'approved'
   : p.merge === 'CONFLICTING' ? 'conflict'
   : p.reviewers.length ? `→ ${who(p.reviewers[0] ?? '')}`
@@ -60,7 +62,11 @@ async function openWorkspace($: EngineInterface, w: Worker) {
 }
 
 /** Toggle one expanded row: a worker's or a PR's details under it. */
-async function toggle($: EngineInterface, key: string, load: () => Promise<{ rows: Detail[]; url?: string }>) {
+async function toggle(
+  $: EngineInterface,
+  key: string,
+  load: () => Promise<{ rows: Detail[]; url?: string; links?: ProofLink[] }>,
+) {
   const shown = await read($, peek)
   if (shown?.key === key) return update($, peek, () => null)
   await update($, peek, () => ({ key, rows: [{ label: '', value: 'loading…' }] }))
@@ -77,14 +83,14 @@ async function workerPeek($: EngineInterface, w: Worker) {
   try {
     screen = JSON.parse(stdout).text ?? ''
   } catch {}
-  return { rows: workerDetails(w, screen) }
+  return { rows: workerDetails(w, screen), links: w.proof }
 }
 
 async function prPeek($: EngineInterface, p: Pr) {
   const fields = 'statusCheckRollup,mergeable,mergeStateStatus,additions,deletions,changedFiles,updatedAt,headRefOid,latestReviews,reviewRequests'
   const { stdout } = await $.process.run(['gh', 'pr', 'view', String(p.num), '--repo', p.repo, '--json', fields], { timeoutMs: 30_000 })
   const v: PrView = JSON.parse(stdout)
-  return { rows: prDetails(p, v, Math.floor((await $.clock.now()) / 1000)), url: p.url }
+  return { rows: prDetails(p, v, Math.floor((await $.clock.now()) / 1000)), url: p.url, links: p.proof }
 }
 
 export const register: Register = on => {
@@ -145,7 +151,13 @@ export const register: Register = on => {
         <Text dimColor>{note}</Text>
       </Box>
     )
-    const details = (rows: Detail[], url?: string) => (
+    // A plain Button per link: terminals without OSC 8 would print a Link's whole URL.
+    const linkButton = (k: string, label: string, url: string) => (
+      <Button plain key={k} onPress={() => void openUrl($, url)}>
+        <Text color="suggestion">{label}</Text>
+      </Button>
+    )
+    const details = (rows: Detail[], url?: string, links: ProofLink[] = [], workerProof = false) => (
       <Box flexDirection="column" paddingLeft={4} marginBottom={1}>
         {rows.map(r => (
           <Box flexDirection="row">
@@ -153,6 +165,11 @@ export const register: Register = on => {
             {rest(text(r.value, !r.color, r.color))}
           </Box>
         ))}
+        {links.length > 0 && (
+          <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+            {links.map((l, i) => linkButton(`proof-${l.url}-${i}`, workerProof ? `proof ↗ ${l.label}` : `${l.label} ↗`, l.url))}
+          </Box>
+        )}
         {url && (
           <Button plain key={`gh-${url}`} onPress={() => void openUrl($, url)}>
             <Text color="suggestion">open on GitHub ↗</Text>
@@ -189,7 +206,7 @@ export const register: Register = on => {
               </Button>,
             )}
           </Box>
-          {shown?.key === `w-${w.ws}` && details(shown.rows)}
+          {shown?.key === `w-${w.ws}` && details(shown.rows, undefined, shown.links, true)}
         </Box>
       )
     }
@@ -212,7 +229,7 @@ export const register: Register = on => {
             {cell(11, text(prStatus(p), !color, color))}
             {rest(text(shortTitle(p.title), true))}
           </Box>
-          {shown?.key === key && details(shown.rows, shown.url)}
+          {shown?.key === key && details(shown.rows, shown.url, shown.links)}
         </Box>
       )
     }
@@ -220,6 +237,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" paddingX={1}>
         {d.error && text(`data error: ${d.error}`, false, 'error')}
+        {d.review && linkButton('review', `review ↗ ${d.review.date}`, d.review.url)}
         <Text bold wrap="wrap">
           {d.next || 'Nothing needs you.'}
         </Text>

@@ -104,3 +104,8 @@ export function stack(prs: Pr[]): [Pr, number][] {
   roots.filter(p => !p.draft).concat(roots.filter(p => p.draft)).forEach(p => walk(p, 0))
   return out
 }
+
+/** Ready to merge (approved, green, not a draft) but carrying no proof link: the one case the pane colors. */
+export function needsProof(p: Pr): boolean {
+  return !p.draft && p.review === 'APPROVED' && p.ci === 'green' && p.proof.length === 0
+}

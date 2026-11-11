@@ -1,9 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 
-import { prDetails, stack, workerDetails } from '../hooks/details'
+import { needsProof, prDetails, stack, workerDetails } from '../hooks/details'
 import type { Pr } from '../types'
 
-const worker = { ws: '1a2b3c4d', id: 'x', term: 'y', name: 'api', branch: 'feat/a', task: 'restack-42', ledger: 'DISPATCHED', date: '', state: 'working', watched: true }
+const worker = { ws: '1a2b3c4d', id: 'x', term: 'y', name: 'api', branch: 'feat/a', task: 'restack-42', ledger: 'DISPATCHED', date: '', state: 'working', watched: true, proof: [] }
 
 test('a worker screen becomes state, doing, context and watcher', () => {
   const screen = [
@@ -20,16 +20,25 @@ test('a worker screen becomes state, doing, context and watcher', () => {
 })
 
 test('an approval check is not a CI failure', () => {
-  const pr: Pr = { repo: 'acme/widgets', primary: true, num: 42, title: '', draft: false, review: '', merge: '', ci: 'green', reviewers: [], url: '', base: 'main', head: 'feat/b', updated: '' }
+  const pr: Pr = { repo: 'acme/widgets', primary: true, num: 42, title: '', draft: false, review: '', merge: '', ci: 'green', reviewers: [], url: '', base: 'main', head: 'feat/b', updated: '', proof: [] }
   const rows = prDetails(pr, { statusCheckRollup: [{ name: 'Ownership approval', conclusion: 'FAILURE' }, { name: 'build', conclusion: 'SUCCESS' }] }, 0)
   expect(rows[0]?.color).toBe('success')
   expect(rows[0]?.value).toBe('1 pass · 1 fail (Ownership approval)')
 })
 
 const mk = (num: number, head: string, base: string, draft = false): Pr =>
-  ({ repo: 'acme/widgets', primary: true, num, title: '', draft, review: '', merge: '', ci: 'green', reviewers: [], url: '', base, head, updated: '' })
+  ({ repo: 'acme/widgets', primary: true, num, title: '', draft, review: '', merge: '', ci: 'green', reviewers: [], url: '', base, head, updated: '', proof: [] })
 
 test('stacked PRs sit under their base, open roots before drafts', () => {
   const prs = [mk(3, 'c', 'b'), mk(9, 'z', 'main', true), mk(1, 'a', 'main'), mk(2, 'b', 'a')]
   expect(stack(prs).map(([p, depth]) => `${p.num}:${depth}`)).toEqual(['1:0', '2:1', '3:2', '9:0'])
+})
+
+test('only a ready-to-merge PR without proof is flagged', () => {
+  const ready = { ...mk(42, 'f', 'main'), review: 'APPROVED' }
+  expect(needsProof(ready)).toBe(true)
+  expect(needsProof({ ...ready, proof: [{ label: 'demo', url: 'https://example.com/run.mp4' }] })).toBe(false)
+  expect(needsProof({ ...ready, draft: true })).toBe(false)
+  expect(needsProof({ ...ready, ci: 'pending' })).toBe(false)
+  expect(needsProof({ ...ready, review: '' })).toBe(false)
 })

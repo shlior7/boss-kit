@@ -14,6 +14,18 @@ The role, mandate, hard rules, routing, envelope, verification, merge and report
 | Paradev host | `<host id>` (`superset hosts list --json`). Export `BOSS_HOST` for the watcher |
 | Rules to inject in every dispatch | `<AGENTS.md / CLAUDE.md paths>`, the PR title format, "every behavioural fix ships a regression test", folders workers must never touch |
 
+## Proof
+
+Which proof each kind of change owes (the template's routing rule 5), made concrete for this project:
+
+| Change | Proof | Where it goes |
+|---|---|---|
+| UI | demo via `/demo-recorder` (or screenshots on a page if it isn't installed) | PR comment + envelope `proof:` |
+| Backend | Superset page: tests run, before/after, revert-proves-red output | PR comment + envelope `proof:` |
+| Read-only / docs | `proof: none: <why>` | envelope |
+
+Notes: `<how to start the app for a demo, test accounts or sites to record on, pages that must not show real data>`
+
 ## Commands that verify
 
 ```bash
