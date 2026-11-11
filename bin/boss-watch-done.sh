@@ -11,7 +11,7 @@
 # templates whose field value is <placeholder> or literally "..." are skipped); (b) the optional <branch> adds a check that does not depend on the screen:
 # about every 3rd poll, `gh pr list --head <branch> --state all` fires "PR READY #n" when a PR becomes non-draft or merged
 # and was not so at start (run from the repo, or set GH_REPO).
-# Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen, 18 (6 min) if a background shell or monitor runs; envelopes fire at once, so a long fallback costs nothing.
+# Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen, 135 (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
 # Env: BOSS_HOST (default: first host). Poll 20 s, timeout 3 h. Needs superset CLI, jq (gh for <branch>).
 # `sig` is "DONE|<id>|<first 30 chars of summary>" (or BLOCKED), so a new envelope with an already-seen task id still differs from the
 # baseline (a dispatch message that quotes the done-message once poisoned it). `boss-watch-done.sh --sig < screen` prints it, nothing if none (bin/test-boss-watch.sh).
@@ -54,7 +54,7 @@ for i in $(seq 1 540); do
   h=$(echo "$txt" | tail -25 | cksum)
   if [ "$st" = idle ] && [ "$h" = "$lasth" ]; then idle=$((idle+1)); else idle=0; fi
   lasth=$h
-  need=9; echo "$txt" | tail -12 | grep -qE "[0-9]+ (shells?|monitors?)|Monitor event" && need=18
+  need=9; echo "$txt" | tail -12 | grep -qE "[0-9]+ (shells?|monitors?)|Monitor event" && need=135
   if [ "$idle" -ge "$need" ]; then echo "AGENT IDLE WITHOUT ENVELOPE"; echo "$txt" | tail -40 | sed 's/││.*$//'; exit 0; fi
 done
 echo TIMEOUT

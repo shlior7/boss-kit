@@ -245,7 +245,7 @@ It polls every 30 s, for up to 2 h, and exits (which wakes the boss) when:
 - a **new** `SUPERSET_WORKER_DONE` or `SUPERSET_WORKER_BLOCKED` appears (inside Claude Code's reply box, side pane stripped, on one line or split over two), counted only when the token is directly followed by `task: <id>`, so prose that merely mentions it never fires; compared by `task:` value, so old envelopes in scrollback don't count and `<placeholder>` templates are skipped;
 - with a `<branch>`, a PR on it becomes non-draft or merged (`PR READY #n`);
 - the agent's state becomes `blocked`;
-- the agent sits idle on an unchanged screen for 3 polls.
+- the agent sits idle on an unchanged screen for 9 polls (3 min), or 135 polls (45 min) while the status line shows a background shell or monitor, e.g. a worker waiting on its own `yarn verify:pr`.
 
 It skips envelope templates whose fields still read `<placeholder>`, so the prompt you just sent never fires it.
 
