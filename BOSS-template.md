@@ -46,12 +46,14 @@ Project facts: repo [PATH], GitHub [OWNER/REPO], base branch [master|main], task
    - The worker puts every proof URL in the envelope's `proof:` field and in a PR comment. The boss checks that each URL exists before believing it (section 7).
 
 ## 6. Completion envelope + watcher (mandatory on every dispatch)
-Workers end with exactly one of (the watcher finds the name anywhere on a line, also inside Claude Code's reply box):
+Workers end with exactly one of these. The first line is literally `SUPERSET_WORKER_DONE task: <id>` (or `SUPERSET_WORKER_BLOCKED task: <id>`) on one line, and the whole envelope stays under 15 rows; details go in the PR body. A long envelope pushes its first line off the screen before a poll sees it.
 SUPERSET_WORKER_DONE / task / summary / files / checks / proof / handoff   (proof = demo video and page URLs, or "none: <why>")
 SUPERSET_WORKER_BLOCKED / task / reason / needs
 
 In the SAME turn as the dispatch, arm a background watcher, `bin/boss-watch-done.sh <workspace> <terminal>` (`run_in_background`, never `&`): every 20 s read the terminal (--max-lines 600), strip the reply box and side pane, take the latest envelope with its `task:` value (skipping `<placeholder>` templates), fire when it differs from the one at start, when the agent state is `blocked`, or after 9 idle polls (3 min) with an unchanged screen (18 while a background shell or monitor runs). It also fires when the terminal is gone. Timeout ~3 h.
 Lessons: don't count envelope lines (old ones scroll out); don't match the envelope name anywhere (matches your own prompt); never edit the script while watchers run (write a new versioned file, re-arm); idle detection misfires during long CI waits, so on a fire without an envelope read the screen and GitHub first. Never say "I'll report back" without an armed watcher. A session restart kills every watcher: on resume, read each worker's screen for an envelope that landed meanwhile, then re-arm.
+Use this script for every done-watch. Never swap it for `superset terminals wait --match`. That command sees only the last `--max-lines` rows, and Claude Code draws a reply box all at once, so the envelope's first line can land above the window. It also misses an envelope split over two lines and has no idle fallback. `terminals read` returns only the visible screen (about 64 rows) even with `--max-lines 600`. If the script misfires, fix the script; don't replace it.
+PR sweep (does not depend on the screen): at every turn and every report, run `gh pr list --state open --json number,isDraft,mergeable,headRefName`. Any non-draft PR the ledger does not show as handled is finished work: verify it, then merge it or send its conflict to the owner. While workers run, also keep one background sweep armed that fires when a PR newly leaves draft.
 On fire: verify independently, update the ledger, report unprompted.
 
 ## 7. Verification (never trust a DONE blindly)

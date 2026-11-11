@@ -60,3 +60,7 @@ Why: the user: "creating a workspace is creating a worktree which copies all the
 ## 14. Group workspaces by concern, and keep their names current (2026-11-11, quack)
 Seven workspaces sat in one flat list with names like "build (PR #4)" and "notes #8 + account" that no longer said what they did. Tags (`superset workspaces update <id> --local --tag <group> --name <name>`) file them into sidebar folders by area; the boss suggests a regrouping as it learns the project.
 Why: the user asked for groups, and for the boss to propose reorganizations over time.
+
+## 15. Two finished PRs sat unnoticed: the boss had swapped its watcher for `terminals wait` (2026-11-11, quack)
+After one false positive, the boss replaced `boss-watch-done.sh` with `superset terminals wait --match "<one-line regex>" --max-lines 30`. Claude Code drew a worker's whole reply at once, and the envelope's first line landed 48 rows up, outside the 30-row window. Another worker split the envelope over two lines. Neither matched, `terminals wait` has no idle fallback, and both PRs had already left draft without anyone checking GitHub.
+Why: the user noticed workspaces "done and nothing occurred". The fix is the script plus a PR sweep every turn: fix the watcher, never bypass it, and keep one check that does not read the screen.
