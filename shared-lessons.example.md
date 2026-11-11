@@ -44,3 +44,11 @@ Why: six watcher fires in a row were idle fallbacks; three of them hid real enve
 ## 10. The boss's own work is invisible: put it in a workspace (2026-11-11, quack)
 The boss fixed two prod bugs, resolved five merge conflicts and ran a research agent inside its own session. None of it showed on the board, and the user asked to watch the research. Only boss-level work stays in the boss session (template section 5 rule 0); a prod fix gets a new workspace at once, a PR's conflicts go to its owner.
 Why: the user said "everything boss does should be a separate workspace; only high level boss tasks are done on the boss itself".
+
+## 11. A host restart kills worker terminals too (2026-11-11, quack)
+Not only watchers die: relaunch each worker in its SAME workspace with `superset terminals create --local --workspace <id> --command "command claude --dangerously-skip-permissions --continue"` so it keeps its conversation, check git status, /compact if context is high, resend its orders and re-arm watchers on the NEW terminal ids.
+Why: a Paradev host restart ended four worker sessions mid-task.
+
+## 12. Close done workspaces as you go (2026-11-11, quack)
+Retire a workspace the moment its PRs are merged (or its research page is published) and sweep the board at every status report. Copy any ignored output worth keeping (a rendered video, audio) out of the worktree first: archiving deletes the folder.
+Why: finished workspaces piled up on the board and the user had to ask for them to be closed.
