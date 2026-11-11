@@ -2,18 +2,18 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Deck, Detail, Pr, ProofLink, Worker } from '../types'
-import { needsProof, prDetails, stack, workerDetails } from './details'
+import { mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from './details'
 import type { PrView } from './details'
 
 const PANE = 'boss-deck'
 const TITLE = 'Boss'
 // The kit root: $BOSS_KIT_HOME, else ~/.claude/boss-kit. A shell expands it so the mod needs no env access.
-const DATA_CMD = ['sh', '-c', 'exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/boss-deck-data.py"']
+const DATA_CMD = ['sh', '-c', 'exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/boss-deck-data.py" "$@"', 'boss-deck-data']
 const REFRESH_MS = 60_000
 // A PR untouched this long folds into one 'stale' line.
 const STALE_PR_DAYS = 10
 // Change a tag when its value's fields change: it declines what an earlier version stored.
-const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-5' })
+const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-6' })
 const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-3' })
 
 // Quiet by design: grey by default, color only for what needs attention.
@@ -40,8 +40,9 @@ const prStatus = (p: Pr) =>
   : p.reviewers.length ? `→ ${who(p.reviewers[0] ?? '')}`
   : p.review ? 'review' : ''
 
-async function refresh($: EngineInterface) {
-  const { exitCode, stdout, stderr } = await $.process.run(DATA_CMD, { timeoutMs: 90_000 })
+async function refresh($: EngineInterface, sessionStart = false) {
+  const argv = sessionStart ? [...DATA_CMD, '--session-start'] : DATA_CMD
+  const { exitCode, stdout, stderr } = await $.process.run(argv, { timeoutMs: 90_000 })
   const at = Math.floor((await $.clock.now()) / 1000)
   const fresh: Deck =
     exitCode === 0
@@ -57,8 +58,17 @@ async function openUrl($: EngineInterface, url: string) {
   await $.process.run(['open', url], { timeoutMs: 10_000 })
 }
 
-async function openWorkspace($: EngineInterface, w: Worker) {
-  await $.process.run(['superset', 'workspaces', 'open', w.id, '--local'], { timeoutMs: 20_000 })
+async function openWorkspace($: EngineInterface, id: string) {
+  await $.process.run(['superset', 'workspaces', 'open', id, '--local'], { timeoutMs: 20_000 })
+}
+
+/** Unread mail now: the inbox dir only, so a prompt costs one listing. */
+async function unreadMail($: EngineInterface) {
+  const d = await read($, deck)
+  if (!d?.mail?.dir) return undefined
+  const entries = await $.fs.list(d.mail.dir).catch(() => [])
+  const count = entries.filter(f => f.kind === 'file' && f.name.endsWith('.json')).length
+  return mailContext(count, d.mail.items)
 }
 
 /** Toggle one expanded row: a worker's or a PR's details under it. */
@@ -100,7 +110,7 @@ export const register: Register = on => {
 
     await $.command.register({ name: 'boss-deck', description: 'Open the boss pane and refresh it now' })
     void $.ui.open({ id: PANE, title: TITLE })
-    void refresh($)
+    void refresh($, true)
     $.clock.every(REFRESH_MS, () => void refresh($))
 
     return next(e)
@@ -111,6 +121,13 @@ export const register: Register = on => {
     await refresh($)
 
     return { text: 'Boss pane refreshed.' }
+  })
+
+  // While boss mail is unread, every prompt carries one context line naming it (never shown to the user).
+  on('prompt.submit', async ($, e, next) => {
+    if (e.command || e.isMeta) return next(e)
+    const note = await unreadMail($)
+    return next(note ? { ...e, context: [...(e.context ?? []), note] } : e)
   })
 
   // Refresh right after the boss dispatches, merges or comments, not only on the timer.
@@ -192,7 +209,7 @@ export const register: Register = on => {
             {cell(2, text(STATE_MARK[w.state] ?? '○', dim, color))}
             {cell(
               23,
-              <Button plain key={`open-${w.ws}`} hotkey={i < 9 ? String(i + 1) : undefined} onPress={() => void openWorkspace($, w)}>
+              <Button plain key={`open-${w.ws}`} hotkey={i < 9 ? String(i + 1) : undefined} onPress={() => void openWorkspace($, w.id)}>
                 <Text dimColor={dim} color={color}>
                   {w.name.slice(0, i < 9 ? 18 : 21)}
                 </Text>
@@ -238,6 +255,22 @@ export const register: Register = on => {
       <Box flexDirection="column" paddingX={1}>
         {d.error && text(`data error: ${d.error}`, false, 'error')}
         {d.review && linkButton('review', `review ↗ ${d.review.date}`, d.review.url)}
+        {(d.mail?.count ?? 0) > 0 && (
+          <Box flexDirection="column">
+            <Button
+              plain
+              key="mail"
+              onPress={() =>
+                void toggle($, 'mail', async () => ({
+                  rows: (d.mail?.items ?? []).map(m => ({ label: m.kind, value: `${m.from}: ${m.subject}` })),
+                }))
+              }
+            >
+              <Text color="suggestion">{`mail ${d.mail?.count} ↗`}</Text>
+            </Button>
+            {shown?.key === 'mail' && details(shown.rows)}
+          </Box>
+        )}
         <Text bold wrap="wrap">
           {d.next || 'Nothing needs you.'}
         </Text>
@@ -268,8 +301,22 @@ export const register: Register = on => {
           </Box>
         )}
 
+        {(d.others ?? []).length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            {(d.others ?? []).map(b => (
+              <Button plain key={`boss-${b.id}`} onPress={() => void openWorkspace($, b.workspace)}>
+                <Text dimColor>{otherBossLine(b)}</Text>
+              </Button>
+            ))}
+          </Box>
+        )}
+
         <Box flexDirection="row" justifyContent="space-between" marginTop={1}>
-          {text(`board ${d.board.mine ?? '?'} mine · ${d.board.p1 ?? '?'} P1 · ${d.board.inProgress ?? '?'} active`, true)}
+          {text(
+            `board ${d.board.mine ?? '?'} mine · ${d.board.p1 ?? '?'} P1 · ${d.board.inProgress ?? '?'} active` +
+              (d.lessonsNew ? ` · lessons +${d.lessonsNew}` : ''),
+            true,
+          )}
           <Text dimColor>{ago(now - d.at)}</Text>
         </Box>
         {text('name opens workspace · task or # expands', true)}

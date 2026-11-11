@@ -1,7 +1,7 @@
 # BOSS — {{PROJECT}} project facts
 
 The role, mandate, hard rules, routing, envelope, verification, merge and reporting rules are in
-`BOSS-template.md` at the kit root. Every rule there applies. This file fills in its
+`BOSS-template.md` at the kit root (the `/boss` skill loads it, this file, and the lessons). Every rule there applies. This file fills in its
 `[PLACEHOLDERS]` for {{PROJECT}}. Machine-readable values live next to it in `config.json`.
 
 | Fact | Value |
@@ -38,6 +38,7 @@ Notes: `<how to start the app for a demo, test accounts or sites to record on, p
 Facts the boss learned the hard way about this project (deploy timing, flaky CI jobs, who reviews
 what). Keep them short and dated.
 
-## Ledger
+## Ledger and lessons
 
-`ledger.md` in this folder. Re-verify any fact there before acting on it.
+`ledger.md` in this folder is shared by every boss of this project; re-verify any fact there before acting on it.
+`lessons.md` holds this project's lessons (`bin/boss-lesson add`). Lessons that hold for any repo go to the shared file.

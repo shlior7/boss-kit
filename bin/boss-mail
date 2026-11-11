@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""boss-mail: messages between bosses. A message is a JSON file in the target boss's inbox/.
+
+  boss-mail send --to <project|boss-id> --kind question|request|fyi --subject S [--body B | stdin] [--reply-to ID]
+  boss-mail inbox                    unread messages, oldest first
+  boss-mail read ID                  print one message
+  boss-mail reply ID [--body B | stdin]
+  boss-mail done ID                  move it to inbox/done/
+
+Addressing a project delivers to every live boss of it (heartbeat in the last 30 min), or to every
+registered one when none is live. With "wake": true in the target project's config.json and its
+agent idle, one line is also typed into its terminal so it notices.
+
+Safety: mail is information, never approval. It cannot authorize a merge, push, prod write, spend
+or settings change; those need the receiving boss's own user. Never put secrets in mail.
+"""
+import argparse
+import json
+import os
+import secrets
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosskit  # noqa: E402
+
+KINDS = ("question", "request", "fyi")
+
+
+def targets(to, me, reg):
+    """[(boss id, project)] that `to` addresses."""
+    if to in reg:
+        return [(to, reg[to]["project"])]
+    bosses = {i: b for i, b in reg.items() if b.get("project") == to and i != me}
+    alive = bosskit.live(bosses)
+    picked = alive or bosses
+    if not picked:
+        sys.exit(f"boss-mail: no boss registered for {to!r} (a boss registers when its pane refreshes)")
+    return [(i, to) for i in sorted(picked)]
+
+
+def wake(h, project, boss, msg):
+    """Type one line into the target's terminal when its project opts in and its agent is idle."""
+    try:
+        cfg = json.load(open(os.path.join(h, project, "config.json")))
+    except (OSError, ValueError):
+        return
+    b = bosskit.registry(h).get(boss, {})
+    if not cfg.get("wake") or not b.get("workspace"):
+        return
+    snap = subprocess.run(["superset", "snapshot", "--host", b.get("host", ""), "--json"], capture_output=True, text=True).stdout
+    try:
+        ws = next(w for w in json.loads(snap)["workspaces"] if w["id"] == b["workspace"])
+        term = next(t for t in ws["terminals"] if (t.get("agent") or {}).get("state") == "idle")
+    except (ValueError, KeyError, StopIteration):
+        return
+    line = f"[boss-mail] 1 new {msg['kind']} from {msg['from_project']}: {msg['subject']}. Run boss-mail inbox."
+    subprocess.run(["superset", "terminals", "send", "--workspace", ws["id"], "--terminal", term["id"], "--text", line],
+                   capture_output=True)
+
+
+def send(ctx, to, kind, subject, body, reply_to=None):
+    if kind not in KINDS:
+        sys.exit(f"boss-mail: kind must be one of {', '.join(KINDS)}")
+    msg = {"id": time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3), "from_boss": ctx.bid, "from_project": ctx.name,
+           "kind": kind, "subject": subject, "body": body, "reply_to": reply_to,
+           "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    sent = []
+    for boss, project in targets(to, ctx.bid, bosskit.registry(ctx.home)):
+        inbox = os.path.join(ctx.home, project, "bosses", boss, "inbox")
+        os.makedirs(os.path.join(inbox, "done"), exist_ok=True)
+        bosskit.save_json(os.path.join(inbox, msg["id"] + ".json"), msg)
+        wake(ctx.home, project, boss, msg)
+        sent.append(f"{project}/{boss}")
+    return msg["id"], sent
+
+
+def find(ctx, mid):
+    for d in (ctx.inbox, os.path.join(ctx.inbox, "done")):
+        p = os.path.join(d, mid + ".json")
+        if os.path.exists(p):
+            return p
+    sys.exit(f"boss-mail: no message {mid}")
+
+
+def unread(ctx):
+    return [json.load(open(os.path.join(ctx.inbox, f))) for f in sorted(os.listdir(ctx.inbox)) if f.endswith(".json")]
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="boss-mail")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("send"); s.add_argument("--to", required=True); s.add_argument("--kind", required=True)
+    s.add_argument("--subject", required=True); s.add_argument("--body"); s.add_argument("--reply-to")
+    sub.add_parser("inbox")
+    for c in ("read", "done"):
+        sub.add_parser(c).add_argument("id")
+    r = sub.add_parser("reply"); r.add_argument("id"); r.add_argument("--body")
+    args = ap.parse_args()
+    ctx = bosskit.load()
+    body = lambda: args.body if args.body is not None else ("" if sys.stdin.isatty() else sys.stdin.read().strip())
+
+    if args.cmd == "send":
+        mid, sent = send(ctx, args.to, args.kind, args.subject, body(), args.reply_to)
+        print(f"sent {mid} to {', '.join(sent)}")
+    elif args.cmd == "inbox":
+        msgs = unread(ctx)
+        print(f"{len(msgs)} unread" + (":" if msgs else ""))
+        for m in msgs:
+            print(f"  {m['id']}  {m['kind']:<8} from {m['from_project']} ({m['from_boss'][:12]}): {m['subject']}")
+    elif args.cmd == "read":
+        m = json.load(open(find(ctx, args.id)))
+        print(f"{m['kind']} from {m['from_project']} / {m['from_boss']} at {m['created_at']}"
+              + (f", in reply to {m['reply_to']}" if m.get("reply_to") else "") + f"\nSubject: {m['subject']}\n\n{m['body']}")
+    elif args.cmd == "reply":
+        m = json.load(open(find(ctx, args.id)))
+        mid, sent = send(ctx, m["from_boss"], "fyi", "Re: " + m["subject"].removeprefix("Re: "), body(), m["id"])
+        print(f"replied {mid} to {', '.join(sent)}")
+    else:
+        p = find(ctx, args.id)
+        os.replace(p, os.path.join(ctx.inbox, "done", os.path.basename(p)))
+        print(f"done {args.id}")
+
+
+if __name__ == "__main__":
+    main()

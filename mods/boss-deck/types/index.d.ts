@@ -37,8 +37,15 @@ export type Attention = { level: 'act' | 'check'; text: string }
 export type Detail = { label: string; value: string; color?: string }
 export type Peek = { key: string; rows: Detail[]; url?: string; links?: ProofLink[] }
 export type Board = { mine?: number; p1?: number; inProgress?: number }
+/** Another live boss, from the registry. */
+export type OtherBoss = { id: string; project: string; workspace: string; working: number; forYou: number }
+export type MailItem = { id: string; kind: string; from: string; subject: string }
 export type Deck = {
   at: number
+  me?: { id: string; project: string }
+  others?: OtherBoss[]
+  mail?: { count: number; dir: string; items: MailItem[] }
+  lessonsNew?: number
   next: string
   review?: { url: string; date: string } | null
   attention: Attention[]

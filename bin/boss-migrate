@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""boss-migrate: move an old-layout kit's project data into $BOSS_HOME, leaving symlinks behind.
+
+  boss-migrate [--kit DIR] [--boss ID] [--apply]
+
+Finds, in the old kit (default: this kit):
+  projects/<name>/      (v0.3-v0.4 layout)          -> $BOSS_HOME/<name>/
+  state/<name>/         (v0.3-v0.4 runtime state)   -> $BOSS_HOME/<name>/bosses/<boss>/
+  <name>/ with BOSS.md  (legacy: a folder at the kit root) -> $BOSS_HOME/<name>/
+Each source is replaced by a symlink to its new place, so bosses still running on the old paths keep
+working. Nothing that already exists in $BOSS_HOME is overwritten. Dry run unless --apply.
+--boss names the boss that owned the old state (default: $SUPERSET_WORKSPACE_ID, else "migrated").
+"""
+import argparse
+import os
+import shutil
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosskit  # noqa: E402
+
+KIT_DIRS = {"bin", "mods", "projects", "state", "skills", ".git", ".claude-plugin", "tests"}
+
+
+def plan(kit, home, boss):
+    ops = []  # (source, destination)
+    pdir = os.path.join(kit, "projects")
+    for name in sorted(os.listdir(pdir)) if os.path.isdir(pdir) else []:
+        src = os.path.join(pdir, name)
+        if not name.startswith("_") and os.path.isdir(src) and not os.path.islink(src):
+            ops.append((src, os.path.join(home, name)))
+    for name in sorted(os.listdir(kit)):
+        src = os.path.join(kit, name)
+        if (name not in KIT_DIRS and not name.startswith(".") and os.path.isdir(src) and not os.path.islink(src)
+                and os.path.isfile(os.path.join(src, "BOSS.md"))):
+            ops.append((src, os.path.join(home, name)))
+    sdir = os.path.join(kit, "state")
+    for name in sorted(os.listdir(sdir)) if os.path.isdir(sdir) else []:
+        src = os.path.join(sdir, name)
+        if os.path.isdir(src) and not os.path.islink(src):
+            ops.append((src, os.path.join(home, name, "bosses", boss)))
+    return ops
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="boss-migrate")
+    ap.add_argument("--kit", default=bosskit.KIT)
+    ap.add_argument("--boss", default=os.environ.get("SUPERSET_WORKSPACE_ID") or "migrated")
+    ap.add_argument("--apply", action="store_true")
+    args = ap.parse_args()
+    kit, home = os.path.abspath(args.kit), bosskit.home()
+    ops = plan(kit, home, args.boss)
+    if not ops:
+        print(f"boss-migrate: nothing to move in {kit}")
+        return
+    for src, dst in ops:
+        if os.path.exists(dst):
+            print(f"skip  {src}  ({dst} already exists)")
+            continue
+        print(f"{'move' if args.apply else 'would move'}  {src}  ->  {dst}  (+ symlink back)")
+        if args.apply:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.move(src, dst)
+            os.symlink(dst, src)
+    if not args.apply:
+        print("dry run: nothing changed. Re-run with --apply.")
+
+
+if __name__ == "__main__":
+    main()

@@ -10,5 +10,6 @@
     "token_env": "BOSS_TRACKER_TOKEN",
     "assignee": "Your Name"
   },
-  "ledger": "ledger.md"
+  "ledger": "ledger.md",
+  "wake": false
 }

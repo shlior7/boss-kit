@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""boss-lesson: record and promote lessons. Append-only and numbered; never renumber.
+
+  boss-lesson add "<text>" [--shared] [--why "..."] [--project P]
+  boss-lesson list [--shared | --all] [--project P]
+  boss-lesson promote <n> [--project P]     copy project lesson n into the shared file
+
+Project lessons: $BOSS_HOME/<project>/lessons.md (this repo's quirks, its deploy, its reviewers).
+Shared lessons:  $BOSS_HOME/lessons.md (tooling and process every boss hits), tagged with source and date.
+One question decides which: would a boss on a different repo hit this too? Then --shared.
+An exact duplicate is refused; one that starts with the same 8 words is added with a warning.
+"""
+import argparse
+import os
+import re
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosskit  # noqa: E402
+
+HEADER = {"shared": "# Shared boss lessons\n\nLessons that hold for every boss, whatever the repo. Append-only.\n",
+          "project": "# {name} lessons\n\nThis project's lessons, learned the hard way. Append-only.\n"}
+
+
+def norm(s):
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def body_of(entry):
+    """An entry's lesson text: the heading's title plus the body, without tags or the Why line."""
+    lines = entry.splitlines()
+    title = re.sub(r"\s*\((?:\d{4}-\d{2}-\d{2}[^)]*)\)\s*(\[promoted[^\]]*\])?$", "", lines[0].split(". ", 1)[1])
+    rest = [l for l in lines[1:] if l.strip() and not l.startswith("Why:") and not l.startswith("Source:")]
+    return norm(" ".join([title] + rest))
+
+
+def append(path, text, why, tag, header):
+    """Append a lesson; return its number, or exit on an exact duplicate."""
+    current = open(path).read() if os.path.exists(path) else header
+    entries = bosskit.lesson_entries(current)
+    new = norm(text)
+    for n, _, entry in entries:
+        old = body_of(entry)
+        if old == new:
+            sys.exit(f"boss-lesson: already recorded as #{n}")
+        if old.split()[:8] == new.split()[:8]:
+            print(f"boss-lesson: warning, #{n} starts the same way; adding anyway", file=sys.stderr)
+    n = max((e[0] for e in entries), default=0) + 1
+    first, _, rest = text.strip().partition("\n")
+    entry = f"## {n}. {first.strip()} ({tag})\n" + (f"{rest.strip()}\n" if rest.strip() else "") + (f"Why: {why}\n" if why else "")
+    with open(path, "w") as f:
+        f.write(current.rstrip() + "\n\n" + entry)
+    return n
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="boss-lesson")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    a = sub.add_parser("add"); a.add_argument("text"); a.add_argument("--shared", action="store_true")
+    a.add_argument("--why", default=""); a.add_argument("--project")
+    ls = sub.add_parser("list"); g = ls.add_mutually_exclusive_group()
+    g.add_argument("--shared", action="store_true"); g.add_argument("--all", action="store_true"); ls.add_argument("--project")
+    pr = sub.add_parser("promote"); pr.add_argument("n", type=int); pr.add_argument("--project")
+    args = ap.parse_args()
+
+    h = bosskit.home()
+    shared = os.path.join(h, "lessons.md")
+    os.makedirs(h, exist_ok=True)
+    needs_project = not (args.cmd == "list" and args.shared)
+    name = (args.project or bosskit.project_name()) if needs_project else ""
+    mine = os.path.join(h, name, "lessons.md") if name else ""
+    today = time.strftime("%Y-%m-%d")
+
+    if args.cmd == "add":
+        if args.shared:
+            n = append(shared, args.text, args.why, f"{today}, from {name}", HEADER["shared"])
+            print(f"shared lesson #{n} added")
+        else:
+            n = append(mine, args.text, args.why, today, HEADER["project"].format(name=name))
+            print(f"{name} lesson #{n} added")
+    elif args.cmd == "list":
+        files = [shared] if args.shared else [mine, shared] if args.all else [mine]
+        for path in files:
+            entries = bosskit.lesson_entries(open(path).read() if os.path.exists(path) else "")
+            print(f"{path} ({len(entries)}):")
+            for _, heading, _ in entries:
+                print(f"  {heading[3:]}")
+    else:
+        text = open(mine).read() if os.path.exists(mine) else ""
+        found = [e for e in bosskit.lesson_entries(text) if e[0] == args.n]
+        if not found:
+            sys.exit(f"boss-lesson: {name} has no lesson #{args.n}")
+        _, heading, entry = found[0]
+        if "[promoted" in heading:
+            sys.exit(f"boss-lesson: #{args.n} is already promoted")
+        lines = entry.splitlines()
+        title = re.sub(r"\s*\(\d{4}-\d{2}-\d{2}[^)]*\)$", "", lines[0].split(". ", 1)[1])
+        body = "\n".join([title] + [l for l in lines[1:] if not l.startswith("Why:")])
+        why = next((l[4:].strip() for l in lines if l.startswith("Why:")), "")
+        k = append(shared, body, why, f"{today}, from {name} #{args.n}", HEADER["shared"])
+        with open(mine, "w") as f:
+            f.write(text.replace(heading, f"{heading} [promoted to shared #{k}]", 1))
+        print(f"{name} #{args.n} promoted to shared #{k}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """boss-tasks: read-only tracker sync for the boss. Zero LLM, never writes to the tracker.
 
-Pulls every task, saves a snapshot to state/<project>/tracker.json, and prints what changed since
+Pulls every task, saves a snapshot, and prints what changed since
 the last run plus the open work that matters: my open tasks, P0/P1 across the team, In Review.
+The snapshot is per boss: $BOSS_HOME/<project>/bosses/<id>/cache/tracker.json.
 
-Configured by `tracker` in projects/<name>/config.json:
+Configured by `tracker` in $BOSS_HOME/<project>/config.json:
   {"type": "none"}                          -> prints a note and exits 0
   {"type": "http", "url_env": "...", "token_env": "...", "assignee": "Your Name"}
       POSTs {"limit": 500} to the URL in $url_env with "Authorization: Bearer $token_env" and
@@ -39,8 +40,8 @@ def fetch_http(tr):
 
 
 def main():
-    _, cfg, _, sdir = bosskit.load()
-    tr = cfg.get("tracker") or {"type": "none"}
+    ctx = bosskit.load()
+    tr = ctx.cfg.get("tracker") or {"type": "none"}
     if tr.get("type", "none") == "none":
         print("boss-tasks: no tracker configured (tracker.type = none)")
         return
@@ -48,7 +49,7 @@ def main():
         sys.exit(f"boss-tasks: tracker type {tr['type']!r} has no adapter yet (supported: none, http)")
     tasks = fetch_http(tr)
     me, quiet = tr.get("assignee", ""), "--quiet" in sys.argv
-    state = os.path.join(sdir, "tracker.json")
+    state = os.path.join(ctx.cache, "tracker.json")
 
     now = {t["id"]: {k: t.get(k) for k in TRACKED} | {
         "prs": sorted(set(re.findall(r"pull/(\d+)", (t.get("description") or "") + (t.get("body") or ""))))}

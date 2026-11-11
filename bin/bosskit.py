@@ -1,35 +1,183 @@
-"""Shared helpers: where the kit lives, which project is active, and its config.
+#!/usr/bin/env python3
+"""boss-kit core: where code and data live, which project and boss this is, the boss registry,
+lessons, and the instruction loader. Every bin/ script imports it.
 
-Kit root: $BOSS_KIT_HOME, else the folder above bin/. Project: $BOSS_PROJECT, else the only
-folder under projects/ other than _template. Config: projects/<name>/config.json.
-Per-project runtime state (caches, tracker snapshot, the pane's next line) goes to
-state/<name>/, which is gitignored.
+Code is the kit ($BOSS_KIT_HOME, else the folder above bin/). Data is $BOSS_HOME (default
+~/.claude/boss):
+
+  bosses.json                     registry: boss id -> project, workspace, worktree, host, heartbeat
+  lessons.md                      shared lessons, for every boss
+  <project>/BOSS.md config.json ledger.md lessons.md prompts/      shared by the project's bosses
+  <project>/bosses/<boss-id>/     next.txt review.txt notes.md cache/ inbox/ inbox/done/
+
+usage: bosskit.py show            the resolved paths, as JSON
+       bosskit.py instructions    template + project BOSS.md + project and shared lessons (the /boss loader)
 """
+import hashlib
 import json
 import os
+import re
+import subprocess
 import sys
+import time
+from types import SimpleNamespace
 
 KIT = os.environ.get("BOSS_KIT_HOME") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROJECTS = os.path.join(KIT, "projects")
+STALE_S = 1800                      # a boss with no heartbeat for 30 min is not live
+SHARED_BUDGET_LINES, SHARED_RECENT = 150, 20
+HEADING = re.compile(r"^## (\d+)\. (.*)$", re.M)
 
 
-def project_name():
-    name = os.environ.get("BOSS_PROJECT")
-    if name:
-        return name
-    found = [d for d in sorted(os.listdir(PROJECTS)) if not d.startswith("_")
-             and os.path.isfile(os.path.join(PROJECTS, d, "config.json"))] if os.path.isdir(PROJECTS) else []
-    if len(found) == 1:
-        return found[0]
-    sys.exit("bosskit: set BOSS_PROJECT (projects found: %s)" % (", ".join(found) or "none, run bin/boss-init"))
+def home():
+    return os.environ.get("BOSS_HOME") or os.path.expanduser("~/.claude/boss")
 
 
-def load(name=None):
-    """(name, config, project dir, state dir) for the active project."""
-    name = name or project_name()
-    pdir = os.path.join(PROJECTS, name)
+def _git(cwd, *args):
+    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def worktree(cwd=None):
+    cwd = os.path.abspath(cwd or os.getcwd())
+    return _git(cwd, "rev-parse", "--show-toplevel") or cwd
+
+
+def projects(h=None):
+    h = h or home()
+    return [d for d in sorted(os.listdir(h)) if os.path.isfile(os.path.join(h, d, "config.json"))] if os.path.isdir(h) else []
+
+
+def remote_repo(wt):
+    """owner/repo of the worktree's origin, from an ssh or https remote."""
+    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?/?$", _git(wt, "remote", "get-url", "origin"))
+    return m.group(1).lower() if m else ""
+
+
+def project_name(cwd=None, h=None):
+    """$BOSS_PROJECT, then the worktree's .boss file, then its git remote, then the only project."""
+    h = h or home()
+    if os.environ.get("BOSS_PROJECT"):
+        return os.environ["BOSS_PROJECT"]
+    wt = worktree(cwd)
+    try:
+        m = re.search(r"^\s*project:\s*(\S+)", open(os.path.join(wt, ".boss")).read(), re.M)
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    names = projects(h)
+    repo = remote_repo(wt)
+    for name in names if repo else ():
+        if json.load(open(os.path.join(h, name, "config.json"))).get("repo", "").lower() == repo:
+            return name
+    if len(names) == 1:
+        return names[0]
+    sys.exit("bosskit: no project for %s (set BOSS_PROJECT, add a .boss file, or run bin/boss-init; found: %s)"
+             % (wt, ", ".join(names) or "none"))
+
+
+def boss_id(cwd=None):
+    """The Paradev workspace id when running inside one, else a short hash of the worktree path."""
+    return os.environ.get("SUPERSET_WORKSPACE_ID") or "wt-" + hashlib.sha1(worktree(cwd).encode()).hexdigest()[:8]
+
+
+def load(cwd=None, name=None):
+    h = home()
+    name = name or project_name(cwd, h)
+    pdir = os.path.join(h, name)
     with open(os.path.join(pdir, "config.json")) as f:
         cfg = json.load(f)
-    sdir = os.path.join(KIT, "state", name)
-    os.makedirs(sdir, exist_ok=True)
-    return name, cfg, pdir, sdir
+    bid = boss_id(cwd)
+    bdir = os.path.join(pdir, "bosses", bid)
+    for d in ("cache", "inbox/done"):
+        os.makedirs(os.path.join(bdir, d), exist_ok=True)
+    return SimpleNamespace(home=h, name=name, cfg=cfg, pdir=pdir, bid=bid, bdir=bdir, worktree=worktree(cwd),
+                           cache=os.path.join(bdir, "cache"), inbox=os.path.join(bdir, "inbox"))
+
+
+# ---- registry -------------------------------------------------------------------------------
+
+def registry(h=None):
+    try:
+        return json.load(open(os.path.join(h or home(), "bosses.json")))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_json(path, data):
+    """Write atomically, so two bosses refreshing at once never leave half a file."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, path)
+
+
+def heartbeat(ctx, host="", summary=None, now=None):
+    # ponytail: read-modify-write without a lock; a lost heartbeat is rewritten on the next refresh
+    os.makedirs(ctx.home, exist_ok=True)
+    reg = registry(ctx.home)
+    reg[ctx.bid] = {"project": ctx.name, "workspace": os.environ.get("SUPERSET_WORKSPACE_ID", ""),
+                    "worktree": ctx.worktree, "host": host, "heartbeat": int(now or time.time()), **(summary or {})}
+    save_json(os.path.join(ctx.home, "bosses.json"), reg)
+
+
+def live(reg, now=None, project=None):
+    now = now or time.time()
+    return {i: b for i, b in reg.items()
+            if now - b.get("heartbeat", 0) < STALE_S and (project is None or b.get("project") == project)}
+
+
+# ---- lessons --------------------------------------------------------------------------------
+
+def lesson_entries(text):
+    """[(number, heading line, full entry text)] of a lessons file."""
+    marks = list(HEADING.finditer(text or ""))
+    return [(int(m.group(1)), m.group(0), text[m.start():(marks[i + 1].start() if i + 1 < len(marks) else len(text))].rstrip())
+            for i, m in enumerate(marks)]
+
+
+def shared_view(text, budget=SHARED_BUDGET_LINES, recent=SHARED_RECENT):
+    """The shared lessons as loaded: whole when short, else every title plus the newest entries in full."""
+    if len(text.splitlines()) <= budget:
+        return text
+    entries = lesson_entries(text)
+    titles = "\n".join(f"- {h[3:]}" for _, h, _ in entries)
+    full = "\n\n".join(e for _, _, e in entries[-recent:])
+    return (f"(Shared lessons are {len(text.splitlines())} lines, over the {budget}-line budget: every title, then the "
+            f"{recent} most recent in full. Read {os.path.join(home(), 'lessons.md')} for the rest.)\n\n"
+            f"### All titles\n{titles}\n\n### Most recent\n{full}\n")
+
+
+def _read(path):
+    try:
+        return open(path).read()
+    except OSError:
+        return ""
+
+
+def instructions(ctx):
+    parts = [("BOSS-template.md", _read(os.path.join(KIT, "BOSS-template.md"))),
+             (f"{ctx.name}/BOSS.md", _read(os.path.join(ctx.pdir, "BOSS.md"))),
+             (f"{ctx.name}/lessons.md (project lessons)", _read(os.path.join(ctx.pdir, "lessons.md"))),
+             ("lessons.md (shared lessons)", shared_view(_read(os.path.join(ctx.home, "lessons.md"))))]
+    head = f"# Boss session: project {ctx.name}, boss {ctx.bid}\n"
+    return head + "".join(f"\n\n<!-- {name} -->\n\n{body.strip()}\n" for name, body in parts if body.strip())
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "show"
+    ctx = load()
+    if cmd == "show":
+        print(json.dumps({"kit": KIT, "home": ctx.home, "project": ctx.name, "boss": ctx.bid, "worktree": ctx.worktree,
+                          "boss_md": os.path.join(ctx.pdir, "BOSS.md"), "ledger": os.path.join(ctx.pdir, ctx.cfg.get("ledger", "ledger.md")),
+                          "lessons": os.path.join(ctx.pdir, "lessons.md"), "shared_lessons": os.path.join(ctx.home, "lessons.md"),
+                          "boss_dir": ctx.bdir, "next": os.path.join(ctx.bdir, "next.txt"),
+                          "review": os.path.join(ctx.bdir, "review.txt"), "inbox": ctx.inbox}, indent=1))
+    elif cmd == "instructions":
+        print(instructions(ctx))
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()
