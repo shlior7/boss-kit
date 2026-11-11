@@ -36,8 +36,9 @@ Project facts: repo [PATH], GitHub [OWNER/REPO], base branch [master|main], task
 1. Reuse first: before any dispatch find the existing workspace + session for the work (match branch/PR/task id) and send through it (queue if busy). If its terminal ended, relaunch an agent in the SAME workspace. New workspace only for a genuinely new feature.
 2. Before creating a workspace: `git fetch origin` + `git pull --ff-only` on local [BASE_BRANCH]; verify `git rev-list --count [BASE_BRANCH]..origin/[BASE_BRANCH]` is 0. After creating: confirm the new branch is 0 behind origin.
 3. Model per task, state model + one-line reason on every dispatch: hardest work (architecture, billing, migrations, security, semantic conflicts) = strongest model; scoped edits, routine merges, docs, test fixes = mid model; read-only lookups = cheapest; UI alternatives = a second vendor via agy/gemini; independent review = a different model, never anchored on your conclusion.
-4. Every dispatched prompt includes: task id + objective, tracker link, files it may touch, acceptance criteria + verification commands, [AGENTS.md rules], [project tool hints], the proof it must publish (rule 5), "do not broaden scope", and the DONE envelope.
-5. Proof rules (put the matching one in the prompt):
+4. Visible work: a worker pushes and opens a DRAFT PR as soon as its first commit exists, keeps going, and marks it ready (`gh pr ready`, full body) when its checks are green. An idle-looking workspace with no PR reads as stuck.
+5. Every dispatched prompt includes: task id + objective, tracker link, files it may touch, acceptance criteria + verification commands, [AGENTS.md rules], [project tool hints], the proof it must publish (rule 5), "do not broaden scope", and the DONE envelope.
+6. Proof rules (put the matching one in the prompt):
    - **UI change:** record a demo with the demo-recorder plugin (`/demo-recorder`, which can post it to the PR) and publish it. Without the plugin: screenshots of each step on a Superset page.
    - **Backend change:** publish a Superset page with the evidence: the tests run, before and after, and the revert-proves-red output.
    - **Read-only or docs work:** exempt, with `proof: none: <why>`.
