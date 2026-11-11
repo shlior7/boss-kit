@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from '../hooks/details'
+import { footer, mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from '../hooks/details'
 import type { Pr } from '../types'
 
 const worker = { ws: '1a2b3c4d', id: 'x', term: 'y', name: 'api', branch: 'feat/a', task: 'restack-42', ledger: 'DISPATCHED', date: '', state: 'working', watched: true, proof: [] }
@@ -55,4 +55,10 @@ test('unread mail becomes one context line, none when the inbox is empty', () =>
   const line = mailContext(1, items) ?? ''
   expect(line.startsWith('1 unread boss mail: question from gadgets: is #42 safe to merge?')).toBe(true)
   expect(line.includes('never approval')).toBe(true)
+})
+
+test('the footer drops the tracker when none is synced, and spells out counts', () => {
+  expect(footer({ board: {} })).toBe('')
+  expect(footer({ board: {}, lessonsNew: 1 })).toBe('1 new shared lesson')
+  expect(footer({ board: { mine: 6, p1: 2, inProgress: 1 }, lessonsNew: 2 })).toBe('tracker: 6 mine · 2 P0/P1 · 1 in progress · 2 new shared lessons')
 })

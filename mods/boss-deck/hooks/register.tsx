@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Deck, Detail, Pr, ProofLink, Worker } from '../types'
-import { mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from './details'
+import { footer, mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from './details'
 import type { PrView } from './details'
 
 const PANE = 'boss-deck'
@@ -174,7 +174,8 @@ export const register: Register = on => {
         <Text color="suggestion">{label}</Text>
       </Button>
     )
-    const details = (rows: Detail[], url?: string, links: ProofLink[] = [], workerProof = false) => (
+    // `open` is the expanded row's way out: a PR's GitHub page, a worker's workspace.
+    const details = (rows: Detail[], open?: { key: string; label: string; press: () => void }, links: ProofLink[] = [], workerProof = false) => (
       <Box flexDirection="column" paddingLeft={4} marginBottom={1}>
         {rows.map(r => (
           <Box flexDirection="row">
@@ -187,9 +188,9 @@ export const register: Register = on => {
             {links.map((l, i) => linkButton(`proof-${l.url}-${i}`, workerProof ? `proof ↗ ${l.label}` : `${l.label} ↗`, l.url))}
           </Box>
         )}
-        {url && (
-          <Button plain key={`gh-${url}`} onPress={() => void openUrl($, url)}>
-            <Text color="suggestion">open on GitHub ↗</Text>
+        {open && (
+          <Button plain key={open.key} onPress={open.press}>
+            <Text color="suggestion">{open.label}</Text>
           </Button>
         )}
       </Box>
@@ -203,27 +204,27 @@ export const register: Register = on => {
     const worker = (w: Worker, i: number) => {
       const dim = w.state !== 'working' && w.state !== 'blocked'
       const color = w.state === 'blocked' ? 'error' : undefined
+      const key = `w-${w.ws}`
+      const open = shown?.key === key
       return (
         <Box flexDirection="column">
           <Box flexDirection="row">
             {cell(2, text(STATE_MARK[w.state] ?? '○', dim, color))}
-            {cell(
-              23,
-              <Button plain key={`open-${w.ws}`} hotkey={i < 9 ? String(i + 1) : undefined} onPress={() => void openWorkspace($, w.id)}>
-                <Text dimColor={dim} color={color}>
-                  {w.name.slice(0, i < 9 ? 18 : 21)}
-                </Text>
-              </Button>,
-            )}
+            {/* The whole row expands; the workspace opens from the details. A hotkey's "1: " takes 3 of the name's 23 cells. */}
             {rest(
-              <Button plain key={`peek-${w.ws}`} onPress={() => void toggle($, `w-${w.ws}`, () => workerPeek($, w))}>
-                <Text dimColor={dim} color={color}>
+              <Button plain key={`peek-${w.ws}`} hotkey={i < 9 ? String(i + 1) : undefined} onPress={() => void toggle($, key, () => workerPeek($, w))}>
+                <Text dimColor={dim} color={color} bold={open}>
+                  {w.name.slice(0, i < 9 ? 18 : 21).padEnd(i < 9 ? 20 : 23)}
+                </Text>
+                <Text dimColor={dim} color={color} wrap="truncate-end">
                   {w.task}
                 </Text>
               </Button>,
             )}
           </Box>
-          {shown?.key === `w-${w.ws}` && details(shown.rows, undefined, shown.links, true)}
+          {open &&
+            shown &&
+            details(shown.rows, { key: `open-${w.ws}`, label: 'open workspace ↗', press: () => void openWorkspace($, w.id) }, shown.links, true)}
         </Box>
       )
     }
@@ -246,7 +247,8 @@ export const register: Register = on => {
             {cell(11, text(prStatus(p), !color, color))}
             {rest(text(shortTitle(p.title), true))}
           </Box>
-          {shown?.key === key && details(shown.rows, shown.url, shown.links)}
+          {shown?.key === key &&
+            details(shown.rows, shown.url ? { key: `gh-${shown.url}`, label: 'open on GitHub ↗', press: () => void openUrl($, shown.url ?? '') } : undefined, shown.links)}
         </Box>
       )
     }
@@ -311,15 +313,13 @@ export const register: Register = on => {
           </Box>
         )}
 
-        <Box flexDirection="row" justifyContent="space-between" marginTop={1}>
-          {text(
-            `board ${d.board.mine ?? '?'} mine · ${d.board.p1 ?? '?'} P1 · ${d.board.inProgress ?? '?'} active` +
-              (d.lessonsNew ? ` · lessons +${d.lessonsNew}` : ''),
-            true,
-          )}
-          <Text dimColor>{ago(now - d.at)}</Text>
+        <Box flexDirection="column" marginTop={1}>
+          {footer(d) && text(footer(d), true)}
+          <Box flexDirection="row" justifyContent="space-between">
+            {text('press a row for details', true)}
+            <Text dimColor>{`updated ${ago(now - d.at)} ago`}</Text>
+          </Box>
         </Box>
-        {text('name opens workspace · task or # expands', true)}
       </Box>
     )
   })

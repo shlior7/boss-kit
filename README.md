@@ -1,15 +1,46 @@
 # boss-kit
 
-Run a Claude Code session as the **boss**: an orchestrator that hands work to other agent sessions in Paradev (formerly Superset) workspaces. It keeps every PR conflict-free against its base, checks each worker's claim against GitHub before believing it, and tells you only what needs you.
+**Run several coding agents at once without babysitting them.** boss-kit turns one Claude Code session into a *boss*: it hands work to worker agents in Paradev (formerly Superset) workspaces, waits for them to finish, checks what they claim against GitHub, and tells you only what needs you.
 
-The boss doesn't write features. It routes them: it picks the workspace and model, writes the dispatch prompt, arms a watcher, verifies the result, and reports. Run one boss per project, or several. They find each other through a registry, can mail each other, and share lessons.
+![A boss session after verifying a worker's PR (left), and the boss-deck pane with workers, the PR stack and what needs you (right)](docs/boss-deck-main.png)
 
+<sub>Sample data. Left: the boss checks a finished task on GitHub and reports. Right: the boss-deck pane.</sub>
+
+## Why
+
+Running agents in parallel breaks in the same places every time:
+
+| Without a boss | With boss-kit |
+|---|---|
+| You tab between terminals to see who finished | A watcher per dispatch wakes the boss the moment a worker ends with a DONE or BLOCKED envelope |
+| "Done, all tests pass" turns out to mean nothing was pushed | The boss checks the head sha, CI and mergeability on GitHub, and opens every proof link, before it believes a word |
+| Stacked PRs drift into conflicts while you're away | `boss-sync` merges each base into your branches in a throwaway worktree. Never a rebase, never a force-push |
+| Every agent pings you about everything | You get one line: **Your move: …**. The pane stays grey until something needs you |
+| What went wrong on Monday happens again on Friday | Lessons are written down, per project and shared, and loaded every session |
+
+The boss doesn't write features. It routes them: it picks the workspace and model, writes the dispatch prompt, arms a watcher, verifies the result, and reports. Merges, pushes to the base branch and anything touching prod wait for you. Run one boss per project, or several: they find each other through a registry, can mail each other, and share lessons.
+
+## How it works
+
+```mermaid
+flowchart LR
+  you([You]) <-- "goals · Your move: …" --> boss["Boss session<br/>Claude Code + boss-deck"]
+  boss -- dispatch prompts --> paradev
+  subgraph paradev [Paradev workspaces]
+    A["worker A · branch · PR"]
+    B["worker B · branch · PR"]
+  end
+  boss <-- "arms · wakes" --> W["watcher<br/>one per dispatch"]
+  paradev -- "DONE / BLOCKED envelope" --> W
+  paradev -- push --> GH[(GitHub)]
+  boss -. "verify sha · CI · conflicts · proof" .-> GH
+  boss --- data[("$BOSS_HOME<br/>ledger · lessons · mail")]
 ```
-you ──► boss session ──dispatch──► worker A (workspace, branch, PR)
-            ▲   │                 worker B
-            │   └── watcher per dispatch: fires on the worker's DONE / BLOCKED envelope
-            └────── verify on GitHub (sha, CI, conflicts) ──► report: "Your move: …"
-```
+
+1. **You** say what you want, in plain words.
+2. **The boss** reuses the workspace that already owns the work (or makes one), writes a self-contained prompt with the files it may touch and how to prove it, and sends it.
+3. **A watcher** runs in the background for each dispatch and wakes the boss when the worker finishes, gets blocked, or goes quiet.
+4. **The boss verifies** on GitHub, not on the worker's word, records the result in the ledger, and reports what needs you.
 
 ## What's in the box
 
@@ -29,6 +60,7 @@ you ──► boss session ──dispatch──► worker A (workspace, branch, 
 | `bin/boss-tasks.py` | Read-only tracker sync: `none`, or any HTTP endpoint that returns `{"tasks": [...]}` |
 | `bin/boss-deck-data.py` | Collects the data the pane shows |
 | `mods/boss-deck/` | The **boss-deck** pane, a Claude Code mod |
+| `docs/` | README screenshots. `docs/src/render.sh` re-renders them from `docs/src/shots.html` (sample data) |
 
 ## Code and data
 
@@ -132,7 +164,7 @@ If you cloned the kit somewhere else, `export BOSS_KIT_HOME=/path/to/boss-kit`. 
    @~/.claude/boss/lessons.md
    ```
 
-   The `# Boss workspace` heading is what makes boss-deck load there and nowhere else.
+   The `# Boss workspace` heading is what makes boss-deck load there and nowhere else. At the start of each session the pane renames that Paradev workspace to **BOSS**, so it stands out in the sidebar.
 
 4. **Optional:** sync the tracker at session start, from that worktree's `.claude/settings.local.json`:
 
@@ -145,6 +177,24 @@ If you cloned the kit somewhere else, `export BOSS_KIT_HOME=/path/to/boss-kit`. 
 Several bosses can run at once, one per worktree: on one project (they share its ledger and lessons, each with its own `next.txt` and inbox) or across projects.
 
 ## The loop: dispatch → watcher → verify
+
+```mermaid
+sequenceDiagram
+  actor You
+  participant Boss
+  participant Watcher
+  participant Worker
+  participant GitHub
+  You->>Boss: fix the retry loop in PR 42
+  Boss->>Worker: dispatch prompt (task, files, checks, envelope)
+  Boss->>Watcher: arm in the background
+  Worker->>GitHub: merge base, test, push
+  Worker-->>Watcher: SUPERSET_WORKER_DONE (task fix-42)
+  Watcher-->>Boss: exits, which wakes the boss
+  Boss->>GitHub: head sha matches? CI green? mergeable?
+  Boss->>Boss: open proof links, revert-proves-red
+  Boss->>You: Your move: merge 42?
+```
 
 **1. Dispatch.** The boss reuses the workspace that already owns the work (matched by branch or PR) and sends it a self-contained prompt:
 
@@ -250,7 +300,7 @@ boss-lesson list --all
 boss-lesson promote 3      # project lesson 3 turned out to hold everywhere
 ```
 
-Both files are append-only and numbered. An exact duplicate is refused; one that starts with the same eight words gets a warning. `/boss` loads both; past 150 lines, the shared file loads as every title plus the 20 most recent entries in full. A boss can propose a shared lesson to another by mail (`--kind fyi --subject "lesson: …"`). The pane's footer shows `lessons +N` when shared lessons were added since that boss's last session.
+Both files are append-only and numbered. An exact duplicate is refused; one that starts with the same eight words gets a warning. `/boss` loads both; past 150 lines, the shared file loads as every title plus the 20 most recent entries in full. A boss can propose a shared lesson to another by mail (`--kind fyi --subject "lesson: …"`). The pane's footer shows `N new shared lessons` when shared lessons were added since that boss's last session.
 
 ## Migrating from an older kit
 
@@ -275,43 +325,23 @@ Kits up to v0.4 kept project data inside the kit: `projects/<name>/` and `state/
 | `bin/boss-watch-done.sh <ws> <term>` | The watcher above. Env: `BOSS_HOST` (default: first host). Needs `jq` |
 | `bin/boss-sync.py --only=N,N [--push]` | Run inside the repo. For each listed PR (stacked ones after their base), merges `origin/<base>` into the branch in a throwaway worktree and reports `up to date`, `merged clean` or `REAL CONFLICT: files`. Dry run by default; `--push` pushes (plain push, never force). `--gen=FILES --regen="cmd"` auto-resolves conflicts only in generated files; `--if-moved` exits early when the base hasn't moved. **Use `--only` with your own PR numbers.** `--all` would push to teammates' branches |
 | `bin/boss-tasks.py [--quiet]` | Read-only tracker sync into this boss's `cache/tracker.json`. Prints what changed, your open tasks, team P0/P1 and In Review |
-| `bin/boss-deck-data.py [--selftest]` | Prints the JSON the pane draws, and writes this boss's heartbeat. `--selftest` runs its checks |
+| `bin/boss-deck-data.py [--session-start] [--selftest]` | Prints the JSON the pane draws, and writes this boss's heartbeat. `--session-start` (the pane's first refresh) also marks a new session and renames this boss's Paradev workspace to `BOSS`. `--selftest` runs its checks |
 
 Tests: `python3 -m unittest discover -s tests` (stdlib only, temp `$BOSS_HOME`), `python3 bin/boss-deck-data.py --selftest`, and `claude plugin test mods/boss-deck`.
 
 ## The boss-deck pane
 
-A quiet pane: grey by default, color only for what needs you.
+A quiet pane: grey by default, color only for what needs you. Here with a worker row and a PR expanded:
 
-```
-review ↗ 2026-01-02
-mail 1 ↗
-Wait for review on #42; fix-57 running
-› #57 approved + green: ready to merge (no proof)
-
-WORKERS                          1 working · 1 watched
-● api-retries          fix-42
-· web-login            ready-57
-
-PULL REQUESTS                        2 open · 1 draft
-✓ #42     → jane     retry loop honours Retry-After
-✓   └ #43 draft      backoff jitter
-✓ #57     no proof   login rate limit
-
-gadgets · 2 working · 1 for you ↗
-
-tracker 6 mine · 2 P1 · 1 active · lessons +2     12s
-```
+<img src="docs/boss-deck-peek.png" width="480" alt="boss-deck pane with the api-retries worker expanded (state, branch, activity, last envelope, context, watcher, proof) and PR #42 expanded (CI, merge state, reviews, size, branch, head, proof links)">
 
 - **The top line** is this boss's last "Your move", read from its `next.txt`.
 - **`mail N ↗`** expands to the unread subjects. While mail is unread, every prompt carries one context line naming it, which the model reads and you don't see. It reads the inbox folder only, so it costs nothing.
-- **Press a workspace name** to open it in the Paradev app (`superset workspaces open`). Keys `1`–`9` do the same once the pane has focus.
-- **Press a task** for a summary: state and elapsed time, branch, what it's doing, its last envelope, context use (yellow at 60% or more), watcher.
+- **Press a worker row** (or its key, `1`–`9`, once the pane has focus) to expand it: state and elapsed time, branch, what it's doing, its last envelope, context use (yellow at 60% or more), watcher, its proof (`proof ↗ page`, from the ledger's Proof column), and **`open workspace ↗`**, which opens it in the Paradev app (`superset workspaces open`). Press again to fold it.
 - **Press a PR number** for CI (pass / fail / pending with the failing names), mergeability, reviews, size and head, plus "open on GitHub" and its proof: `demo ↗`, `page ↗`, `artifact ↗`. Links are taken from the PR body and comments: Superset pages, claude.ai artifacts, video files, GitHub attachments and Loom.
-- A worker's summary also lists its proof (`proof ↗ page`), from the ledger's Proof column.
 - **`review ↗ <date>`** at the top opens the latest review page (this boss's `review.txt`).
 - **Other live bosses** get one quiet line each, `<project> · N working · M for you ↗`. Press it to open that boss's workspace.
-- **`lessons +N`** in the footer: shared lessons added since this boss's last session.
+- **The footer** shows `tracker: N mine · N P0/P1 · N in progress` when a tracker is synced (nothing otherwise), `N new shared lessons` added since this boss's last session, and when the pane last updated.
 - **PR status colors:** green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. Stacked PRs nest under their base. PRs idle for 10+ days fold into one line.
 - **Refresh:** every 60 s, plus right after the boss dispatches, merges, comments or syncs. `/boss-deck` refreshes on demand. The status line shows `boss · N working · N for you`.
 

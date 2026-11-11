@@ -1,0 +1,163 @@
+<!doctype html>
+<!-- Source for docs/*.png. Sample data only. Re-render: docs/src/render.sh -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>boss-kit screenshots</title>
+<style>
+  :root {
+    --bg: #0f1012;
+    --term: #17181b;
+    --chrome: #222327;
+    --rule: #2c2d32;
+    --fg: #e4e2dd;
+    --dim: #85837d;
+    --faint: #5b5a56;
+    --success: #5fb870;
+    --error: #ff6b80;
+    --warning: #f2c14e;
+    --suggestion: #a9b3f5;
+    --claude: #d97757;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); font: 13px/1.55 "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--fg); padding: 28px; }
+  .shot { display: none; }
+  body[data-shot="main"] #main, body[data-shot="peek"] #peek { display: block; }
+  .win { background: var(--term); border-radius: 10px; overflow: hidden; box-shadow: 0 18px 50px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.3); border: 1px solid #2a2b30; }
+  .bar { background: var(--chrome); height: 34px; display: flex; align-items: center; padding: 0 14px; gap: 8px; border-bottom: 1px solid var(--rule); }
+  .bar i { width: 12px; height: 12px; border-radius: 50%; background: #3a3b40; }
+  .bar span { margin-left: 12px; color: var(--dim); font-size: 12px; }
+  .body { display: grid; grid-template-columns: 1fr auto; }
+  .chat { padding: 16px 20px 14px; border-right: 1px solid var(--rule); display: flex; flex-direction: column; }
+  .pane { padding: 10px 14px 14px; }
+  .pane-title { color: var(--dim); border-bottom: 1px solid var(--rule); padding-bottom: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; }
+  pre { font: inherit; white-space: pre; }
+  .d { color: var(--dim); } .f { color: var(--faint); } .b { font-weight: 700; }
+  .ok { color: var(--success); } .er { color: var(--error); } .wa { color: var(--warning); } .su { color: var(--suggestion); } .hk { color: var(--claude); } .cl { color: var(--claude); }
+  .input { margin-top: auto; border: 1px solid #3a3b40; border-radius: 6px; padding: 6px 10px; color: var(--dim); }
+  .status { margin-top: 6px; color: var(--dim); display: flex; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+<section class="shot" id="main">
+  <div class="win" style="width: 1220px">
+    <div class="bar"><i></i><i></i><i></i><span>widgets-boss — claude</span></div>
+    <div class="body">
+      <div class="chat">
+<pre><span class="d">&gt;</span> fix-57 is done, check it</pre>
+<pre>
+
+<span class="cl">⏺</span> Reading the envelope from <span class="b">web-login</span> and checking it on GitHub.
+
+<span class="ok">⏺</span> <span class="b">Bash</span>(gh pr view 57 --repo acme/widgets --json headRefOid,statusCheckRollup,…)
+  <span class="d">⎿  head 8c41d2e07 · 14 checks · MERGEABLE · CLEAN</span>
+
+<span class="ok">⏺</span> <span class="b">Bash</span>(git revert --no-commit 8c41d2e &amp;&amp; make test-http; git revert --abort)
+  <span class="d">⎿  FAIL tests/http/test_login_limit.py::test_sixth_attempt_is_429</span>
+     <span class="d">revert proves red ✓</span>
+
+<span class="cl">⏺</span> <span class="b">fix-57 verified.</span>
+  · head <span class="b">8c41d2e</span> matches the worker's claim
+  · CI 14 pass, 0 pending, mergeable, jane approved
+  · regression test goes red with the fix reverted
+  · <span class="wa">proof: none</span>: the worker posted no page or demo
+
+  Ledger updated. fix-42 (api-retries) is still running, watcher armed.
+
+  <span class="b">Your move:</span> say "merge 57", or I ask web-login for a
+  before/after page first.
+</pre>
+        <div class="input">&gt; <span style="color:var(--fg)">▌</span></div>
+        <div class="status"><span>boss · 2 working · 1 for you</span><span>opus · 41k/1000k (4%)</span></div>
+      </div>
+      <div class="pane" id="pane-main"></div>
+    </div>
+  </div>
+</section>
+
+<section class="shot" id="peek">
+  <div class="win" style="width: max-content">
+    <div class="bar"><i></i><i></i><i></i><span>Boss</span></div>
+    <div class="pane" id="pane-peek"></div>
+  </div>
+</section>
+
+<script>
+// Pane width in columns. Rows are [text, class] segments, laid out like register.tsx's cells.
+const W = 56
+const pad = (s, n) => s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length)
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+const seg = (t, c = '') => `<span class="${c}">${esc(t)}</span>`
+const line = (...s) => s.join('') + '\n'
+const justify = (l, r, lc, rc) => line(seg(l, lc), seg(' '.repeat(Math.max(1, W - l.length - r.length))), seg(r, rc))
+const section = (name, note) => '\n' + justify(name.toUpperCase(), note, 'd b', 'd')
+// The row is one Button: its hotkey ("1: ") takes 3 of the name's 23 cells.
+const worker = (mark, n, name, task, c) => line(seg(pad(mark, 2), c), seg(n + ': ', 'hk'), seg(pad(name.slice(0, 18), 20), c), seg(task, c))
+const pr = (ci, depth, tag, status, title, sc) =>
+  line(seg(pad(ci, 2), ci === '✗' ? 'er' : 'd'), depth ? seg(pad('└', 2), 'd') : '', seg(pad(tag, 7)), seg(pad(status, 11), sc || 'd'), seg(title.slice(0, W - 20 - 2 * depth), 'd'))
+const detail = (label, value, c = 'd') => line(seg('    ' + pad(label, 9), 'd'), seg(value, c))
+
+const head = () =>
+  line(seg('review ↗ 2026-11-10', 'su')) +
+  line(seg('mail 1 ↗', 'su'))
+const foot = ago =>
+  '\n' + line(seg('tracker: 6 mine · 2 P0/P1 · 1 in progress', 'd')) +
+  justify('press a row for details', `updated ${ago} ago`, 'd', 'd')
+
+const main =
+  head() +
+  line(seg('Merge #57 when you say so; fix-42 is running.', 'b')) +
+  line(seg('› ', 'wa'), seg('#57 approved + green: ready to merge (no proof)', 'wa')) +
+  line(seg('· ', 'd'), seg('#61 waiting on review for 2 days', 'd')) +
+  section('workers', '2 working · 2 watched') +
+  worker('●', 1, 'api-retries', 'fix-42') +
+  worker('●', 2, 'cache-warmup', 'fix-61-ci') +
+  worker('·', 3, 'web-login', 'ready-57', 'd') +
+  section('pull requests', '3 open · 1 draft') +
+  pr('…', 0, '#42', '→ jane', 'retry loop honours Retry-After', 'su') +
+  pr('✓', 1, '#43', 'draft', 'backoff jitter', 'f') +
+  pr('✓', 0, '#57', 'no proof', 'login rate limit', 'wa') +
+  pr('✗', 0, '#61', 'review', 'warm the cache on deploy', 'er') +
+  pr('✓', 0, 'sdk#7', 'approved', 'client for the retry API', 'ok') +
+  '\n' + line(seg('gadgets · 2 working · 1 for you ↗', 'd')) +
+  foot('12s')
+
+const peek =
+  head() +
+  line(seg('Merge #57 when you say so; fix-42 is running.', 'b')) +
+  section('workers', '2 working · 2 watched') +
+  line(seg('● '), seg('1: ', 'hk'), seg(pad('api-retries', 20), 'b'), seg('fix-42', 'b')) +
+  detail('state', 'working 6m 12s') +
+  detail('branch', 'fix/retry-backoff') +
+  detail('doing', 'Running make test-http') +
+  detail('last', 'done fix-38: Retry-After as seconds or date') +
+  detail('context', '212k · 21%') +
+  detail('watcher', 'armed') +
+  line(seg('    '), seg('proof ↗ page', 'su')) +
+  line(seg('    '), seg('open workspace ↗', 'su')) +
+  '\n' +
+  worker('●', 2, 'cache-warmup', 'fix-61-ci') +
+  worker('·', 3, 'web-login', 'ready-57', 'd') +
+  section('pull requests', '3 open · 1 draft') +
+  pr('…', 0, '#42', '→ jane', 'retry loop honours Retry-After', 'su') +
+  detail('ci', '11 pass · 3 pending', 'wa') +
+  detail('merge', 'mergeable · blocked') +
+  detail('review', 'jane asked') +
+  detail('size', '+148 −21 in 6 files') +
+  detail('branch', 'fix/retry-backoff → main') +
+  detail('head', '3f2a1c94b · updated 6m ago') +
+  line(seg('    '), seg('page ↗', 'su'), seg('  '), seg('demo ↗', 'su')) +
+  line(seg('    '), seg('open on GitHub ↗', 'su')) +
+  '\n' +
+  pr('✓', 1, '#43', 'draft', 'backoff jitter', 'f') +
+  pr('✓', 0, '#57', 'no proof', 'login rate limit', 'wa') +
+  foot('4s')
+
+const paneTitle = '<div class="pane-title"><span>Boss</span></div>'
+document.getElementById('pane-main').innerHTML = paneTitle + '<pre>' + main + '</pre>'
+document.getElementById('pane-peek').innerHTML = '<pre>' + peek + '</pre>'
+document.body.dataset.shot = location.hash.slice(1) || 'main'
+</script>
+</body>
+</html>

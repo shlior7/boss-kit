@@ -8,7 +8,8 @@ this boss's inbox, and the registry of other bosses. Each run is also this boss'
 Paths and project resolution: bin/bosskit.py.
 
 usage: boss-deck-data.py [--session-start] [--selftest]
-  --session-start: also mark this boss's new session (the base for "lessons +N")
+  --session-start: also mark this boss's new session (the base for "N new shared lessons"), and
+                   rename this boss's own Paradev workspace to BOSS
 """
 import json
 import os
@@ -22,6 +23,8 @@ import bosskit  # noqa: E402
 
 PR_TTL_S = 300
 MAX_WORKERS = 8
+# What a boss names its own Paradev workspace at session start.
+BOSS_NAME = "BOSS"
 # ponytail: a watcher is "stale" by age or an idle worker; a real liveness probe would read the terminal
 STALE_AGE_S = 7200
 IDLE_STALE_S = 1800
@@ -119,6 +122,13 @@ def host(cfg):
         return d[0]["id"] if d else ""
     except (ValueError, KeyError, IndexError):
         return ""
+
+
+def name_boss_workspace(cfg):
+    """Names this boss's own Paradev workspace BOSS, so it stands out in the sidebar. Every session, so a rename back heals."""
+    ws = os.environ.get("SUPERSET_WORKSPACE_ID")
+    if ws:
+        run(["superset", "workspaces", "update", ws, "--host", host(cfg), "--name", BOSS_NAME], timeout=20)
 
 
 def snapshot(cfg):
@@ -298,6 +308,8 @@ def main():
     working = sum(w["state"] == "working" for w in workers)
     for_you = sum(a["level"] == "act" for a in todo)
     bosskit.heartbeat(ctx, host(cfg), {"working": working, "forYou": for_you})
+    if "--session-start" in sys.argv:
+        name_boss_workspace(cfg)
     print(json.dumps({
         "at": int(time.time()), "me": {"id": ctx.bid, "project": ctx.name}, "next": now_line, "review": review,
         "attention": todo, "workers": workers, "watchers": armed, "prs": pr_rows, "board": board(cfg, ctx.cache),
