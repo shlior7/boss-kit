@@ -56,3 +56,7 @@ Why: finished workspaces piled up on the board and the user had to ask for them 
 ## 13. A workspace is a full worktree: only for code that becomes a PR (2026-11-11, quack)
 Research, ops and checks ran in fresh workspaces, each a full copy of the repo with its own install. Give them a new agent session instead: in the workspace the work belongs to, or as another session in the boss workspace on the base branch when no files change.
 Why: the user: "creating a workspace is creating a worktree which copies all the repo, only do it for real changes".
+
+## 14. Group workspaces by concern, and keep their names current (2026-11-11, quack)
+Seven workspaces sat in one flat list with names like "build (PR #4)" and "notes #8 + account" that no longer said what they did. Tags (`superset workspaces update <id> --local --tag <group> --name <name>`) file them into sidebar folders by area; the boss suggests a regrouping as it learns the project.
+Why: the user asked for groups, and for the boss to propose reorganizations over time.
