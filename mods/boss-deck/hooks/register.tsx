@@ -176,7 +176,7 @@ export const register: Register = on => {
       </Button>
     )
     // `open` is the expanded row's way out: a PR's GitHub page, a worker's workspace.
-    const details = (rows: Detail[], open?: { key: string; label: string; press: () => void }, links: ProofLink[] = [], workerProof = false) => (
+    const details = (rows: Detail[], open?: { key: string; label: string; press: () => void }, links: ProofLink[] = []) => (
       <Box flexDirection="column" paddingLeft={4} marginBottom={1}>
         {rows.map(r => (
           <Box flexDirection="row">
@@ -187,7 +187,7 @@ export const register: Register = on => {
         {/* Proof links and the way out share one line, wrapping only when the pane is too narrow. */}
         {(links.length > 0 || open) && (
           <Box flexDirection="row" columnGap={2} flexWrap="wrap">
-            {links.map((l, i) => linkButton(`proof-${l.url}-${i}`, workerProof ? `proof ↗ ${l.label}` : `${l.label} ↗`, l.url))}
+            {links.map((l, i) => linkButton(`proof-${l.url}-${i}`, `${l.label} ↗`, l.url))}
             {open && (
               <Button plain key={open.key} onPress={open.press}>
                 <Text color="suggestion">{open.label}</Text>
@@ -226,7 +226,7 @@ export const register: Register = on => {
           </Box>
           {open &&
             shown &&
-            details(shown.rows, { key: `open-${w.ws}`, label: 'open workspace ↗', press: () => void openWorkspace($, w.id) }, shown.links, true)}
+            details(shown.rows, { key: `open-${w.ws}`, label: 'open workspace ↗', press: () => void openWorkspace($, w.id) }, shown.links)}
         </Box>
       )
     }
