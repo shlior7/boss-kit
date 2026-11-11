@@ -3,7 +3,7 @@
 # 2026-11-11: the old envelope regex only matched the name alone on its own line, but Claude Code
 # draws the reply in a box ("│ SUPERSET_WORKER_DONE task: x ...") with a side pane on the same line, so it never saw
 # an envelope and only ever fired on its idle fallback. Now it strips the box and side pane, finds the name anywhere,
-# reads its task, skips <placeholder> templates, and fires the moment the latest envelope differs from the start.
+# reads its task, skips templates (a field whose value is a <placeholder>; a <token> inside a real URL is fine), and fires the moment the latest envelope differs from the start.
 # Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen, 18 (6 min) if a background shell or monitor runs; envelopes fire at once, so a long fallback costs nothing.
 # Env: BOSS_HOST (default: first host). Poll 20 s, timeout 3 h. Needs superset CLI, jq.
 W=$1; T=$2
@@ -13,7 +13,7 @@ sig(){ awk '{ gsub(/││.*$/, ""); gsub(/[│╭╮╰╯⏺]/, " "); l[NR]=$0
   END { for (n = NR; n > 0; n--) if (match(l[n], /SUPERSET_WORKER_(DONE|BLOCKED)/)) {
     k = substr(l[n], RSTART + 16, RLENGTH - 16); b = ""
     for (i = n; i <= n + 6 && i <= NR; i++) b = b " " l[i]
-    if (b ~ /<[a-z][a-z ]*>/) continue
+    if (b ~ /(task|summary|files|checks|proof|handoff|reason|needs):? *<[a-z]/) continue
     t = "?"; if (match(b, /task:? +[A-Za-z0-9._-]+/)) { t = substr(b, RSTART, RLENGTH); sub(/task:? +/, "", t) }
     print k "|" t; exit } }'; }
 base=$(scr | sig); idle=0; lasth=""
