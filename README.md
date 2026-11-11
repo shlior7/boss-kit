@@ -337,7 +337,7 @@ A quiet pane: grey by default, color only for what needs you. Here with a worker
 
 - **The top line** is this boss's last "Your move", read from its `next.txt`.
 - **`mail N ↗`** expands to the unread subjects. While mail is unread, every prompt carries one context line naming it, which the model reads and you don't see. It reads the inbox folder only, so it costs nothing.
-- **Press a worker row** (or its key, `1`–`9`, once the pane has focus) to expand it: state and elapsed time, branch, what it's doing, its last envelope, context use (yellow at 60% or more), watcher, its proof (`proof ↗ page`, from the ledger's Proof column), and **`open workspace ↗`**, which opens it in the Paradev app (`superset workspaces open`). Press again to fold it.
+- **Press a worker row** (or its key, `1`–`9`, once the pane has focus) to expand it: state and elapsed time, branch, what it's doing, its last envelope, context use (yellow at 60% or more), watcher, its proof links (`page ↗`, `demo ↗`, from the ledger's Proof column), and **`open workspace ↗`**, which opens it in the Paradev app (`superset workspaces open`). Press again to fold it.
 - **Press a PR number** for CI (pass / fail / pending with the failing names), mergeability, reviews, size and head, plus "open on GitHub" and its proof: `demo ↗`, `page ↗`, `artifact ↗`. Links are taken from the PR body and comments: Superset pages, claude.ai artifacts, video files, GitHub attachments and Loom.
 - **`review ↗ <date>`** at the top opens the latest review page (this boss's `review.txt`).
 - **Other live bosses** get one quiet line each, `<project> · N working · M for you ↗`. Press it to open that boss's workspace.
