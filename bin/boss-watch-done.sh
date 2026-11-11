@@ -4,7 +4,7 @@
 # draws the reply in a box ("│ SUPERSET_WORKER_DONE task: x ...") with a side pane on the same line, so it never saw
 # an envelope and only ever fired on its idle fallback. Now it strips the box and side pane, finds the name anywhere,
 # reads its task, skips <placeholder> templates, and fires the moment the latest envelope differs from the start.
-# Idle fallback: 3 idle polls with an unchanged screen (10 if a background shell or monitor is still running).
+# Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen, 18 (6 min) if a background shell or monitor runs; envelopes fire at once, so a long fallback costs nothing.
 # Env: BOSS_HOST (default: first host). Poll 20 s, timeout 3 h. Needs superset CLI, jq.
 W=$1; T=$2
 H=${BOSS_HOST:-$(superset hosts list --json | jq -r 'if type=="array" then .[0].id else .hosts[0].id end')}
@@ -30,7 +30,7 @@ for i in $(seq 1 540); do
   h=$(echo "$txt" | tail -25 | cksum)
   if [ "$st" = idle ] && [ "$h" = "$lasth" ]; then idle=$((idle+1)); else idle=0; fi
   lasth=$h
-  need=3; echo "$txt" | tail -6 | grep -qE "[0-9]+ (shells?|monitors?)" && need=10
+  need=9; echo "$txt" | tail -12 | grep -qE "[0-9]+ (shells?|monitors?)|Monitor event" && need=18
   if [ "$idle" -ge "$need" ]; then echo "AGENT IDLE WITHOUT ENVELOPE"; echo "$txt" | tail -40 | sed 's/││.*$//'; exit 0; fi
 done
 echo TIMEOUT
