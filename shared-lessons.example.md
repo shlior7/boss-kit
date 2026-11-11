@@ -52,3 +52,7 @@ Why: a Paradev host restart ended four worker sessions mid-task.
 ## 12. Close done workspaces as you go (2026-11-11, quack)
 Retire an implementation workspace once its PRs are merged and verified with nothing queued, and sweep the board at every status report. Keep research workspaces: research often turns into the implementation in the same conversation. Copy any ignored output worth keeping (a rendered video, audio) out of the worktree first: archiving deletes the folder.
 Why: finished workspaces piled up on the board and the user had to ask for them to be closed. Then the boss archived a research workspace the moment it reported DONE while the user was still working in it; a local archive deletes the worktree, and only `claude --continue` in a new workspace on the same branch and path got the conversation back.
+
+## 13. A workspace is a full worktree: only for code that becomes a PR (2026-11-11, quack)
+Research, ops and checks ran in fresh workspaces, each a full copy of the repo with its own install. Give them a new agent session instead: in the workspace the work belongs to, or as another session in the boss workspace on the base branch when no files change.
+Why: the user: "creating a workspace is creating a worktree which copies all the repo, only do it for real changes".
