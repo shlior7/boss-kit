@@ -2,7 +2,7 @@
 
 **Run several coding agents at once without babysitting them.** boss-kit turns one Claude Code session into a *boss*: it hands work to worker agents in Paradev (formerly Superset) workspaces, waits for them to finish, checks what they claim against GitHub, and tells you only what needs you.
 
-![A boss session after verifying a worker's PR (left), and the boss-deck pane with workers, the PR stack and what needs you (right)](docs/boss-deck-main.png)
+![A boss session after verifying a worker's PR (left), and the boss-deck pane with its lanes by whose move, the PR stack and what needs you (right)](docs/boss-deck-main.png)
 
 <sub>Sample data. Left: the boss checks a finished task on GitHub and reports. Right: the boss-deck pane.</sub>
 
@@ -56,6 +56,7 @@ flowchart LR
 | `bin/boss-lesson` | Records and promotes lessons |
 | `bin/boss-migrate` | Moves an older kit's project data into the data root |
 | `bin/boss-watch-done.sh` | The watcher: one per dispatch, run in the background |
+| `bin/boss-event` | Logs a workspace's stage (sent, DONE, checked, ready, merged, retired) for the pane's lanes and timeline |
 | `bin/boss-sync.py` | Keeps your open PRs conflict-free: merges each base into its branch in a throwaway worktree |
 | `bin/boss-tasks.py` | Read-only tracker sync: `none`, or any HTTP endpoint that returns `{"tasks": [...]}` |
 | `bin/boss-deck-data.py` | Collects the data the pane shows |
@@ -73,7 +74,7 @@ $BOSS_HOME/
   widgets/                     one folder per project, shared by its bosses
     BOSS.md  config.json  ledger.md  lessons.md  prompts/
     bosses/<boss-id>/          one folder per boss
-      next.txt  review.txt  notes.md  cache/  inbox/  inbox/done/
+      next.txt  review.txt  notes.md  events.jsonl  cache/  inbox/  inbox/done/
 ```
 
 > **Your project facts, prompts, ledger and lessons stay local in `$BOSS_HOME`.** They name your repos, PRs, people and infrastructure, and are never pushed anywhere. The kit's own `projects/` holds only `_template`.
@@ -314,6 +315,7 @@ Both files are append-only and numbered. An exact duplicate is refused; one that
 | `bin/boss-mail send \| inbox \| read \| reply \| done` | Boss mail, above |
 | `bin/boss-lesson add \| list \| promote` | Lessons, above |
 | `bin/boss-migrate [--kit DIR] [--boss ID] [--apply]` | Moves a v0.4-or-older kit's project data into `$BOSS_HOME` and leaves a symlink at each old path. Dry run unless `--apply`; never overwrites. `--boss` names the boss that owned the old `state/<name>/` |
+| `bin/boss-event <ws> <stage> [note]` | Appends `{at, ws, stage, note}` to this boss's `events.jsonl`. The boss logs `sent` on each dispatch, `checked`, `ready` and `retired`; the watcher logs `DONE`, `BLOCKED`, `PR READY` and `merged` when it fires |
 | `bin/boss-watch-done.sh <ws> <term> [<branch>]` | The watcher above; `--sig < screen` prints the envelope it would fire on (`DONE|<id>|<summary start>`) (`bin/test-boss-watch.sh` checks it). Env: `BOSS_HOST` (default: first host); with `<branch>` it also fires `PR READY` when that branch's PR gets a DONE-envelope comment, leaves draft or merges (`--ready < pr-list.json` shows which). Needs `jq`, and `gh` for `<branch>` |
 | `bin/boss-sync.py --only=N,N [--push]` | Run inside the repo. For each listed PR (stacked ones after their base), merges `origin/<base>` into the branch in a throwaway worktree and reports `up to date`, `merged clean` or `REAL CONFLICT: files`. Dry run by default; `--push` pushes (plain push, never force). `--gen=FILES --regen="cmd"` auto-resolves conflicts only in generated files; `--if-moved` exits early when the base hasn't moved. **Use `--only` with your own PR numbers.** `--all` would push to teammates' branches |
 | `bin/boss-tasks.py [--quiet]` | Read-only tracker sync into this boss's `cache/tracker.json` (a migrated `bosses/<id>/tracker.json` is read when that is missing). Prints what changed, your open tasks, team P0/P1 and In Review |
@@ -323,17 +325,28 @@ Tests: `python3 -m unittest discover -s tests` (stdlib only, temp `$BOSS_HOME`),
 
 ## The boss-deck pane
 
-A quiet pane: grey by default, color only for what needs you. Here with a worker row and a PR expanded:
+A quiet pane: grey by default, color only for what needs you. Here with a workspace row and a PR expanded:
 
-<img src="docs/boss-deck-peek.png" width="480" alt="boss-deck pane with the api-retries worker expanded (state, branch, activity, last envelope, context, watcher, proof) and PR #42 expanded (CI, merge state, reviews, size, branch, head, proof links)">
+<img src="docs/boss-deck-peek.png" width="480" alt="boss-deck pane with the api-retries workspace expanded (its timed stage history, next step, activity, context, proof) and PR #42 expanded (CI, merge state, reviews, size, branch, head, proof links)">
 
 - **The top line** is this boss's last "Your move", read from its `next.txt`.
 - **INBOX** appears while something from outside this session is unread: today, boss mail. Each message is one line (its kind in yellow, then sender and subject), up to five, then `+N more`. While mail is unread, every prompt also carries one context line naming it, which the model reads and you don't see. It reads the inbox folder only, so it costs nothing.
-- **Press a worker row** (or its key, `1`–`9`, once the pane has focus) to expand it: state and elapsed time, branch, what it's doing, its last envelope, context use (yellow at 60% or more), watcher, its proof links (`page ↗`, `demo ↗`, from the ledger's Proof column), and **`open workspace ↗`**, which opens it in the Paradev app (`superset workspaces open`). Press again to fold it.
+- **Lanes** show each dispatched workspace by whose move it is, its PR joined by branch on the same row. First match wins, empty lanes are hidden, each header carries its count:
+
+  | Lane | When | Row |
+  |---|---|---|
+  | YOUR MOVE | its PR is approved and green | `› web-login  #57  approved + green · say merge` |
+  | BOSS CHECKING | a DONE envelope (screen or PR comment) the ledger has not verified, or a ready PR whose CI went red | `◐ cache-warmup  #61  DONE 2m ago · verifying` |
+  | WORKING | the agent is working (green `●`), blocked (red `■` and why), or idle without a DONE (dim, the age in yellow) | `● api-retries  fix-42  6m · make test-http` |
+  | IN REVIEW | its PR is ready, waiting on a reviewer | `· search-ui  #55  waiting on jane · 1d` |
+  | DONE TODAY | merged or retired today, archived workspaces included (at most 5) | `✓ login-form  #52  merged 10:41 · retired` |
+
+  Time in stage comes from the stage log, `events.jsonl` (`bin/boss-event`, and the watcher when it fires), else the PR's last update, else the ledger date. PRs with no workspace stay under **PULL REQUESTS**.
+- **Press a workspace row** (or its key, `1`–`9`, once the pane has focus) to expand it: its timed stage history (`10:02  sent  watcher armed`, `10:31  DONE  PR #42 draft`), the `next` step and who takes it, what it's doing now, context use (yellow at 60% or more), its proof links (`page ↗`, `demo ↗`, from the ledger's Proof column), and **`open workspace ↗`**, which opens it in the Paradev app (`superset workspaces open`). Press again to fold it.
 - **Press a PR number** for CI (pass / fail / pending with the failing names), mergeability, reviews, size and head, plus "open on GitHub" and its proof: `demo ↗`, `page ↗`, `artifact ↗`. Links are taken from the PR body and comments: Superset pages, claude.ai artifacts, video files, GitHub attachments and Loom.
 - **`review ↗ <date>`** at the top opens the latest review page (this boss's `review.txt`).
 - **The footer** shows `tracker: N mine · N P0/P1 · N in progress` when a tracker is synced (nothing otherwise), `N new shared lessons` added since this boss's last session, and when the pane last updated.
-- **Colors:** the CI mark before each PR is green `✓`, yellow `…` while pending, red `✗`; a working worker's dot is green. PR status: green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. Stacked PRs nest under their base. PRs idle for 10+ days fold into one line.
+- **Colors:** the CI mark before each PR is green `✓`, yellow `…` while pending, red `✗`; a working worker's dot is green, a blocked one's square red, YOUR MOVE's `›` yellow. PR status: green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. Stacked PRs nest under their base. PRs idle for 10+ days fold into one line.
 - **Refresh:** every 60 s, plus right after the boss dispatches, merges, comments or syncs; those refreshes skip the 5-minute PR cache, so a merged PR drops off at once. `/boss-deck` refreshes on demand. The pane writes no status line.
 
 ## Safety rules (from the template; worth knowing before you start)
