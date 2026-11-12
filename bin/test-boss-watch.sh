@@ -34,4 +34,15 @@ X
 X
 )
 if [ -n "$a" ] && [ "$a" != "$b" ]; then echo "ok   same task, new summary -> differs ($a vs $b)"; else echo "FAIL same task, new summary: '$a' vs '$b'"; fail=1; fi
+# PR READY: a draft counts only with BOSS_DRAFT_DONE=1 and every check green; pending or failing never does.
+prs='[{"number":1,"state":"OPEN","isDraft":true,"statusCheckRollup":[{"conclusion":"SUCCESS"},{"state":"SUCCESS"}]},
+ {"number":2,"state":"OPEN","isDraft":true,"statusCheckRollup":[{"conclusion":"SUCCESS"},{"conclusion":"","status":"IN_PROGRESS"}]},
+ {"number":3,"state":"OPEN","isDraft":true,"statusCheckRollup":[{"conclusion":"FAILURE"}]},
+ {"number":4,"state":"OPEN","isDraft":true,"statusCheckRollup":[]},
+ {"number":5,"state":"OPEN","isDraft":false,"statusCheckRollup":[]},
+ {"number":6,"state":"MERGED","isDraft":false}]'
+for d in "" 1; do want=$([ "$d" = 1 ] && echo "1 5 6" || echo "5 6")
+  got=$(echo "$prs" | BOSS_DRAFT_DONE=$d "$S" --ready | tr '\n' ' ' | sed 's/ $//')
+  if [ "$got" = "$want" ]; then echo "ok   PR READY with BOSS_DRAFT_DONE='$d' -> $got"; else echo "FAIL PR READY with BOSS_DRAFT_DONE='$d': want '$want', got '$got'"; fail=1; fi
+done
 exit $fail
