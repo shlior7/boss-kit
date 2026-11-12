@@ -83,6 +83,21 @@ class Resolution(Home):
         del os.environ["SUPERSET_WORKSPACE_ID"]
 
 
+class Init(Home):
+    def test_a_flag_in_the_name_slot_scaffolds_nothing(self):
+        init = os.path.join(BIN, "boss-init")
+        out = subprocess.run([init, "--help"], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("usage: boss-init <project>", out.stdout)
+        out = subprocess.run([init, "--repo", "acme/widgets"], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("bad project name: --repo", out.stderr)
+        self.assertEqual(sorted(os.listdir(self.home)), ["gadgets", "widgets"])  # nothing new
+        out = subprocess.run([init, "gizmos", "--repo", "acme/gizmos"], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.load(open(os.path.join(self.home, "gizmos", "config.json")))["repo"], "acme/gizmos")
+
+
 class Registry(Home):
     def test_heartbeat_and_staleness(self):
         os.environ["BOSS_PROJECT"] = "widgets"
