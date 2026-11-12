@@ -333,8 +333,8 @@ A quiet pane: grey by default, color only for what needs you. Here with a worker
 - **Press a PR number** for CI (pass / fail / pending with the failing names), mergeability, reviews, size and head, plus "open on GitHub" and its proof: `demo ↗`, `page ↗`, `artifact ↗`. Links are taken from the PR body and comments: Superset pages, claude.ai artifacts, video files, GitHub attachments and Loom.
 - **`review ↗ <date>`** at the top opens the latest review page (this boss's `review.txt`).
 - **The footer** shows `tracker: N mine · N P0/P1 · N in progress` when a tracker is synced (nothing otherwise), `N new shared lessons` added since this boss's last session, and when the pane last updated.
-- **PR status colors:** green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. Stacked PRs nest under their base. PRs idle for 10+ days fold into one line.
-- **Refresh:** every 60 s, plus right after the boss dispatches, merges, comments or syncs. `/boss-deck` refreshes on demand. The pane writes no status line.
+- **Colors:** the CI mark before each PR is green `✓`, yellow `…` while pending, red `✗`; a working worker's dot is green. PR status: green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. Stacked PRs nest under their base. PRs idle for 10+ days fold into one line.
+- **Refresh:** every 60 s, plus right after the boss dispatches, merges, comments or syncs; those refreshes skip the 5-minute PR cache, so a merged PR drops off at once. `/boss-deck` refreshes on demand. The pane writes no status line.
 
 ## Safety rules (from the template; worth knowing before you start)
 

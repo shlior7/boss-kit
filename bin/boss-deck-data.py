@@ -7,7 +7,8 @@ open PRs (cached 5 min so a 60 s refresh stays cheap), the tracker snapshot boss
 this boss's inbox, and the registry of other bosses. Each run is also this boss's heartbeat.
 Paths and project resolution: bin/bosskit.py.
 
-usage: boss-deck-data.py [--session-start] [--workspace ID] [--cwd DIR] [--selftest]
+usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--cwd DIR] [--selftest]
+  --fresh: skip the PR cache (the pane passes it right after the boss merges, comments or dispatches)
   --session-start: also mark this boss's new session (the base for "N new shared lessons"), and
                    rename this boss's own Paradev workspace to BOSS
   --workspace, --cwd: the session's workspace id and directory, which the mod passes so its process
@@ -184,11 +185,12 @@ def pr_row(repo, p, primary):
     }
 
 
-def prs(cfg, cache_dir):
+def prs(cfg, cache_dir, fresh=False):
+    """My open PRs; cached PR_TTL_S unless fresh (right after the boss merged, commented or dispatched)."""
     cache = os.path.join(cache_dir, "deck-prs.json")
     try:
         cached = json.load(open(cache))
-        if time.time() - cached["at"] < PR_TTL_S:
+        if not fresh and time.time() - cached["at"] < PR_TTL_S:
             return cached["prs"]
     except (OSError, ValueError, KeyError):
         pass
@@ -329,7 +331,7 @@ def main():
     for w in armed:
         idle = states.get(w["ws"][:8]) not in ("working", None)
         w["stale"] = w["ageS"] > STALE_AGE_S or (idle and w["ageS"] > IDLE_STALE_S)
-    pr_rows = prs(cfg, ctx.cache)
+    pr_rows = prs(cfg, ctx.cache, "--fresh" in sys.argv)
     for p in pr_rows:
         p["tag"] = repo_tag(p["repo"], cfg.get("repo_aliases"))
     try:

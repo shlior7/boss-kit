@@ -18,9 +18,10 @@ const INBOX_ROWS = 5
 const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-7' })
 const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-3' })
 
-// Quiet by design: grey by default, color only for what needs attention.
+// Quiet by design: grey text, color only where it means something: state marks (CI, a working worker) and what needs attention.
 const STATE_MARK: Record<string, string> = { working: '●', idle: '·', blocked: '■' }
 const CI_MARK: Record<Pr['ci'], string> = { green: '✓', red: '✗', pending: '…' }
+const CI_COLOR: Record<Pr['ci'], string> = { green: 'success', red: 'error', pending: 'warning' }
 
 const ago = (s: number) => (s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`)
 // "JaneDoe42" -> "jane", "acme-reviewers" (a team) -> "team"
@@ -42,10 +43,10 @@ const prStatus = (p: Pr) =>
   : p.reviewers.length ? `→ ${who(p.reviewers[0] ?? '')}`
   : p.review ? 'review' : ''
 
-async function refresh($: EngineInterface, sessionStart = false) {
+async function refresh($: EngineInterface, sessionStart = false, skipCache = false) {
   // The session's own workspace and directory, so the script resolves the boss the session's shell does.
   const ws = await $.env.get('SUPERSET_WORKSPACE_ID')
-  const argv = [...DATA_CMD, '--cwd', await $.session.cwd(), ...(ws ? ['--workspace', ws] : []), ...(sessionStart ? ['--session-start'] : [])]
+  const argv = [...DATA_CMD, '--cwd', await $.session.cwd(), ...(ws ? ['--workspace', ws] : []), ...(sessionStart ? ['--session-start'] : []), ...(skipCache ? ['--fresh'] : [])]
   const { exitCode, stdout, stderr } = await $.process.run(argv, { timeoutMs: 90_000 })
   const at = Math.floor((await $.clock.now()) / 1000)
   const fresh: Deck =
@@ -136,7 +137,7 @@ export const register: Register = on => {
   // Refresh right after the boss dispatches, merges or comments, not only on the timer.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
-    if (/superset (terminals send|agents create)|gh pr (merge|edit|comment)|boss-sync/.test(e.command)) void refresh($)
+    if (/superset (terminals send|agents create)|gh pr (merge|edit|comment)|boss-sync/.test(e.command)) void refresh($, false, true)
 
     return ran
   })
@@ -213,7 +214,7 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           <Box flexDirection="row">
-            {cell(2, text(STATE_MARK[w.state] ?? '○', dim, color))}
+            {cell(2, text(STATE_MARK[w.state] ?? '○', dim, color ?? (w.state === 'working' ? 'success' : undefined)))}
             {/* The whole row expands; the workspace opens from the details. A hotkey's "1: " takes 3 of the name's 23 cells. */}
             {rest(
               <Button plain key={`peek-${w.ws}`} hotkey={i < 9 ? String(i + 1) : undefined} onPress={() => void toggle($, key, () => workerPeek($, w))}>
@@ -240,7 +241,7 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           <Box flexDirection="row">
-            {cell(2, text(CI_MARK[p.ci], p.ci !== 'red', p.ci === 'red' ? 'error' : undefined))}
+            {cell(2, text(CI_MARK[p.ci], false, CI_COLOR[p.ci]))}
             {depth > 0 && cell(2 * depth, text(`${' '.repeat(2 * depth - 2)}└`, true))}
             {cell(
               7,
