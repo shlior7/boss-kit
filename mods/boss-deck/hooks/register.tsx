@@ -1,9 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Deck, Detail, Pr, ProofLink, Worker } from '../types'
-import { footer, isBoss, mailContext, needsProof, prDetails, stack, workerDetails } from './details'
-import type { PrView } from './details'
+import type { Boss, Deck, Detail, Pr, ProofLink, Worker } from '../types'
+import { ago, bossDetails, bossRow, footer, isActive, isBoss, mailContext, prDetails, prRow, rank, workerDetails, workerRow } from './details'
+import type { PrView, Row } from './details'
 
 const PANE = 'boss-deck'
 const TITLE = 'Boss'
@@ -15,33 +15,10 @@ const STALE_PR_DAYS = 10
 // Unread messages listed in the inbox before it folds the rest into "+N more".
 const INBOX_ROWS = 5
 // Change a tag when its value's fields change: it declines what an earlier version stored.
-const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-7' })
-const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-3' })
+const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-9' })
+const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-4' })
 
-// Quiet by design: grey text, color only where it means something: state marks (CI, a working worker) and what needs attention.
-const STATE_MARK: Record<string, string> = { working: '●', idle: '·', blocked: '■' }
-const CI_MARK: Record<Pr['ci'], string> = { green: '✓', red: '✗', pending: '…' }
-const CI_COLOR: Record<Pr['ci'], string> = { green: 'success', red: 'error', pending: 'warning' }
-
-const ago = (s: number) => (s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`)
-// "JaneDoe42" -> "jane", "acme-reviewers" (a team) -> "team"
-const who = (login: string) => (login.includes('-') ? 'team' : (login.match(/^[A-Z]?[a-z]+/)?.[0] ?? login).toLowerCase())
-// Drops a conventional-commit prefix and a trailing #tag: "fix(api): x #team" -> "x".
-const shortTitle = (t: string) => t.replace(/^\w+\([^)]*\): /, '').replace(/ #[\w-]+$/, '')
-const prColor = (p: Pr) =>
-  p.ci === 'red' ? 'error'
-  : needsProof(p) ? 'warning'
-  : p.draft ? 'subtle'
-  : p.review === 'APPROVED' ? 'success'
-  : p.merge === 'CONFLICTING' ? 'warning'
-  : p.reviewers.length || p.review ? 'suggestion' : undefined
-const prStatus = (p: Pr) =>
-  needsProof(p) ? 'no proof'
-  : p.draft ? 'draft'
-  : p.review === 'APPROVED' ? 'approved'
-  : p.merge === 'CONFLICTING' ? 'conflict'
-  : p.reviewers.length ? `→ ${who(p.reviewers[0] ?? '')}`
-  : p.review ? 'review' : ''
+// Quiet by design: grey text, color only where it means something: stage marks and what needs attention.
 
 async function refresh($: EngineInterface, sessionStart = false, skipCache = false) {
   // The session's own workspace and directory, so the script resolves the boss the session's shell does.
@@ -73,12 +50,8 @@ async function unreadMail($: EngineInterface) {
   return mailContext(count, d.mail.items)
 }
 
-/** Toggle one expanded row: a worker's or a PR's details under it. */
-async function toggle(
-  $: EngineInterface,
-  key: string,
-  load: () => Promise<{ rows: Detail[]; url?: string; links?: ProofLink[] }>,
-) {
+/** Toggle one expanded row: a worker's, a PR's or a boss's details under it. */
+async function toggle($: EngineInterface, key: string, load: () => Promise<{ rows: Detail[]; links?: ProofLink[] }>) {
   const shown = await read($, peek)
   if (shown?.key === key) return update($, peek, () => null)
   await update($, peek, () => ({ key, rows: [{ label: '', value: 'loading…' }] }))
@@ -87,23 +60,26 @@ async function toggle(
   await update($, peek, cur => (cur?.key === key ? { key, ...got } : cur))
 }
 
-async function workerPeek($: EngineInterface, w: Worker) {
-  const { stdout } = await $.process.run(
-    ['superset', 'terminals', 'read', '--workspace', w.id, '--terminal', w.term, '--max-lines', '400', '--json'],
-    { timeoutMs: 20_000 },
-  )
-  let screen = ''
-  try {
-    screen = JSON.parse(stdout).text ?? ''
-  } catch {}
-  return { rows: workerDetails(w, screen), links: w.proof }
-}
-
-async function prPeek($: EngineInterface, p: Pr) {
+async function prView($: EngineInterface, p: Pr) {
   const fields = 'statusCheckRollup,mergeable,mergeStateStatus,additions,deletions,changedFiles,updatedAt,headRefOid,latestReviews,reviewRequests'
   const { stdout } = await $.process.run(['gh', 'pr', 'view', String(p.num), '--repo', p.repo, '--json', fields], { timeoutMs: 30_000 })
-  const v: PrView = JSON.parse(stdout)
-  return { rows: prDetails(p, v, Math.floor((await $.clock.now()) / 1000)), url: p.url, links: p.proof }
+  return prDetails(p, JSON.parse(stdout) as PrView, Math.floor((await $.clock.now()) / 1000))
+}
+
+/** A workspace's details and its PR's, in one accordion; the proof links of both. */
+async function workerPeek($: EngineInterface, w: Worker) {
+  const [read, pr] = await Promise.all([
+    w.id && w.term
+      ? $.process.run(['superset', 'terminals', 'read', '--workspace', w.id, '--terminal', w.term, '--max-lines', '400', '--json'], { timeoutMs: 20_000 })
+      : undefined,
+    w.pr ? prView($, w.pr).catch(() => [{ label: 'pr', value: 'could not load', color: 'error' }]) : [],
+  ])
+  let screen = ''
+  try {
+    screen = JSON.parse(read?.stdout ?? '').text ?? ''
+  } catch {}
+  const links = [...w.proof, ...(w.pr?.proof ?? [])].filter((l, i, all) => all.findIndex(m => m.url === l.url) === i)
+  return { rows: workerDetails(w, screen, pr), links }
 }
 
 export const register: Register = on => {
@@ -178,8 +154,9 @@ export const register: Register = on => {
         <Text color="suggestion">{label}</Text>
       </Button>
     )
-    // `open` is the expanded row's way out: a PR's GitHub page, a worker's workspace.
-    const details = (rows: Detail[], open?: { key: string; label: string; press: () => void }, links: ProofLink[] = []) => (
+    type Open = { key: string; label: string; press: () => void }
+    // The expanded row's ways out (proof, the workspace, GitHub) share one line, wrapping only when the pane is too narrow.
+    const details = (rows: Detail[], links: ProofLink[], opens: Open[]) => (
       <Box flexDirection="column" paddingLeft={4} marginBottom={1}>
         {rows.map(r => (
           <Box flexDirection="row">
@@ -187,75 +164,65 @@ export const register: Register = on => {
             {rest(text(r.value, !r.color, r.color))}
           </Box>
         ))}
-        {/* Proof links and the way out share one line, wrapping only when the pane is too narrow. */}
-        {(links.length > 0 || open) && (
+        {(links.length > 0 || opens.length > 0) && (
           <Box flexDirection="row" columnGap={2} flexWrap="wrap">
             {links.map((l, i) => linkButton(`proof-${l.url}-${i}`, `${l.label} ↗`, l.url))}
-            {open && (
-              <Button plain key={open.key} onPress={open.press}>
-                <Text color="suggestion">{open.label}</Text>
+            {opens.map(o => (
+              <Button plain key={o.key} onPress={o.press}>
+                <Text color="suggestion">{o.label}</Text>
               </Button>
-            )}
+            ))}
           </Box>
         )}
       </Box>
     )
-    const working = d.workers.filter(w => w.state === 'working').length
+    const openWs = (id: string): Open[] => (id ? [{ key: `open-${id}`, label: 'open workspace ↗', press: () => void openWorkspace($, id) }] : [])
+    const openGh = (url?: string): Open[] => (url ? [{ key: `gh-${url}`, label: 'open on GitHub ↗', press: () => void openUrl($, url) }] : [])
+
+    // A PR no workspace owns is its own row; one untouched for STALE_PR_DAYS folds into one quiet line.
+    const loose = d.prs.filter(p => !p.ws)
     const cutoff = (now - STALE_PR_DAYS * 86400) * 1000
     const isStale = (p: Pr) => !!p.updated && Date.parse(p.updated) < cutoff
-    const live = d.prs.filter(p => !isStale(p))
-    const stale = d.prs.filter(isStale)
+    const stale = loose.filter(isStale)
+    // Active workspaces first, then the idle ones, then the PR-only rows. Row order is hotkey order.
+    const workers = [...d.workers].sort((a, b) => rank(a) - rank(b))
+    const active = workers.filter(isActive).length
+    type Item = { key: string; row: Row; load: () => Promise<{ rows: Detail[]; links?: ProofLink[] }>; opens: Open[] }
+    const items: Item[] = [
+      ...workers.map(w => ({ key: `w-${w.ws}`, row: workerRow(w, now), load: () => workerPeek($, w), opens: [...openWs(w.id), ...openGh(w.pr?.url)] })),
+      ...loose
+        .filter(p => !isStale(p))
+        .map(p => ({ key: `p-${p.repo}-${p.num}`, row: prRow(p, now), load: async () => ({ rows: await prView($, p), links: p.proof }), opens: openGh(p.url) })),
+    ]
+    const bosses: Item[] = (d.bosses ?? []).map((b: Boss) => ({
+      key: `b-${b.id}`, row: bossRow(b, now), load: async () => ({ rows: bossDetails(b, now) }), opens: openWs(b.workspace),
+    }))
 
-    const worker = (w: Worker, i: number) => {
-      const dim = w.state !== 'working' && w.state !== 'blocked'
-      const color = w.state === 'blocked' ? 'error' : undefined
-      const key = `w-${w.ws}`
-      const open = shown?.key === key
+    // One quiet line per row, never wrapping: the mark, then the whole row is a button that expands it.
+    const row = (it: Item, hotkey?: number) => {
+      const r = it.row
+      const open = shown?.key === it.key
+      const nameW = hotkey ? 15 : 18
       return (
         <Box flexDirection="column">
           <Box flexDirection="row">
-            {cell(2, text(STATE_MARK[w.state] ?? '○', dim, color ?? (w.state === 'working' ? 'success' : undefined)))}
-            {/* The whole row expands; the workspace opens from the details. A hotkey's "1: " takes 3 of the name's 23 cells. */}
+            {cell(2, text(r.mark, r.dim && !r.markColor, r.markColor))}
+            {/* A hotkey's "1: " takes 3 of the name's 18 cells. */}
             {rest(
-              <Button plain key={`peek-${w.ws}`} hotkey={i < 9 ? String(i + 1) : undefined} onPress={() => void toggle($, key, () => workerPeek($, w))}>
-                <Text dimColor={dim} color={color} bold={open}>
-                  {w.name.slice(0, i < 9 ? 18 : 21).padEnd(i < 9 ? 20 : 23)}
-                </Text>
-                <Text dimColor={dim} color={color} wrap="truncate-end">
-                  {w.task}
+              <Button plain key={`peek-${it.key}`} hotkey={hotkey ? String(hotkey) : undefined} onPress={() => void toggle($, it.key, it.load)}>
+                <Text dimColor={r.dim} bold={open} wrap="truncate-end">
+                  {r.name.slice(0, nameW - 2).padEnd(nameW)}
+                  {r.tag && r.tag.slice(0, 8).padEnd(10)}
+                  {r.parts
+                    .filter(p => p.text)
+                    .map((p, n) => (
+                      <Text color={p.color}>{(n ? ' · ' : '') + p.text}</Text>
+                    ))}
                 </Text>
               </Button>,
             )}
           </Box>
-          {open &&
-            shown &&
-            details(shown.rows, { key: `open-${w.ws}`, label: 'open workspace ↗', press: () => void openWorkspace($, w.id) }, shown.links)}
-        </Box>
-      )
-    }
-
-    const pr = ([p, depth]: [Pr, number]) => {
-      const color = prColor(p)
-      const tag = p.primary ? `#${p.num}` : `${p.tag ?? p.repo}#${p.num}`
-      const key = `p-${p.repo}-${p.num}`
-      return (
-        <Box flexDirection="column">
-          <Box flexDirection="row">
-            {cell(2, text(CI_MARK[p.ci], false, CI_COLOR[p.ci]))}
-            {depth > 0 && cell(2 * depth, text(`${' '.repeat(2 * depth - 2)}└`, true))}
-            {cell(
-              7,
-              <Button plain key={key} onPress={() => void toggle($, key, () => prPeek($, p))}>
-                <Text bold={shown?.key === key} wrap="truncate-end">
-                  {tag}
-                </Text>
-              </Button>,
-            )}
-            {cell(11, text(prStatus(p), !color, color))}
-            {rest(text(shortTitle(p.title), true))}
-          </Box>
-          {shown?.key === key &&
-            details(shown.rows, shown.url ? { key: `gh-${shown.url}`, label: 'open on GitHub ↗', press: () => void openUrl($, shown.url ?? '') } : undefined, shown.links)}
+          {open && shown && details(shown.rows, shown.links ?? [], it.opens)}
         </Box>
       )
     }
@@ -288,15 +255,11 @@ export const register: Register = on => {
           </Box>
         )}
 
-        {section('workers', `${working} working · ${d.watchers.length} watched`)}
-        {d.workers.length === 0 && text('none', true)}
-        {d.workers.map(worker)}
-        {d.watchers
-          .filter(w => w.stale)
-          .map(w => text(`! watcher ${w.ws.slice(0, 8)} stale, ${ago(w.ageS)}`, false, 'error'))}
+        {section('bosses', `${bosses.length} boss${bosses.length === 1 ? '' : 'es'}`)}
+        {bosses.map(b => row(b))}
 
-        {section('pull requests', `${d.prs.filter(p => !p.draft).length} open · ${d.prs.filter(p => p.draft).length} draft`)}
-        {stack(live).map(pr)}
+        {section('workers', `${active} active · ${items.length - active} idle`)}
+        {items.map((it, i) => row(it, i < 9 ? i + 1 : undefined))}
         {stale.length > 0 && (
           <Box flexDirection="row" flexWrap="wrap">
             {text(`${stale.length} idle ${STALE_PR_DAYS}d+ `, true)}
@@ -307,12 +270,14 @@ export const register: Register = on => {
             ))}
           </Box>
         )}
-
+        {d.watchers
+          .filter(w => w.stale)
+          .map(w => text(`! watcher ${w.ws.slice(0, 8)} stale, ${ago(w.ageS)}`, false, 'error'))}
 
         {/* One quiet line when it fits: the tracker and the hint flow on the left, wrapping whole, the age stays right. */}
         <Box flexDirection="row" justifyContent="space-between" columnGap={2} marginTop={1}>
           <Box flexDirection="row" flexWrap="wrap" columnGap={2} flexShrink={1}>
-            {[footer(d), 'press a worker or a PR # for details'].filter(Boolean).map(t => (
+            {[footer(d), 'press a row for details'].filter(Boolean).map(t => (
               <Box flexShrink={0}>
                 <Text dimColor>{t}</Text>
               </Box>

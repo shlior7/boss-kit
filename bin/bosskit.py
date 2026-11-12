@@ -8,7 +8,7 @@ Code is the kit ($BOSS_KIT_HOME, else the folder above bin/). Data is $BOSS_HOME
   bosses.json                     registry: boss id -> project, workspace, worktree, host, heartbeat
   lessons.md                      shared lessons, for every boss
   <project>/BOSS.md config.json ledger.md lessons.md prompts/      shared by the project's bosses
-  <project>/bosses/<boss-id>/     next.txt review.txt notes.md cache/ inbox/ inbox/done/
+  <project>/bosses/<boss-id>/     next.txt review.txt notes.md events.jsonl cache/ inbox/ inbox/done/
 
 usage: bosskit.py show            the resolved paths, as JSON
        bosskit.py instructions    template + project BOSS.md + project and shared lessons (the /boss loader)
@@ -183,6 +183,29 @@ def tracker_snapshot(ctx):
         except (OSError, ValueError):
             continue
     return None
+
+
+# ---- events: each workspace's stage log, one JSON line {at, ws, stage, note} ------------------
+
+def add_event(ctx, ws, stage, note="", now=None):
+    """Append one stage event to this boss's events.jsonl and return it."""
+    e = {"at": int(now or time.time()), "ws": ws, "stage": stage, "note": note}
+    with open(os.path.join(ctx.bdir, "events.jsonl"), "a") as f:
+        f.write(json.dumps(e) + "\n")
+    return e
+
+
+def events(bdir):
+    """This boss's stage events, oldest first; unreadable lines are skipped."""
+    # ponytail: reads the whole log each refresh; trim old lines if it ever grows past a few thousand
+    out = []
+    for line in _read(os.path.join(bdir, "events.jsonl")).splitlines():
+        try:
+            e = json.loads(line)
+            out.append({"at": int(e["at"]), "ws": str(e["ws"]), "stage": str(e["stage"]), "note": str(e.get("note") or "")})
+        except (ValueError, KeyError, TypeError):
+            continue
+    return sorted(out, key=lambda e: e["at"])
 
 
 # ---- lessons --------------------------------------------------------------------------------

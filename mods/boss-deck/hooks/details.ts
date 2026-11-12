@@ -1,14 +1,124 @@
-import type { Deck, Detail, MailItem, Pr, Worker } from '../types'
+import type { Boss, Deck, Detail, MailItem, Pr, Worker } from '../types'
 
-const ago = (s: number) => (s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`)
+export const ago = (s: number) =>
+  s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : s < 129_600 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`
+// "JaneDoe42" -> "jane", "acme-reviewers" (a team) -> "team"
 const who = (login: string) => (login.includes('-') ? 'team' : (login.match(/^[A-Z]?[a-z]+/)?.[0] ?? login).toLowerCase())
+// Drops a conventional-commit prefix and a trailing #tag: "fix(api): x #team" -> "x".
+const shortTitle = (t: string) => t.replace(/^\w+\([^)]*\): /, '').replace(/ #[\w-]+$/, '')
 const ACTIVITY = /^\s*(?:⏺\s+|⎿?\s*)?((?:Running|Ran|Reading|Read|Editing|Edited|Writing|Wrote|Searching|Fetching|Fixing|Merging|Pushing|Checking|Waiting)\b.*)$/
-const SAID = /^\s*⏺\s+(?!Background command)(.{12,})$/
 const SPINNER = /^\s*[✻✽✢✳·*]\s+\S+…\s+\((\d+m \d+s|\d+s|\d+h \d+m)/
 const CTX = /(\d+)k\/1000k \((\d+)%\)/
 
-/** A worker's screen as a few facts: what it is doing, for how long, how full, its last result. */
-export function workerDetails(w: Worker, screen: string): Detail[] {
+/** A WORKERS row: its mark, name, tag (PR or "—"), then short parts joined by " · ". */
+export type Row = { mark: string; markColor?: string; dim: boolean; name: string; tag: string; parts: { text: string; color?: string }[] }
+
+const lastEvent = (w: Worker, ...stages: string[]) => [...(w.events ?? [])].reverse().find(e => stages.includes(e.stage.toLowerCase()))
+
+/** Row order under WORKERS: your move, boss checking, working, blocked (the active ones), then in review, idle, done today. */
+export function rank(w: Worker): number {
+  if (w.stage !== 'working') return { move: 0, checking: 1, review: 4, done: 6 }[w.stage]
+  return w.state === 'working' ? 2 : w.state === 'blocked' ? 3 : 5
+}
+export const isActive = (w: Worker) => rank(w) <= 3
+
+/** A workspace's row: its stage, how long it has been there, and a note. */
+export function workerRow(w: Worker, nowS: number): Row {
+  const age = w.since ? ago(Math.max(0, nowS - w.since)) : ''
+  const p = w.pr
+  const base = { name: w.name, tag: w.prTag || '—' }
+  switch (w.stage) {
+    case 'move':
+      return { ...base, mark: '›', markColor: 'warning', dim: false, parts: [{ text: 'your move' }, { text: age }, p && needsProof(p) ? { text: 'no proof', color: 'warning' } : { text: 'say merge' }] }
+    case 'checking': {
+      if (p && !p.draft && p.ci === 'red') return { ...base, mark: '◐', dim: false, parts: [{ text: 'boss checking' }, { text: age }, { text: 'CI red', color: 'error' }] }
+      const done = lastEvent(w, 'done', 'pr ready')?.at || p?.doneAt || w.since
+      return { ...base, mark: '◐', dim: false, parts: [{ text: 'boss checking' }, { text: `DONE ${ago(Math.max(0, nowS - done))} ago` }, { text: 'verifying' }] }
+    }
+    case 'review': {
+      const r = p?.reviewers[0]
+      return { ...base, mark: '·', dim: true, parts: [{ text: 'in review' }, { text: age }, { text: r ? `waiting on ${who(r)}` : 'waiting on review' }] }
+    }
+    case 'done': {
+      const merged = lastEvent(w, 'merged')
+      const retired = lastEvent(w, 'retired')
+      const what = [merged && 'merged', retired && 'retired'].filter(Boolean).join(', ')
+      return { ...base, mark: '✓', markColor: 'success', dim: true, parts: [{ text: 'done today' }, { text: (merged ?? retired)?.hm ?? '' }, { text: what }] }
+    }
+    default: {
+      if (w.state === 'blocked') {
+        const why = lastEvent(w, 'blocked')?.note ?? ''
+        return { ...base, mark: '■', markColor: 'error', dim: false, parts: [{ text: 'blocked', color: 'error' }, { text: age }, { text: why }] }
+      }
+      if (w.state === 'working') return { ...base, mark: '●', markColor: 'success', dim: false, parts: [{ text: 'working' }, { text: age }, { text: (w.events ?? []).at(-1)?.note ?? '' }] }
+      return { ...base, mark: '·', dim: true, parts: [{ text: 'idle', color: 'warning' }, { text: age }, { text: 'no DONE' }] }
+    }
+  }
+}
+
+export const prTag = (p: Pr) => (p.primary ? `#${p.num}` : `${p.tag ?? p.repo}#${p.num}`)
+export const prColor = (p: Pr) =>
+  p.ci === 'red' ? 'error'
+  : needsProof(p) ? 'warning'
+  : p.draft ? 'subtle'
+  : p.review === 'APPROVED' ? 'success'
+  : p.merge === 'CONFLICTING' ? 'warning'
+  : p.reviewers.length || p.review ? 'suggestion' : undefined
+export const prStatus = (p: Pr) =>
+  needsProof(p) ? 'no proof'
+  : p.draft ? 'draft'
+  : p.review === 'APPROVED' ? 'approved'
+  : p.merge === 'CONFLICTING' ? 'conflict'
+  : p.reviewers.length ? `→ ${who(p.reviewers[0] ?? '')}`
+  : p.review ? 'review' : 'open'
+
+/** A tracked PR no workspace owns (another author, an extra repo): its tag as the name, "—" for the workspace, its status. */
+export function prRow(p: Pr, nowS: number): Row {
+  const updated = p.updated ? ago(Math.max(0, nowS - Math.floor(Date.parse(p.updated) / 1000))) : ''
+  return { mark: '·', dim: true, name: prTag(p), tag: '—', parts: [{ text: prStatus(p), color: prColor(p) }, { text: updated }] }
+}
+
+/** A BOSSES row: its domain ("main" for the project's main boss), "(this)" on this session's, its counts, and its age once stale. */
+export function bossRow(b: Boss, nowS: number): Row {
+  return {
+    mark: '', dim: !b.me, name: `${b.domain || 'main'}${b.me ? ' (this)' : ''}`, tag: '',
+    parts: [
+      { text: `${b.working} working` },
+      { text: `${b.forYou} for you`, color: b.forYou ? 'warning' : undefined },
+      { text: b.stale ? `seen ${ago(Math.max(0, nowS - b.heartbeat))} ago` : '', color: 'warning' },
+    ],
+  }
+}
+
+/** An expanded boss: its next line, its domain state, when it was last seen. */
+export function bossDetails(b: Boss, nowS: number): Detail[] {
+  return [
+    { label: 'next', value: b.next || 'nothing written' },
+    ...b.state.map((v, i) => ({ label: i ? '' : 'state', value: v })),
+    { label: 'seen', value: `${ago(Math.max(0, nowS - b.heartbeat))} ago`, color: b.stale ? 'warning' : undefined },
+  ]
+}
+
+/** Who acts next on a workspace, and what they do: the timeline's last line. */
+export function nextStep(w: Worker): string {
+  const p = w.pr
+  switch (w.stage) {
+    case 'move':
+      return 'you: say merge'
+    case 'checking':
+      return p && !p.draft && p.ci === 'red' ? 'boss: send the CI failure to the worker' : 'boss: verify, then mark the PR ready'
+    case 'review':
+      return `${p?.reviewers[0] ? who(p.reviewers[0]) : 'reviewer'}: review ${w.prTag ?? ''}`.trim()
+    case 'done':
+      return lastEvent(w, 'retired') ? 'nothing' : 'boss: retire the workspace'
+    default:
+      return w.state === 'blocked' ? 'boss: unblock it' : w.state === 'working' ? 'worker: finish and post DONE' : 'boss: read its screen'
+  }
+}
+
+/** An expanded workspace: its timed stage history and the next step, its PR's rows (when it has one), then what its
+ * screen says it is doing, its context use and its watcher. */
+export function workerDetails(w: Worker, screen: string, pr: Detail[] = []): Detail[] {
   const lines = screen.split('\n').map(l => l.replace(/\s+$/, ''))
   const last = (re: RegExp) => {
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -18,33 +128,24 @@ export function workerDetails(w: Worker, screen: string): Detail[] {
     return null
   }
   const doing = last(ACTIVITY)?.[1] ?? ''
-  const said = last(SAID)?.[1] ?? ''
   const spin = last(SPINNER)?.[1]
   const ctx = last(CTX)
-  const env = screen.lastIndexOf('SUPERSET_WORKER_')
-  const envelope =
-    env < 0
-      ? ''
-      : (() => {
-          const block = screen.slice(env, env + 1200).split('\n')
-          const kind = block[0]?.includes('DONE') ? 'done' : 'blocked'
-          const task = block.find(l => l.trim().startsWith('task:'))?.split(':')[1]?.trim() ?? ''
-          const summary = block.find(l => /^\s*(summary|reason):/.test(l))?.replace(/^\s*(summary|reason):\s*/, '') ?? ''
-          return `${kind} ${task}: ${summary}`
-        })()
-  const rows: Detail[] = [
-    { label: 'state', value: w.state === 'working' && spin ? `working ${spin}` : w.state, color: w.state === 'blocked' ? 'error' : undefined },
-    { label: 'branch', value: w.branch || '—' },
-  ]
+  const rows: Detail[] = (w.events ?? []).map(e => ({
+    label: e.hm,
+    value: [e.stage, e.note].filter(Boolean).join('  '),
+    color: e.stage.toLowerCase() === 'blocked' ? 'error' : undefined,
+  }))
+  // No event logged: a DONE seen elsewhere (a PR comment, the ledger) still reads as DONE, never as a log that is not there.
+  const doneElsewhere = w.pr?.doneAt ? 'DONE  posted as a PR comment' : w.ledger.toUpperCase() === 'DONE' ? 'DONE  in the ledger' : ''
+  if (rows.length === 0) rows.push({ label: '', value: doneElsewhere || `no stage log yet · dispatched ${w.date || '?'}` })
   if (w.taskText && w.taskText !== w.task) rows.unshift({ label: 'task', value: w.taskText })
-  if (doing) rows.push({ label: 'doing', value: doing })
-  if (said && said !== doing) rows.push({ label: 'said', value: said })
-  if (envelope) rows.push({ label: 'last', value: envelope, color: envelope.startsWith('blocked') ? 'error' : undefined })
+  rows.push({ label: 'next', value: nextStep(w), color: w.stage === 'move' ? 'warning' : undefined }, ...pr)
+  if (doing || (w.state === 'working' && spin)) rows.push({ label: 'doing', value: [doing, spin].filter(Boolean).join(' · ') })
   if (ctx) {
     const pct = Number(ctx[2])
     rows.push({ label: 'context', value: `${ctx[1]}k · ${pct}%${pct >= 60 ? ' · clear soon' : ''}`, color: pct >= 60 ? 'warning' : undefined })
   }
-  rows.push({ label: 'watcher', value: w.watched ? 'armed' : 'none', color: !w.watched && w.ledger === 'DISPATCHED' ? 'warning' : undefined })
+  if (!w.watched && w.ledger === 'DISPATCHED' && w.stage === 'working') rows.push({ label: 'watcher', value: 'none', color: 'warning' })
   return rows
 }
 
@@ -63,7 +164,7 @@ export type PrView = {
   reviewRequests?: { login?: string; name?: string }[]
 }
 
-/** A PR's state as a few facts: CI by outcome, mergeability, size, reviews, freshness. */
+/** A PR's state as a few facts: its title, CI by outcome, mergeability, reviews, size, branch, freshness. */
 export function prDetails(p: Pr, v: PrView, nowS: number): Detail[] {
   const failed: string[] = []
   let pass = 0
@@ -84,6 +185,7 @@ export function prDetails(p: Pr, v: PrView, nowS: number): Detail[] {
   const merge = `${(v.mergeable ?? '').toLowerCase()} · ${(v.mergeStateStatus ?? '').toLowerCase()}`
   const updated = v.updatedAt ? ago(nowS - Math.floor(Date.parse(v.updatedAt) / 1000)) : '?'
   return [
+    { label: 'pr', value: shortTitle(p.title) },
     { label: 'ci', value: ci || 'no checks', color: failed.some(f => !/approval/i.test(f)) ? 'error' : pending ? 'warning' : 'success' },
     { label: 'merge', value: merge, color: v.mergeable === 'CONFLICTING' ? 'warning' : undefined },
     { label: 'review', value: [...reviews, ...asked].join(' · ') || 'none yet' },
@@ -91,19 +193,6 @@ export function prDetails(p: Pr, v: PrView, nowS: number): Detail[] {
     { label: 'branch', value: `${p.head} → ${p.base}` },
     { label: 'head', value: `${(v.headRefOid ?? '').slice(0, 9)} · updated ${updated} ago` },
   ]
-}
-
-/** PRs as a stack: each root (base not another PR's head), its children under it. */
-export function stack(prs: Pr[]): [Pr, number][] {
-  const heads = new Set(prs.map(p => p.head))
-  const out: [Pr, number][] = []
-  const walk = (p: Pr, depth: number) => {
-    out.push([p, depth])
-    prs.filter(c => c.base === p.head).forEach(c => walk(c, depth + 1))
-  }
-  const roots = prs.filter(p => !heads.has(p.base))
-  roots.filter(p => !p.draft).concat(roots.filter(p => p.draft)).forEach(p => walk(p, 0))
-  return out
 }
 
 /** Ready to merge (approved, green, not a draft) but carrying no proof link: the one case the pane colors. */

@@ -92,68 +92,72 @@ const seg = (t, c = '') => `<span class="${c}">${esc(t)}</span>`
 const line = (...s) => s.join('') + '\n'
 const justify = (l, r, lc, rc) => line(seg(l, lc), seg(' '.repeat(Math.max(1, W - l.length - r.length))), seg(r, rc))
 const section = (name, note) => '\n' + justify(name.toUpperCase(), note, 'd b', 'd')
-// The row is one Button: its hotkey ("1: ") takes 3 of the name's 23 cells.
-const worker = (mark, n, name, task, c) => line(seg(pad(mark, 2), mark === '●' ? 'ok' : c), seg(n + ': ', 'hk'), seg(pad(name.slice(0, 18), 20), c), seg(task, c))
-const pr = (ci, depth, tag, status, title, sc) =>
-  line(seg(pad(ci, 2), { '✓': 'ok', '✗': 'er', '…': 'wa' }[ci]), depth ? seg(pad('└', 2), 'd') : '', seg(pad(tag, 7)), seg(pad(status, 11), sc || 'd'), seg(title.slice(0, W - 20 - 2 * depth), 'd'))
+// Parts joined by " · ", cut at the pane's edge with "…" like Ink's truncate-end.
+const parts = (ps, room, dim) => {
+  let out = '', left = room
+  ps.forEach(([t, c], i) => {
+    const s = (i ? ' · ' : '') + t
+    if (left <= 0) return
+    const cut = s.length > left ? s.slice(0, left - 1) + '…' : s
+    out += seg(cut, c || (dim ? 'd' : '')); left -= cut.length
+  })
+  return out
+}
+// A WORKERS row is one Button: mark, hotkey ("1: "), name, tag (PR or "—"), then stage · age · note.
+const row = (mark, mc, n, name, tag, ps, dim, bold) =>
+  line(seg(pad(mark, 2), mc || (dim ? 'd' : '')), seg(n + ': ', 'hk'), seg(pad(name.slice(0, 13), 15), (dim ? 'd' : '') + (bold ? ' b' : '')),
+    seg(pad(tag, 10), dim ? 'd' : ''), parts(ps, W - 30, dim))
+// A BOSSES row has no hotkey: domain (or main) and "(this)", then its counts.
+const boss = (name, ps, dim) => line(seg('  '), seg(pad(name, 18), dim ? 'd' : ''), parts(ps, W - 20, dim))
 const detail = (label, value, c = 'd') => line(seg('    ' + pad(label, 9), 'd'), seg(value, c))
 
 const head = () =>
-  line(seg('review ↗ 2026-11-10', 'su'))
+  line(seg('review ↗ 2026-11-10', 'su')) +
+  line(seg('Merge #57 when you say so; fix-42 is running.', 'b'))
 const inbox = () =>
   section('inbox', '1 unread · boss-mail inbox') +
   line(seg(pad('question', 10), 'wa'), seg('gadgets: is #42 safe to depend on?'))
+const bosses = () =>
+  section('bosses', '2 bosses') +
+  boss('main (this)', [['2 working'], ['1 for you', 'wa']]) +
+  boss('checkout', [['1 working'], ['0 for you'], ['seen 12m ago', 'wa']], true)
 // The footer: tracker and hint flow left and wrap whole, the age stays right on the first line.
 const foot = (ago, tracker) => '\n' + (tracker
-  ? justify(tracker, `${ago} ago`, 'd', 'd') + line(seg('press a worker or a PR # for details', 'd'))
-  : justify('press a worker or a PR # for details', `${ago} ago`, 'd', 'd'))
+  ? justify(tracker, `${ago} ago`, 'd', 'd') + line(seg('press a row for details', 'd'))
+  : justify('press a row for details', `${ago} ago`, 'd', 'd'))
+
+const active = (open) =>
+  section('workers', '3 active · 4 idle') +
+  row('›', 'wa', 1, 'web-login', '#57', [['your move'], ['12m'], ['no proof', 'wa']]) +
+  row('◐', '', 2, 'cache-warmup', '#61', [['boss checking'], ['DONE 2m ago'], ['verifying']], false, open) +
+  (open ? detail('10:02', 'sent  fix-61, watcher armed') +
+    detail('10:31', 'DONE  fix-61: cache warms before traffic') +
+    detail('next', 'boss: verify, then mark the PR ready') +
+    detail('pr', 'warm the cache before traffic') +
+    detail('ci', '14 pass', 'ok') +
+    detail('merge', 'mergeable · clean') +
+    detail('review', 'none yet') +
+    detail('size', '+48 −6 in 3 files') +
+    detail('branch', 'fix/cache-warmup → main') +
+    detail('head', '8c41d2e07 · updated 2m ago') +
+    detail('doing', 'Ran make test-http') +
+    detail('context', '188k · 19%') +
+    line(seg('    '), seg('page ↗', 'su'), seg('  '), seg('demo ↗', 'su'), seg('  '), seg('open workspace ↗', 'su'), seg('  '), seg('open on GitHub ↗', 'su')) + '\n' : '') +
+  row('●', 'ok', 3, 'api-retries', '—', [['working'], ['6m'], ['make test-http']])
+const idle = () =>
+  row('·', '', 4, 'search-ui', '#55', [['in review'], ['1d'], ['waiting on jane']], true) +
+  row('·', '', 5, 'docs-refresh', '—', [['idle', 'wa'], ['41m'], ['no DONE']], true) +
+  row('✓', 'ok', 6, 'login-form', '#52', [['done today'], ['10:41'], ['merged, retired']], true) +
+  row('·', '', 7, 'ws#7', '—', [['approved', 'ok'], ['3h']], true)
 
 const main =
   head() +
-  line(seg('Merge #57 when you say so; fix-42 is running.', 'b')) +
   line(seg('› ', 'wa'), seg('#57 approved + green: ready to merge (no proof)', 'wa')) +
-  line(seg('· ', 'd'), seg('#61 waiting on review for 2 days', 'd')) +
-  inbox() +
-  section('workers', '2 working · 2 watched') +
-  worker('●', 1, 'api-retries', 'fix-42') +
-  worker('●', 2, 'cache-warmup', 'fix-61-ci') +
-  worker('·', 3, 'web-login', 'ready-57', 'd') +
-  section('pull requests', '3 open · 1 draft') +
-  pr('…', 0, '#42', '→ jane', 'retry loop honours Retry-After', 'su') +
-  pr('✓', 1, '#43', 'draft', 'backoff jitter', 'f') +
-  pr('✓', 0, '#57', 'no proof', 'login rate limit', 'wa') +
-  pr('✗', 0, '#61', 'review', 'warm the cache on deploy', 'er') +
-  pr('✓', 0, 'ws#7', 'approved', 'client for the retry API', 'ok') +
+  line(seg('· ', 'd'), seg('docs-refresh: idle, docs-9 has no watcher', 'd')) +
+  inbox() + bosses() + active(false) + idle() +
   foot('12s', 'tracker: 6 mine · 2 P0/P1 · 1 in progress')
 
-const peek =
-  head() +
-  line(seg('Merge #57 when you say so; fix-42 is running.', 'b')) +
-  section('workers', '2 working · 2 watched') +
-  line(seg('● ', 'ok'), seg('1: ', 'hk'), seg(pad('api-retries', 20), 'b'), seg('fix-42', 'b')) +
-  detail('state', 'working 6m 12s') +
-  detail('branch', 'fix/retry-backoff') +
-  detail('doing', 'Running make test-http') +
-  detail('last', 'done fix-38: Retry-After as seconds or date') +
-  detail('context', '212k · 21%') +
-  detail('watcher', 'armed') +
-  line(seg('    '), seg('page ↗', 'su'), seg('  '), seg('open workspace ↗', 'su')) +
-  '\n' +
-  worker('●', 2, 'cache-warmup', 'fix-61-ci') +
-  worker('·', 3, 'web-login', 'ready-57', 'd') +
-  section('pull requests', '3 open · 1 draft') +
-  pr('…', 0, '#42', '→ jane', 'retry loop honours Retry-After', 'su') +
-  detail('ci', '11 pass · 3 pending', 'wa') +
-  detail('merge', 'mergeable · blocked') +
-  detail('review', 'jane asked') +
-  detail('size', '+148 −21 in 6 files') +
-  detail('branch', 'fix/retry-backoff → main') +
-  detail('head', '3f2a1c94b · updated 6m ago') +
-  line(seg('    '), seg('page ↗', 'su'), seg('  '), seg('demo ↗', 'su'), seg('  '), seg('open on GitHub ↗', 'su')) +
-  '\n' +
-  pr('✓', 1, '#43', 'draft', 'backoff jitter', 'f') +
-  pr('✓', 0, '#57', 'no proof', 'login rate limit', 'wa') +
-  foot('4s')
+const peek = head() + bosses() + active(true) + idle() + foot('4s')
 
 const paneTitle = '<div class="pane-title"><span>Boss</span></div>'
 document.getElementById('pane-main').innerHTML = paneTitle + '<pre>' + main + '</pre>'

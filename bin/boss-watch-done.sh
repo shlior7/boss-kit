@@ -13,6 +13,7 @@
 # envelope, becomes non-draft or merges, and was not so at start (run from the repo, or set GH_REPO). Workers keep their PR
 # draft and post the envelope there; the boss marks it ready. `--ready < pr-list.json` prints the numbers (bin/test-boss-watch.sh).
 # Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen, 135 (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
+# On a fire it logs the stage to the boss's events.jsonl through bin/boss-event (DONE, BLOCKED, PR READY or merged), for the boss-deck stages.
 # Env: BOSS_HOST (default: first host). Poll 20 s, timeout 3 h. Needs superset CLI, jq (gh for <branch>).
 # `sig` is "DONE|<id>|<first 30 chars of summary>" (or BLOCKED), so a new envelope with an already-seen task id still differs from the
 # baseline (a dispatch message that quotes the done-message once poisoned it). `boss-watch-done.sh --sig < screen` prints it, nothing if none (bin/test-boss-watch.sh).
@@ -33,6 +34,8 @@ pick(){ jq -r '.[] | select(.state == "MERGED" or (.state == "OPEN" and (.isDraf
 [ "$1" = --sig ] && { sig; exit; }
 [ "$1" = --ready ] && { pick; exit; }
 W=$1; T=$2; B=$3
+# log a stage for the boss-deck; a failure here never stops the watcher
+ev(){ "$(dirname "$0")/boss-event" "$W" "$@" >/dev/null 2>&1 || true; }
 H=${BOSS_HOST:-$(superset hosts list --json | jq -r 'if type=="array" then .[0].id else .hosts[0].id end')}
 scr(){ superset terminals read --workspace "$W" --host "$H" --terminal "$T" --max-lines 600 --json 2>/dev/null | jq -r '.text // empty'; }
 # numbers of this branch's PRs that count as done (pick); fails when gh does
@@ -46,16 +49,18 @@ for i in $(seq 1 540); do
   cur=$(echo "$txt" | sig)
   if [ -n "$cur" ] && [ "$cur" != "$base" ]; then
     n=$(echo "$txt" | grep -n "SUPERSET_WORKER_" | tail -1 | cut -d: -f1)
+    ev "${cur%%|*}" "$(echo "${cur#*|}" | sed 's/|/: /')"
     echo "ENVELOPE $cur"; echo "$txt" | tail -n +$n | sed 's/││.*$//' | head -60; exit 0
   fi
   if [ -n "$B" ] && [ $((i % 3)) -eq 0 ] && now=$(ready); then
     if [ "$prok" = 0 ]; then prbase=$now; prok=1   # first successful read becomes the baseline
     else new=$(comm -13 <(echo "$prbase" | sort) <(echo "$now" | sort) | grep . | head -1)
-      [ -n "$new" ] && { echo "PR READY #$new"; echo "$txt" | tail -30 | sed 's/││.*$//'; exit 0; }
+      [ -n "$new" ] && { [ "$(gh pr view "$new" --json state -q .state 2>/dev/null)" = MERGED ] && ev merged "PR #$new" || ev "PR READY" "PR #$new"
+        echo "PR READY #$new"; echo "$txt" | tail -30 | sed 's/││.*$//'; exit 0; }
     fi
   fi
   st=$(superset snapshot --host "$H" --json 2>/dev/null | jq -r --arg t "$T" '.. | objects | select(.terminalId? == $t or .id? == $t) | .agent.state // empty' | head -1)
-  if [ "$st" = blocked ]; then echo "AGENT BLOCKED ON INPUT"; echo "$txt" | tail -30 | sed 's/││.*$//'; exit 0; fi
+  if [ "$st" = blocked ]; then ev BLOCKED "blocked on input"; echo "AGENT BLOCKED ON INPUT"; echo "$txt" | tail -30 | sed 's/││.*$//'; exit 0; fi
   h=$(echo "$txt" | tail -25 | cksum)
   if [ "$st" = idle ] && [ "$h" = "$lasth" ]; then idle=$((idle+1)); else idle=0; fi
   lasth=$h
