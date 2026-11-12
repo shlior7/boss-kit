@@ -305,17 +305,6 @@ boss-lesson promote 3      # project lesson 3 turned out to hold everywhere
 
 Both files are append-only and numbered. An exact duplicate is refused; one that starts with the same eight words gets a warning. `/boss` loads both; past 150 lines, the shared file loads as every title plus the 20 most recent entries in full. A boss can propose a shared lesson to another by mail (`--kind fyi --subject "lesson: …"`). The pane's footer shows `N new shared lessons` when shared lessons were added since that boss's last session.
 
-## Migrating from an older kit
-
-Kits up to v0.4 kept project data inside the kit: `projects/<name>/` and `state/<name>/`, or earlier a `<name>/` folder at the kit root. `boss-migrate` moves it into `$BOSS_HOME` and leaves a symlink at each old path, so bosses still running on old paths keep working:
-
-```bash
-~/.claude/boss-kit/bin/boss-migrate                 # dry run: prints what it would move
-~/.claude/boss-kit/bin/boss-migrate --boss <id> --apply
-```
-
-`--boss` names the boss that owned the old `state/<name>/` (default: `$SUPERSET_WORKSPACE_ID`). Nothing that already exists in `$BOSS_HOME` is overwritten. A legacy folder without a `config.json` needs one afterwards: copy it from `projects/_template/`.
-
 ## Scripts
 
 | Command | What it does |
@@ -324,7 +313,7 @@ Kits up to v0.4 kept project data inside the kit: `projects/<name>/` and `state/
 | `bin/bosskit.py show \| instructions` | The resolved paths as JSON, or the full boss instructions (what `/boss` loads) |
 | `bin/boss-mail send \| inbox \| read \| reply \| done` | Boss mail, above |
 | `bin/boss-lesson add \| list \| promote` | Lessons, above |
-| `bin/boss-migrate [--kit DIR] [--boss ID] [--apply]` | Migration, above |
+| `bin/boss-migrate [--kit DIR] [--boss ID] [--apply]` | Moves a v0.4-or-older kit's project data into `$BOSS_HOME` and leaves a symlink at each old path. Dry run unless `--apply`; never overwrites. `--boss` names the boss that owned the old `state/<name>/` |
 | `bin/boss-watch-done.sh <ws> <term> [<branch>]` | The watcher above; `--sig < screen` prints the envelope it would fire on (`DONE|<id>|<summary start>`) (`bin/test-boss-watch.sh` checks it). Env: `BOSS_HOST` (default: first host). Needs `jq`, and `gh` for `<branch>` |
 | `bin/boss-sync.py --only=N,N [--push]` | Run inside the repo. For each listed PR (stacked ones after their base), merges `origin/<base>` into the branch in a throwaway worktree and reports `up to date`, `merged clean` or `REAL CONFLICT: files`. Dry run by default; `--push` pushes (plain push, never force). `--gen=FILES --regen="cmd"` auto-resolves conflicts only in generated files; `--if-moved` exits early when the base hasn't moved. **Use `--only` with your own PR numbers.** `--all` would push to teammates' branches |
 | `bin/boss-tasks.py [--quiet]` | Read-only tracker sync into this boss's `cache/tracker.json` (a migrated `bosses/<id>/tracker.json` is read when that is missing). Prints what changed, your open tasks, team P0/P1 and In Review |
