@@ -64,3 +64,7 @@ Why: the user asked for groups, and for the boss to propose reorganizations over
 ## 15. Two finished PRs sat unnoticed: the boss had swapped its watcher for `terminals wait` (2026-11-11, quack)
 After one false positive, the boss replaced `boss-watch-done.sh` with `superset terminals wait --match "<one-line regex>" --max-lines 30`. Claude Code drew a worker's whole reply at once, and the envelope's first line landed 48 rows up, outside the 30-row window. Another worker split the envelope over two lines. Neither matched, `terminals wait` has no idle fallback, and both PRs had already left draft without anyone checking GitHub.
 Why: the user noticed workspaces "done and nothing occurred". The fix is the script plus a PR sweep every turn: fix the watcher, never bypass it, and keep one check that does not read the screen.
+
+## 16. Permission mode follows the user's default (2026-11-12)
+Lesson 2 said never bypass, and lesson 13 relaunched workers with `--dangerously-skip-permissions`. Use the mode the user runs: auto, or bypass when that is their default; relaunch and answer prompts in it. Anything that writes outside the task still needs the user.
+Why: two bosses on a clean relearn flagged lessons 2 and 13 as contradicting each other.

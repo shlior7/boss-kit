@@ -34,4 +34,13 @@ X
 X
 )
 if [ -n "$a" ] && [ "$a" != "$b" ]; then echo "ok   same task, new summary -> differs ($a vs $b)"; else echo "FAIL same task, new summary: '$a' vs '$b'"; fail=1; fi
+# PR READY: a draft counts only once a comment starts a DONE envelope; a comment that quotes it, or a template, never does.
+prs='[{"number":1,"state":"OPEN","isDraft":true,"comments":[{"body":"Proof: https://example.com/p\n\nSUPERSET_WORKER_DONE task: fix-1\nsummary: done"}]},
+ {"number":2,"state":"OPEN","isDraft":true,"comments":[{"body":"Will post the SUPERSET_WORKER_DONE envelope for task fix-2 when done"}]},
+ {"number":3,"state":"OPEN","isDraft":true,"comments":[{"body":"SUPERSET_WORKER_DONE task: <id>"}]},
+ {"number":4,"state":"OPEN","isDraft":true,"comments":[]},
+ {"number":5,"state":"OPEN","isDraft":false,"comments":[]},
+ {"number":6,"state":"MERGED","isDraft":false}]'
+got=$(echo "$prs" | "$S" --ready | tr '\n' ' ' | sed 's/ $//')
+if [ "$got" = "1 5 6" ]; then echo "ok   PR READY -> $got"; else echo "FAIL PR READY: want '1 5 6', got '$got'"; fail=1; fi
 exit $fail
