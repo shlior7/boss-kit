@@ -72,3 +72,7 @@ Why: two bosses on a clean relearn flagged lessons 2 and 13 as contradicting eac
 ## 16. Ask to close a workspace as soon as it is done (2026-11-12, quack)
 Done workspaces sat on the board until the user asked, more than once, to "close all finished workspaces". Now the boss asks in the next message, naming each workspace with its merged PRs and the leftover check. It closes on a yes, or at once under a standing cleanup OK, and keeps asking at each report until answered.
 Why: the user wants cleanup offered, not left for them to notice, and to stay the one who approves it.
+
+## 17. Parallel e2e needs one machine-wide gate, not a serial queue (2026-11-12, quack)
+Four worktrees each ran a full suite, and some started raw Playwright stacks outside the capped runner. The machine ran out of memory and Claude Code reaped every watcher. Serializing by hand fixed it but slowed every PR. The lasting fix is that every stack goes through one runner, which admits a new stack only while free memory allows, so several suites can run at once safely.
+Why: the user wants tests in parallel to save time, and to "always look to self improve".

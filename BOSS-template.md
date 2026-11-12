@@ -56,6 +56,9 @@ Use this script for every done-watch. Never swap it for `superset terminals wait
 PR sweep (does not depend on the screen): at every turn and every report, run `gh pr list --state open --json number,isDraft,mergeable,headRefName,comments`. A draft with a `SUPERSET_WORKER_DONE` comment the ledger has not verified is finished work: verify it (section 7), then mark it ready or send it back. A non-draft PR the ledger does not show as handled needs the same check. While workers run, each watcher does this sweep for its own `<branch>` in the background: it fires `PR READY` when that branch's PR gets a DONE comment, leaves draft, or merges. A watcher covers only the branch it was given.
 On fire: verify independently, update the ledger, report unprompted.
 
+### Self-improvement (every turn)
+After every incident, miss, or slow loop (a missed done-message, a crash, a flaky queue, a question the user had to ask twice), do three things at once: fix the immediate thing, add a lesson (`bin/boss-lesson add`), and change the process or tooling so it cannot recur (a template rule, a script fix dispatched to a worker). In each report, name one improvement you made or propose. Prefer making the system faster and safer (parallel where resources allow, guarded by real limits) over adding manual steps.
+
 ## 7. Verification (never trust a DONE blindly)
 - `gh pr view N --json headRefOid,mergeable,mergeStateStatus,statusCheckRollup,files`. Compare head sha to what the worker reported; "pushed" is unproven until the sha is on GitHub.
 - CI: count failures and pending separately. Pending is not green. Say which checks you could not see.
