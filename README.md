@@ -276,7 +276,7 @@ Two bosses, `widgets` and `gadgets`. The gadgets boss needs to know whether a wi
 boss-mail send --to widgets --kind question --subject "is #42 safe to depend on?" \
   --body "gadgets#7 calls the new retry API from widgets#42. Merged and deployed yet?"
 
-# in the widgets boss's worktree: the pane shows "mail 1 ↗", and every prompt carries one line about it
+# in the widgets boss's worktree: the pane's INBOX lists it, and every prompt carries one line about it
 boss-mail inbox
 boss-mail read 20260102-101500-a1b2c3
 boss-mail reply 20260102-101500-a1b2c3 --body "Merged as 3f2a1c9, deploy pending. Re-ask after deploy."
@@ -328,11 +328,10 @@ A quiet pane: grey by default, color only for what needs you. Here with a worker
 <img src="docs/boss-deck-peek.png" width="480" alt="boss-deck pane with the api-retries worker expanded (state, branch, activity, last envelope, context, watcher, proof) and PR #42 expanded (CI, merge state, reviews, size, branch, head, proof links)">
 
 - **The top line** is this boss's last "Your move", read from its `next.txt`.
-- **`mail N ↗`** expands to the unread subjects. While mail is unread, every prompt carries one context line naming it, which the model reads and you don't see. It reads the inbox folder only, so it costs nothing.
+- **INBOX** appears while something from outside this session is unread: today, boss mail. Each message is one line (its kind in yellow, then sender and subject), up to five, then `+N more`. While mail is unread, every prompt also carries one context line naming it, which the model reads and you don't see. It reads the inbox folder only, so it costs nothing.
 - **Press a worker row** (or its key, `1`–`9`, once the pane has focus) to expand it: state and elapsed time, branch, what it's doing, its last envelope, context use (yellow at 60% or more), watcher, its proof links (`page ↗`, `demo ↗`, from the ledger's Proof column), and **`open workspace ↗`**, which opens it in the Paradev app (`superset workspaces open`). Press again to fold it.
 - **Press a PR number** for CI (pass / fail / pending with the failing names), mergeability, reviews, size and head, plus "open on GitHub" and its proof: `demo ↗`, `page ↗`, `artifact ↗`. Links are taken from the PR body and comments: Superset pages, claude.ai artifacts, video files, GitHub attachments and Loom.
 - **`review ↗ <date>`** at the top opens the latest review page (this boss's `review.txt`).
-- **OTHER BOSSES** lists each other live boss on one line, `<project> · N working · M for you ↗`, with `M for you` in yellow. Press it to open that boss's workspace.
 - **The footer** shows `tracker: N mine · N P0/P1 · N in progress` when a tracker is synced (nothing otherwise), `N new shared lessons` added since this boss's last session, and when the pane last updated.
 - **PR status colors:** green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. Stacked PRs nest under their base. PRs idle for 10+ days fold into one line.
 - **Refresh:** every 60 s, plus right after the boss dispatches, merges, comments or syncs. `/boss-deck` refreshes on demand. The pane writes no status line.
