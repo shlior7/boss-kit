@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""boss-event: log one stage of a workspace's lifecycle, for the boss-deck lanes and timeline.
+
+  boss-event <workspace> <stage> [note...]
+
+Appends {at, ws, stage, note} to $BOSS_HOME/<project>/bosses/<boss-id>/events.jsonl (paths: bin/bosskit.py).
+The boss logs sent (a dispatch), checked, ready and retired; bin/boss-watch-done.sh logs DONE, BLOCKED,
+PR READY and merged when it fires.
+"""
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosskit  # noqa: E402
+
+
+def main(argv):
+    if len(argv) < 2 or argv[0].startswith("-"):
+        sys.exit(__doc__)
+    print(json.dumps(bosskit.add_event(bosskit.load(), argv[0], argv[1], " ".join(argv[2:]))))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

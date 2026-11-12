@@ -3,8 +3,11 @@
 
 Read-only. Sources: the project ledger's dispatch rows (task per workspace), `superset snapshot`
 (each worker's agent state), running `boss-watch-done*` processes (armed watchers), `gh` for my
-open PRs (cached 5 min so a 60 s refresh stays cheap), the tracker snapshot boss-tasks.py writes,
+open PRs (cached 5 min so a 60 s refresh stays cheap), this boss's events.jsonl (each workspace's
+stage log, from bin/boss-event and the watcher), the tracker snapshot boss-tasks.py writes,
 this boss's inbox, and the registry of other bosses. Each run is also this boss's heartbeat.
+Each workspace joins its PR by branch and lands in one lane (stage): move, checking, working,
+review or done (merged or retired today, archived workspaces included).
 Paths and project resolution: bin/bosskit.py.
 
 usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--cwd DIR] [--selftest]
@@ -20,12 +23,23 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bosskit  # noqa: E402
 
 PR_TTL_S = 300
 MAX_WORKERS = 8
+DONE_TODAY_ROWS = 5
+EVENT_ROWS = 8  # a workspace's newest events, for its timeline
+# Event stages, lower-cased. DONE_EVENTS: the worker finished; END_EVENTS: the work is over; CHECKED_EVENTS: the boss verified it.
+DONE_EVENTS = {"done", "pr ready"}
+END_EVENTS = {"merged", "retired"}
+CHECKED_EVENTS = {"checked", "ready"}
+# Ledger status words that mean the boss verified the row's work.
+VERIFIED_LEDGER = {"VERIFIED", "CHECKED", "READY", "MERGED", "ARCHIVED"}
+# A PR comment that starts a DONE envelope (bin/boss-watch-done.sh's pick() uses the same test).
+DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*SUPERSET_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]")
 # What a boss names its own Paradev workspace at session start.
 BOSS_NAME = "BOSS"
 # ponytail: a watcher is "stale" by age or an idle worker; a real liveness probe would read the terminal
@@ -172,9 +186,26 @@ def ci_summary(rollup):
     return "red" if fail else "pending" if pend else "green"
 
 
+def epoch(iso):
+    """Seconds since the epoch of an ISO time like GitHub's "2026-01-02T10:31:00Z"; 0 when unparsable."""
+    try:
+        return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
+    except (ValueError, AttributeError):
+        return 0
+
+
+def day_start(now):
+    """Local midnight of the day *now* falls in."""
+    t = time.localtime(now)
+    return int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1)))
+
+
 def pr_row(repo, p, primary):
-    text = " ".join([p.get("body") or ""] + [c.get("body") or "" for c in p.get("comments") or []])
+    comments = p.get("comments") or []
+    text = " ".join([p.get("body") or ""] + [c.get("body") or "" for c in comments])
     return {
+        # When the newest comment starting a DONE envelope landed: the screen-free done signal.
+        "doneAt": max((epoch(c.get("createdAt", "")) for c in comments if DONE_COMMENT.search(c.get("body") or "")), default=0),
         "proof": proof_links(text),
         "repo": repo, "primary": primary, "num": p["number"], "title": p["title"][:60],
         "draft": p.get("isDraft", False), "review": p.get("reviewDecision") or "",
@@ -206,6 +237,55 @@ def prs(cfg, cache_dir, fresh=False):
             rows.append(pr_row(repo, json.loads(raw), repo == cfg["repo"]))
     json.dump({"at": time.time(), "prs": rows}, open(cache, "w"))
     return rows
+
+
+def join(workers, prs):
+    """Each worker's open PR, by branch == the PR's head (the project's own repo first), and each joined PR's workspace."""
+    by_head = {}
+    for p in sorted(prs, key=lambda p: not p.get("primary")):
+        by_head.setdefault(p["head"], p)
+    for w in workers:
+        p = by_head.get(w["branch"]) if w["branch"] else None
+        w["pr"] = p
+        if p:
+            p["ws"] = w["ws"]
+            w["prTag"] = f"#{p['num']}" if p.get("primary") else f"{p.get('tag') or p['repo']}#{p['num']}"
+
+
+def stage(state, ledger, pr, evs, today):
+    """A workspace's lane, first match wins: move (its PR approved + green), checking (DONE not yet verified,
+    or a ready PR gone red), working (agent busy or blocked, or idle without DONE), review (PR ready), done
+    (merged or retired today). Only events since the last dispatch ("sent") count; anything else is working."""
+    sent = max((e["at"] for e in evs if e["stage"].lower() == "sent"), default=0)
+    at = lambda kinds: max((e["at"] for e in evs if e["at"] >= sent and e["stage"].lower() in kinds), default=0)
+    ready = bool(pr) and not pr["draft"]
+    pr_done = (pr or {}).get("doneAt", 0)
+    done_at = max(at(DONE_EVENTS | END_EVENTS), pr_done if pr_done >= sent else 0)
+    # A ready PR was marked ready by the boss (workers never do), so it is done and verified.
+    verified = ready or ledger.upper() in VERIFIED_LEDGER or (done_at and at(CHECKED_EVENTS) >= done_at)
+    if ready and pr["review"] == "APPROVED" and pr["ci"] == "green":
+        return "move"
+    if (done_at and not verified) or (ready and pr["ci"] == "red"):
+        return "checking"
+    if state in ("working", "blocked") or not (done_at or verified):
+        return "working"
+    if ready:
+        return "review"
+    if at(END_EVENTS) >= today:
+        return "done"
+    return "working"
+
+
+def since(evs, pr, date):
+    """When the workspace's current stage began: its newest event, else its PR's last update, else its ledger date."""
+    if evs:
+        return evs[-1]["at"]
+    if pr and epoch(pr.get("updated", "")):
+        return epoch(pr["updated"])
+    try:
+        return int(time.mktime(time.strptime(date, "%Y-%m-%d")))
+    except (ValueError, TypeError):
+        return 0
 
 
 def board(cfg, snapshot):
@@ -309,31 +389,54 @@ def main():
     spaces = snapshot(cfg)
     by_prefix = {w["id"][:8]: w for w in spaces}
     watched = {w["ws"][:8] for w in armed}
-    workers = []
+    pr_rows = prs(cfg, ctx.cache, "--fresh" in sys.argv)
+    for p in pr_rows:
+        p["tag"] = repo_tag(p["repo"], cfg.get("repo_aliases"))
+    evs = {}
+    for e in bosskit.events(ctx.bdir):
+        evs.setdefault(e["ws"][:8], []).append(e)
+    # Name, branch and PR tag of each workspace seen, so an archived one still reads right under DONE TODAY.
+    seen_path = os.path.join(ctx.cache, "workspaces.json")
+    try:
+        seen = json.load(open(seen_path))
+    except (OSError, ValueError):
+        seen = {}
+    today = day_start(time.time())
+    workers, done = [], []
     for prefix, (task, status, date, proof, boss, text) in list(tasks.items()):
         if boss and boss != ctx.bid:
             continue  # another boss's dispatch
-        if len(workers) >= MAX_WORKERS and prefix not in watched:
-            continue
         w = by_prefix.get(prefix)
-        if w is None and prefix not in watched:
-            continue  # archived workspace
+        archived = w is None and prefix not in watched
+        if archived and not any(e["at"] >= today and e["stage"].lower() in END_EVENTS for e in evs.get(prefix, [])):
+            continue  # archived, and not today
+        if not archived and len(workers) >= MAX_WORKERS and prefix not in watched:
+            continue
+        old = seen.get(prefix, {})
         agents = [t for t in (w or {}).get("terminals", []) if t.get("agent")]
         agent_states = [t["agent"].get("state") for t in agents]
         state = "working" if "working" in agent_states else (agent_states[0] if agent_states else "gone")
-        workers.append({
+        (done if archived else workers).append({
             "ws": prefix, "id": (w or {}).get("id", ""), "term": agents[0]["id"] if agents else "",
-            "name": (w or {}).get("name", "?")[:28], "branch": (w or {}).get("branch", ""),
+            "name": (w or {}).get("name", old.get("name", task))[:28], "branch": (w or {}).get("branch", old.get("branch", "")),
             "task": task, "taskText": text, "ledger": status, "date": date, "state": state, "watched": prefix in watched,
-            "proof": proof,
+            "proof": proof, "prTag": old.get("prTag", ""),
         })
+    join(workers, pr_rows)
+    for w in workers + done:
+        mine_evs = evs.get(w["ws"], [])
+        w["stage"] = stage(w["state"], w["ledger"], w.get("pr"), mine_evs, today)
+        w["since"] = since(mine_evs, w.get("pr"), w["date"])
+        w["events"] = [{**e, "hm": time.strftime("%H:%M", time.localtime(e["at"]))} for e in mine_evs[-EVENT_ROWS:]]
+        seen[w["ws"]] = {"name": w["name"], "branch": w["branch"], "prTag": w["prTag"]}
+    bosskit.save_json(seen_path, seen)
+    # DONE TODAY: the newest few, archived workspaces included.
+    finished = sorted([w for w in workers + done if w["stage"] == "done"], key=lambda w: w["since"], reverse=True)
+    workers = [w for w in workers if w["stage"] != "done"] + finished[:DONE_TODAY_ROWS]
     states = {w["ws"]: w["state"] for w in workers}
     for w in armed:
         idle = states.get(w["ws"][:8]) not in ("working", None)
         w["stale"] = w["ageS"] > STALE_AGE_S or (idle and w["ageS"] > IDLE_STALE_S)
-    pr_rows = prs(cfg, ctx.cache, "--fresh" in sys.argv)
-    for p in pr_rows:
-        p["tag"] = repo_tag(p["repo"], cfg.get("repo_aliases"))
     try:
         now_line = open(os.path.join(ctx.bdir, "next.txt")).read().strip().splitlines()[0][:120]
     except (OSError, IndexError):
@@ -345,7 +448,7 @@ def main():
         review = {"url": url, "date": time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(rpath)))}
     except (OSError, IndexError):
         pass
-    todo = attention(workers, armed, pr_rows)
+    todo = attention([w for w in workers if w["stage"] != "done"], armed, pr_rows)
     working = sum(w["state"] == "working" for w in workers)
     for_you = sum(a["level"] == "act" for a in todo)
     bosskit.heartbeat(ctx, host(cfg), {"working": working, "forYou": for_you})
