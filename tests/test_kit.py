@@ -337,7 +337,7 @@ class Lanes(Home):
     def setUp(self):
         super().setUp()
         self.deck = load_script("boss-deck-data.py")
-        self.now = int(time.time())
+        self.now = int(time.mktime((2026, 1, 2, 12, 0, 0, 0, 0, -1)))  # midday: no event lands on another day; boundaries are in test_done_today_cutoff
         self.today = self.deck.day_start(self.now)
 
     def pr(self, **kw):
@@ -357,6 +357,10 @@ class Lanes(Home):
         self.assertEqual(stage("idle", "DISPATCHED", pr(draft=False, ci="red"), [], today), "checking")  # ready, CI went red
         # verified, by the ledger or a later checked event: no longer the boss's move
         self.assertEqual(stage("idle", "VERIFIED", pr(doneAt=self.now - 60), [], today), "working")
+        # no DONE event logged: a DONE ledger row still means the boss checks it, a draft PR or none
+        self.assertEqual(stage("idle", "DONE", pr(), [ev("sent", 600)], today), "checking")
+        self.assertEqual(stage("working", "DONE", None, [], today), "checking")
+        self.assertEqual(stage("idle", "DONE", None, [ev("sent", 600), ev("checked", 30)], today), "working")  # verified
         self.assertNotEqual(stage("idle", "DISPATCHED", pr(), [ev("DONE", 60), ev("checked", 30)], today), "checking")
         # a DONE from before the last dispatch does not count
         self.assertEqual(stage("idle", "DISPATCHED", pr(doneAt=self.now - 900), [ev("sent", 600)], today), "working")

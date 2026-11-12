@@ -125,6 +125,18 @@ test('a boss row: its domain or main, (this), counts, and its age only once stal
   expect(bossDetails({ ...b, domain: '', state: [], next: '' }, 1000).map(r => r.label)).toEqual(['next', 'seen'])
 })
 
+test('a DONE with no logged event (PR comment or ledger) still reads as DONE, never as a missing log', () => {
+  const now = 10_000
+  // checking without a DONE event: the PR comment's time, else the stage's own age; never "DONE <epoch> ago"
+  const viaPr = workerRow({ ...worker, stage: 'checking', since: now - 600, pr: pr({ draft: true, doneAt: now - 120 }) }, now)
+  expect(viaPr.parts[1]?.text).toBe('DONE 2m ago')
+  const viaLedger = workerRow({ ...worker, stage: 'checking', ledger: 'DONE', since: now - 300, pr: pr({ draft: true, doneAt: 0 }) }, now)
+  expect(viaLedger.parts[1]?.text).toBe('DONE 5m ago')
+  expect(workerDetails({ ...worker, stage: 'checking', pr: pr({ draft: true, doneAt: now }) }, '')[0]?.value).toBe('DONE  posted as a PR comment')
+  const ledgerRows = workerDetails({ ...worker, stage: 'checking', ledger: 'DONE' }, '')
+  expect([ledgerRows[0]?.value, ledgerRows.find(r => r.label === 'next')?.value]).toEqual(['DONE  in the ledger', 'boss: verify, then mark the PR ready'])
+})
+
 test('the next step names who acts', () => {
   expect(nextStep({ ...worker, stage: 'move' })).toBe('you: say merge')
   expect(nextStep({ ...worker, stage: 'checking' })).toBe('boss: verify, then mark the PR ready')

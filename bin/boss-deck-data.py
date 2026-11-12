@@ -37,8 +37,9 @@ EVENT_ROWS = 8  # a workspace's newest events, for its timeline
 DONE_EVENTS = {"done", "pr ready"}
 END_EVENTS = {"merged", "retired"}
 CHECKED_EVENTS = {"checked", "ready"}
-# Ledger status words that mean the boss verified the row's work.
+# Ledger status words that mean the boss verified the row's work, or that the worker reported DONE.
 VERIFIED_LEDGER = {"VERIFIED", "CHECKED", "READY", "MERGED", "ARCHIVED"}
+DONE_LEDGER = {"DONE"}
 # A PR comment that starts a DONE envelope (bin/boss-watch-done.sh's pick() uses the same test).
 DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*SUPERSET_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]")
 # What a boss names its own Paradev workspace at session start.
@@ -264,7 +265,9 @@ def stage(state, ledger, pr, evs, today):
     at = lambda kinds: max((e["at"] for e in evs if e["at"] >= sent and e["stage"].lower() in kinds), default=0)
     ready = bool(pr) and not pr["draft"]
     pr_done = (pr or {}).get("doneAt", 0)
-    done_at = max(at(DONE_EVENTS | END_EVENTS), pr_done if pr_done >= sent else 0)
+    # No DONE event (the watcher missed it, or could not log it): the PR's DONE comment, else a DONE ledger row
+    # (the newest row, so this dispatch's), which carries no time and so counts as at the last dispatch.
+    done_at = max(at(DONE_EVENTS | END_EVENTS), pr_done if pr_done >= sent else 0, sent or 1 if ledger.upper() in DONE_LEDGER else 0)
     # A ready PR was marked ready by the boss (workers never do), so it is done and verified.
     verified = ready or ledger.upper() in VERIFIED_LEDGER or (done_at and at(CHECKED_EVENTS) >= done_at)
     if ready and pr["review"] == "APPROVED" and pr["ci"] == "green":

@@ -32,7 +32,7 @@ export function workerRow(w: Worker, nowS: number): Row {
       return { ...base, mark: '›', markColor: 'warning', dim: false, parts: [{ text: 'your move' }, { text: age }, p && needsProof(p) ? { text: 'no proof', color: 'warning' } : { text: 'say merge' }] }
     case 'checking': {
       if (p && !p.draft && p.ci === 'red') return { ...base, mark: '◐', dim: false, parts: [{ text: 'boss checking' }, { text: age }, { text: 'CI red', color: 'error' }] }
-      const done = lastEvent(w, 'done', 'pr ready')?.at ?? p?.doneAt ?? w.since
+      const done = lastEvent(w, 'done', 'pr ready')?.at || p?.doneAt || w.since
       return { ...base, mark: '◐', dim: false, parts: [{ text: 'boss checking' }, { text: `DONE ${ago(Math.max(0, nowS - done))} ago` }, { text: 'verifying' }] }
     }
     case 'review': {
@@ -135,7 +135,9 @@ export function workerDetails(w: Worker, screen: string, pr: Detail[] = []): Det
     value: [e.stage, e.note].filter(Boolean).join('  '),
     color: e.stage.toLowerCase() === 'blocked' ? 'error' : undefined,
   }))
-  if (rows.length === 0) rows.push({ label: '', value: `no stage log yet · dispatched ${w.date || '?'}` })
+  // No event logged: a DONE seen elsewhere (a PR comment, the ledger) still reads as DONE, never as a log that is not there.
+  const doneElsewhere = w.pr?.doneAt ? 'DONE  posted as a PR comment' : w.ledger.toUpperCase() === 'DONE' ? 'DONE  in the ledger' : ''
+  if (rows.length === 0) rows.push({ label: '', value: doneElsewhere || `no stage log yet · dispatched ${w.date || '?'}` })
   if (w.taskText && w.taskText !== w.task) rows.unshift({ label: 'task', value: w.taskText })
   rows.push({ label: 'next', value: nextStep(w), color: w.stage === 'move' ? 'warning' : undefined }, ...pr)
   if (doing || (w.state === 'working' && spin)) rows.push({ label: 'doing', value: [doing, spin].filter(Boolean).join(' · ') })

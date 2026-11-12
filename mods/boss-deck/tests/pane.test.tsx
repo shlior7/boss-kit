@@ -8,7 +8,7 @@ const DECK: Deck = {
   at: 0, next: '', attention: [], watchers: [], board: { mine: 2, p1: 1, inProgress: 1 },
   workers: [
     { ws: '1a2b3c4d', id: 'ws-1', term: 't', name: 'api', branch: 'b', task: 'retry-43', taskText: 'retry-43 (queued after fix-42)', ledger: 'QUEUED', date: '', state: 'working', watched: false, proof: [], stage: 'working', since: 0 },
-    { ws: '5e6f7a8b', id: 'ws-2', term: 't', name: 'web-login', branch: 'c', task: 'fix-57', ledger: 'READY', date: '', state: 'idle', watched: false, proof: [], stage: 'review', since: 0, prTag: '#57', pr: PR57 },
+    { ws: '5e6f7a8b', id: 'ws-2', term: 't', name: 'web-login', branch: 'c', task: 'fix-57', ledger: 'READY', date: '', state: 'idle', watched: false, proof: [{ label: 'page', url: 'https://example.com/page' }, { label: 'demo', url: 'https://example.com/run.mp4' }], stage: 'review', since: 0, prTag: '#57', pr: PR57 },
   ],
   prs: [
     { ...pr, repo: 'acme/widgets', primary: true, num: 7, head: 'a', tag: 'w' } as Deck['prs'][0],
@@ -56,11 +56,12 @@ test('the pane passes its workspace, and draws its inbox, its bosses, one WORKER
   expect(row('ws#42')).toBe('ws#42 — open')
   expect(texts.some(t => (t ?? '').startsWith('#57'))).toBe(false)
   expect(texts.some(t => /queued after/.test(t ?? ''))).toBe(false)
-  // its accordion: the workspace's history and next, the PR's rows, then one link row, arrow last on each
+  // its accordion: the workspace's history and next, the PR's rows, then one link row (the ledger's and the PR's proof,
+  // deduplicated), arrow last on each
   await ui.press({ key: 'peek-w-5e6f7a8b' })
   const open = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
   const from = open.indexOf('next')
   expect(open.slice(from, from + 4)).toEqual(['next', 'reviewer: review #57', 'pr', 'rate-limit attempts'])
-  expect(open.filter(t => t.endsWith('↗'))).toEqual(['page ↗', 'open workspace ↗', 'open on GitHub ↗'])
+  expect(open.filter(t => t.endsWith('↗'))).toEqual(['page ↗', 'demo ↗', 'open workspace ↗', 'open on GitHub ↗'])
   expect(texts).toContain('tracker: 2 mine · 1 P0/P1 · 1 in progress')
 })
