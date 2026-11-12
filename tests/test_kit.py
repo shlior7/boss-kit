@@ -251,6 +251,22 @@ class Lessons(Home):
             self.assertIn(part, text)
 
 
+class DomainBoss(Home):
+    def test_domain_boss_loads_charter_and_state(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        os.makedirs(os.path.join(self.home, "widgets", "domains"), exist_ok=True)
+        open(os.path.join(self.home, "widgets", "domains", "studio.md"), "w").write("studio charter")
+        open(os.path.join(self.home, "widgets", "domains", "studio-state.md"), "w").write("studio state")
+        self.assertEqual(bosskit.boss_domain(self.wt), "")
+        self.assertNotIn("studio charter", bosskit.instructions(bosskit.load(self.wt)))
+        with open(os.path.join(self.wt, "CLAUDE.local.md"), "a") as f:
+            f.write("\nDomain: studio\n")
+        self.assertEqual(bosskit.boss_domain(self.wt), "studio")
+        text = bosskit.instructions(bosskit.load(self.wt))
+        for part in ("domain studio", "studio charter", "studio state"):
+            self.assertIn(part, text)
+
+
 class Deck(Home):
     def test_other_bosses_and_mail_count(self):
         deck = load_script("boss-deck-data.py")

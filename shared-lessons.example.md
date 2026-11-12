@@ -68,3 +68,7 @@ Why: the user noticed workspaces "done and nothing occurred". The fix is the scr
 ## 16. Permission mode follows the user's default (2026-11-12)
 Lesson 2 said never bypass, and lesson 13 relaunched workers with `--dangerously-skip-permissions`. Use the mode the user runs: auto, or bypass when that is their default; relaunch and answer prompts in it. Anything that writes outside the task still needs the user.
 Why: two bosses on a clean relearn flagged lessons 2 and 13 as contradicting each other.
+
+## 16. Ask to close a workspace as soon as it is done (2026-11-12, quack)
+Done workspaces sat on the board until the user asked, more than once, to "close all finished workspaces". Now the boss asks in the next message, naming each workspace with its merged PRs and the leftover check. It closes on a yes, or at once under a standing cleanup OK, and keeps asking at each report until answered.
+Why: the user wants cleanup offered, not left for them to notice, and to stay the one who approves it.
