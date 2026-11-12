@@ -218,7 +218,7 @@ Merge origin/main first (merge, never rebase or force). Run `make test`. Plain p
 Proof: a Superset page with the test run, before and after, and the revert-proves-red output; link it in a PR comment.
 Files you may touch: src/http/** and tests/http/** only. Do not broaden scope.
 
-End your final message with exactly this envelope, each field on its own line, starting at column 0:
+Keep the PR draft. End your final message with exactly this envelope, each field on its own line, starting at column 0, and post the same envelope as a PR comment:
 SUPERSET_WORKER_DONE
 task: fix-42
 summary: <one line>
@@ -249,7 +249,7 @@ It polls every 30 s, for up to 2 h, and exits (which wakes the boss) when:
 
 It skips envelope templates whose fields still read `<placeholder>`, so the prompt you just sent never fires it.
 
-**3. Verify.** The boss never trusts a DONE blindly. It opens every URL in `proof:` and checks it shows this change. It reads the PR on GitHub (head sha against the worker's claim; CI failures and pending counted separately; mergeable), re-runs the regression test with the fix reverted when the change is risky, updates the ledger (one row per dispatch, with a Proof and a Boss column), and reports.
+**3. Verify.** The boss never trusts a DONE blindly. It opens every URL in `proof:` and checks it shows this change. It reads the PR on GitHub (head sha against the worker's claim; CI failures and pending counted separately; mergeable), re-runs the regression test with the fix reverted when the change is risky, updates the ledger (one row per dispatch, with a Proof and a Boss column), and reports. Workers never mark their own PR ready: when the boss judges a PR ready for a human, it runs `gh pr ready` itself. If not, it sends the worker back with what's missing.
 
 ## Proof and reviews
 
@@ -314,7 +314,7 @@ Both files are append-only and numbered. An exact duplicate is refused; one that
 | `bin/boss-mail send \| inbox \| read \| reply \| done` | Boss mail, above |
 | `bin/boss-lesson add \| list \| promote` | Lessons, above |
 | `bin/boss-migrate [--kit DIR] [--boss ID] [--apply]` | Moves a v0.4-or-older kit's project data into `$BOSS_HOME` and leaves a symlink at each old path. Dry run unless `--apply`; never overwrites. `--boss` names the boss that owned the old `state/<name>/` |
-| `bin/boss-watch-done.sh <ws> <term> [<branch>]` | The watcher above; `--sig < screen` prints the envelope it would fire on (`DONE|<id>|<summary start>`) (`bin/test-boss-watch.sh` checks it). Env: `BOSS_HOST` (default: first host); `BOSS_DRAFT_DONE=1` in a project whose PRs stay draft, so a draft whose checks all turn green fires `PR READY` too (`--ready < pr-list.json` shows which). Needs `jq`, and `gh` for `<branch>` |
+| `bin/boss-watch-done.sh <ws> <term> [<branch>]` | The watcher above; `--sig < screen` prints the envelope it would fire on (`DONE|<id>|<summary start>`) (`bin/test-boss-watch.sh` checks it). Env: `BOSS_HOST` (default: first host); with `<branch>` it also fires `PR READY` when that branch's PR gets a DONE-envelope comment, leaves draft or merges (`--ready < pr-list.json` shows which). Needs `jq`, and `gh` for `<branch>` |
 | `bin/boss-sync.py --only=N,N [--push]` | Run inside the repo. For each listed PR (stacked ones after their base), merges `origin/<base>` into the branch in a throwaway worktree and reports `up to date`, `merged clean` or `REAL CONFLICT: files`. Dry run by default; `--push` pushes (plain push, never force). `--gen=FILES --regen="cmd"` auto-resolves conflicts only in generated files; `--if-moved` exits early when the base hasn't moved. **Use `--only` with your own PR numbers.** `--all` would push to teammates' branches |
 | `bin/boss-tasks.py [--quiet]` | Read-only tracker sync into this boss's `cache/tracker.json` (a migrated `bosses/<id>/tracker.json` is read when that is missing). Prints what changed, your open tasks, team P0/P1 and In Review |
 | `bin/boss-deck-data.py [--session-start] [--workspace ID] [--cwd DIR] [--selftest]` | Prints the JSON the pane draws, and writes this boss's heartbeat. `--session-start` (the pane's first refresh) also marks a new session and renames this boss's Paradev workspace to `BOSS`. `--workspace` and `--cwd` are what the pane passes so it resolves the same boss as the session. `--selftest` runs its checks |

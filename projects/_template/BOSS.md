@@ -12,7 +12,6 @@ The role, mandate, hard rules, routing, envelope, verification, merge and report
 | Me on GitHub | `<login>`. **Only my PRs are mine to sync and push.** Other authors' PRs are read-only: report only |
 | Tracker | `<none / HTTP JSON endpoint>`; workers stay read-only on it |
 | Paradev host | `<host id>` (`superset hosts list --json`). Export `BOSS_HOST` for the watcher |
-| PRs stay draft | `<no / yes>`. Yes when PRs stay draft until a human marks them ready: the PR sweep then counts a draft with green checks as finished, and the watcher runs with `BOSS_DRAFT_DONE=1` |
 | Rules to inject in every dispatch | `<AGENTS.md / CLAUDE.md paths>`, the PR title format, "every behavioural fix ships a regression test", folders workers must never touch |
 
 ## Proof

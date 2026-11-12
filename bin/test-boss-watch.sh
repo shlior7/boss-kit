@@ -34,15 +34,13 @@ X
 X
 )
 if [ -n "$a" ] && [ "$a" != "$b" ]; then echo "ok   same task, new summary -> differs ($a vs $b)"; else echo "FAIL same task, new summary: '$a' vs '$b'"; fail=1; fi
-# PR READY: a draft counts only with BOSS_DRAFT_DONE=1 and every check green; pending or failing never does.
-prs='[{"number":1,"state":"OPEN","isDraft":true,"statusCheckRollup":[{"conclusion":"SUCCESS"},{"state":"SUCCESS"}]},
- {"number":2,"state":"OPEN","isDraft":true,"statusCheckRollup":[{"conclusion":"SUCCESS"},{"conclusion":"","status":"IN_PROGRESS"}]},
- {"number":3,"state":"OPEN","isDraft":true,"statusCheckRollup":[{"conclusion":"FAILURE"}]},
- {"number":4,"state":"OPEN","isDraft":true,"statusCheckRollup":[]},
- {"number":5,"state":"OPEN","isDraft":false,"statusCheckRollup":[]},
+# PR READY: a draft counts only once a comment starts a DONE envelope; a comment that quotes it, or a template, never does.
+prs='[{"number":1,"state":"OPEN","isDraft":true,"comments":[{"body":"Proof: https://example.com/p\n\nSUPERSET_WORKER_DONE task: fix-1\nsummary: done"}]},
+ {"number":2,"state":"OPEN","isDraft":true,"comments":[{"body":"Will post the SUPERSET_WORKER_DONE envelope for task fix-2 when done"}]},
+ {"number":3,"state":"OPEN","isDraft":true,"comments":[{"body":"SUPERSET_WORKER_DONE task: <id>"}]},
+ {"number":4,"state":"OPEN","isDraft":true,"comments":[]},
+ {"number":5,"state":"OPEN","isDraft":false,"comments":[]},
  {"number":6,"state":"MERGED","isDraft":false}]'
-for d in "" 1; do want=$([ "$d" = 1 ] && echo "1 5 6" || echo "5 6")
-  got=$(echo "$prs" | BOSS_DRAFT_DONE=$d "$S" --ready | tr '\n' ' ' | sed 's/ $//')
-  if [ "$got" = "$want" ]; then echo "ok   PR READY with BOSS_DRAFT_DONE='$d' -> $got"; else echo "FAIL PR READY with BOSS_DRAFT_DONE='$d': want '$want', got '$got'"; fail=1; fi
-done
+got=$(echo "$prs" | "$S" --ready | tr '\n' ' ' | sed 's/ $//')
+if [ "$got" = "1 5 6" ]; then echo "ok   PR READY -> $got"; else echo "FAIL PR READY: want '1 5 6', got '$got'"; fail=1; fi
 exit $fail
