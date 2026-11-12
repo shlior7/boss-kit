@@ -121,7 +121,8 @@ const main =
   pr('✓', 0, '#57', 'no proof', 'login rate limit', 'wa') +
   pr('✗', 0, '#61', 'review', 'warm the cache on deploy', 'er') +
   pr('✓', 0, 'ws#7', 'approved', 'client for the retry API', 'ok') +
-  '\n' + line(seg('gadgets · 2 working · 1 for you ↗', 'd')) +
+  section('other bosses', '1 live · press to open') +
+  line(seg('gadgets · 2 working', 'd'), seg(' · 1 for you', 'wa'), seg(' ↗', 'd')) +
   foot('12s', 'tracker: 6 mine · 2 P0/P1 · 1 in progress')
 
 const peek =

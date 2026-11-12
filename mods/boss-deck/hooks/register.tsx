@@ -308,12 +308,18 @@ export const register: Register = on => {
         )}
 
         {(d.others ?? []).length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            {(d.others ?? []).map(b => (
-              <Button plain key={`boss-${b.id}`} onPress={() => void openWorkspace($, b.workspace)}>
-                <Text dimColor>{otherBossLine(b)}</Text>
-              </Button>
-            ))}
+          <Box flexDirection="column">
+            {section('other bosses', `${(d.others ?? []).length} live · press to open`)}
+            {(d.others ?? []).map(b => {
+              const line = otherBossLine(b)
+              return (
+                <Button plain key={`boss-${b.id}`} onPress={() => void openWorkspace($, b.workspace)}>
+                  <Text dimColor>{line.quiet}</Text>
+                  {line.forYou && <Text color="warning">{line.forYou}</Text>}
+                  <Text dimColor> ↗</Text>
+                </Button>
+              )
+            })}
           </Box>
         )}
 

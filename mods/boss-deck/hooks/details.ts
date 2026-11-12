@@ -111,9 +111,9 @@ export function needsProof(p: Pr): boolean {
   return !p.draft && p.review === 'APPROVED' && p.ci === 'green' && p.proof.length === 0
 }
 
-/** One quiet line per other live boss: "<project> · N working · M for you ↗". */
-export function otherBossLine(b: OtherBoss): string {
-  return `${b.project} · ${b.working} working${b.forYou ? ` · ${b.forYou} for you` : ''} ↗`
+/** One line per other live boss, "<project> · N working · M for you ↗", split so "M for you" can be colored. */
+export function otherBossLine(b: OtherBoss): { quiet: string; forYou: string } {
+  return { quiet: `${b.project} · ${b.working} working`, forYou: b.forYou ? ` · ${b.forYou} for you` : '' }
 }
 
 /** The context line a prompt carries while mail is unread, or none. */

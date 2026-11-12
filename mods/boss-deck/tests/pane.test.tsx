@@ -32,7 +32,8 @@ test('the pane passes its workspace, and draws each other boss once, short repo 
 
   const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
-  expect(texts.filter(t => /working ↗$/.test(t ?? ''))).toEqual(['gadgets · 1 working ↗', 'gizmos · 0 working ↗'])
+  expect(texts).toContain('OTHER BOSSES')
+  expect(texts.filter(t => /^\w+ · \d+ working$/.test(t ?? ''))).toEqual(['gadgets · 1 working', 'gizmos · 0 working'])
   expect(texts).toContain('#7')
   expect(texts).toContain('ws#42')
   expect(texts).toContain('retry-43')
