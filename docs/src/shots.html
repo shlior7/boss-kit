@@ -93,9 +93,9 @@ const line = (...s) => s.join('') + '\n'
 const justify = (l, r, lc, rc) => line(seg(l, lc), seg(' '.repeat(Math.max(1, W - l.length - r.length))), seg(r, rc))
 const section = (name, note) => '\n' + justify(name.toUpperCase(), note, 'd b', 'd')
 // The row is one Button: its hotkey ("1: ") takes 3 of the name's 23 cells.
-const worker = (mark, n, name, task, c) => line(seg(pad(mark, 2), c), seg(n + ': ', 'hk'), seg(pad(name.slice(0, 18), 20), c), seg(task, c))
+const worker = (mark, n, name, task, c) => line(seg(pad(mark, 2), mark === '●' ? 'ok' : c), seg(n + ': ', 'hk'), seg(pad(name.slice(0, 18), 20), c), seg(task, c))
 const pr = (ci, depth, tag, status, title, sc) =>
-  line(seg(pad(ci, 2), ci === '✗' ? 'er' : 'd'), depth ? seg(pad('└', 2), 'd') : '', seg(pad(tag, 7)), seg(pad(status, 11), sc || 'd'), seg(title.slice(0, W - 20 - 2 * depth), 'd'))
+  line(seg(pad(ci, 2), { '✓': 'ok', '✗': 'er', '…': 'wa' }[ci]), depth ? seg(pad('└', 2), 'd') : '', seg(pad(tag, 7)), seg(pad(status, 11), sc || 'd'), seg(title.slice(0, W - 20 - 2 * depth), 'd'))
 const detail = (label, value, c = 'd') => line(seg('    ' + pad(label, 9), 'd'), seg(value, c))
 
 const head = () =>
@@ -130,7 +130,7 @@ const peek =
   head() +
   line(seg('Merge #57 when you say so; fix-42 is running.', 'b')) +
   section('workers', '2 working · 2 watched') +
-  line(seg('● '), seg('1: ', 'hk'), seg(pad('api-retries', 20), 'b'), seg('fix-42', 'b')) +
+  line(seg('● ', 'ok'), seg('1: ', 'hk'), seg(pad('api-retries', 20), 'b'), seg('fix-42', 'b')) +
   detail('state', 'working 6m 12s') +
   detail('branch', 'fix/retry-backoff') +
   detail('doing', 'Running make test-http') +
