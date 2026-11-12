@@ -10,13 +10,11 @@ const DECK: Deck = {
     { ...pr, repo: 'acme/widgets', primary: true, num: 7, head: 'a', tag: 'w' } as Deck['prs'][0],
     { ...pr, repo: 'acme/widgets-sdk', primary: false, num: 42, head: 'b', tag: 'ws' } as Deck['prs'][0],
   ],
-  others: [
-    { id: 'ws-a', project: 'gadgets', workspace: 'ws-a', working: 1, forYou: 0 },
-    { id: 'ws-b', project: 'gizmos', workspace: 'ws-b', working: 0, forYou: 0 },
-  ],
+  others: [{ id: 'ws-a', project: 'gadgets', workspace: 'ws-a', working: 1, forYou: 0 }],
+  mail: { count: 1, dir: '/nonexistent', items: [{ id: 'm1', kind: 'question', from: 'gadgets', subject: 'is #42 safe?' }] },
 }
 
-test('the pane passes its workspace, and draws each other boss once, short repo tags, task ids and the board', async ($, on) => {
+test('the pane passes its workspace, and draws its inbox, short repo tags, task ids and the board', async ($, on) => {
   const runs: string[][] = []
   mock.env(on, { SUPERSET_WORKSPACE_ID: 'ws-me' })
   mock.clock(on)
@@ -32,7 +30,9 @@ test('the pane passes its workspace, and draws each other boss once, short repo 
 
   const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
-  expect(texts.filter(t => /working ↗$/.test(t ?? ''))).toEqual(['gadgets · 1 working ↗', 'gizmos · 0 working ↗'])
+  expect(texts).toContain('INBOX')
+  expect(texts).toContain('gadgets: is #42 safe?')
+  expect(texts.some(t => /gadgets · \d+ working/.test(t ?? ''))).toBe(false)  // other bosses are not listed
   expect(texts).toContain('#7')
   expect(texts).toContain('ws#42')
   expect(texts).toContain('retry-43')

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { footer, isBoss, mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from '../hooks/details'
+import { footer, isBoss, mailContext, needsProof, prDetails, stack, workerDetails } from '../hooks/details'
 import type { Pr } from '../types'
 
 const worker = { ws: '1a2b3c4d', id: 'x', term: 'y', name: 'api', branch: 'feat/a', task: 'restack-42', ledger: 'DISPATCHED', date: '', state: 'working', watched: true, proof: [] }
@@ -41,12 +41,6 @@ test('only a ready-to-merge PR without proof is flagged', () => {
   expect(needsProof({ ...ready, draft: true })).toBe(false)
   expect(needsProof({ ...ready, ci: 'pending' })).toBe(false)
   expect(needsProof({ ...ready, review: '' })).toBe(false)
-})
-
-test('another live boss reads as one quiet line', () => {
-  const b = { id: 'b', project: 'widgets', workspace: 'ws-b', working: 2, forYou: 1 }
-  expect(otherBossLine(b)).toBe('widgets · 2 working · 1 for you ↗')
-  expect(otherBossLine({ ...b, forYou: 0 })).toBe('widgets · 2 working ↗')
 })
 
 test('unread mail becomes one context line, none when the inbox is empty', () => {

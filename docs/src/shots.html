@@ -99,8 +99,10 @@ const pr = (ci, depth, tag, status, title, sc) =>
 const detail = (label, value, c = 'd') => line(seg('    ' + pad(label, 9), 'd'), seg(value, c))
 
 const head = () =>
-  line(seg('review ↗ 2026-11-10', 'su')) +
-  line(seg('mail 1 ↗', 'su'))
+  line(seg('review ↗ 2026-11-10', 'su'))
+const inbox = () =>
+  section('inbox', '1 unread · boss-mail inbox') +
+  line(seg(pad('question', 10), 'wa'), seg('gadgets: is #42 safe to depend on?'))
 // The footer: tracker and hint flow left and wrap whole, the age stays right on the first line.
 const foot = (ago, tracker) => '\n' + (tracker
   ? justify(tracker, `${ago} ago`, 'd', 'd') + line(seg('press a worker or a PR # for details', 'd'))
@@ -111,6 +113,7 @@ const main =
   line(seg('Merge #57 when you say so; fix-42 is running.', 'b')) +
   line(seg('› ', 'wa'), seg('#57 approved + green: ready to merge (no proof)', 'wa')) +
   line(seg('· ', 'd'), seg('#61 waiting on review for 2 days', 'd')) +
+  inbox() +
   section('workers', '2 working · 2 watched') +
   worker('●', 1, 'api-retries', 'fix-42') +
   worker('●', 2, 'cache-warmup', 'fix-61-ci') +
@@ -121,7 +124,6 @@ const main =
   pr('✓', 0, '#57', 'no proof', 'login rate limit', 'wa') +
   pr('✗', 0, '#61', 'review', 'warm the cache on deploy', 'er') +
   pr('✓', 0, 'ws#7', 'approved', 'client for the retry API', 'ok') +
-  '\n' + line(seg('gadgets · 2 working · 1 for you ↗', 'd')) +
   foot('12s', 'tracker: 6 mine · 2 P0/P1 · 1 in progress')
 
 const peek =

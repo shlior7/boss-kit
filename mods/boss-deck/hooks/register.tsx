@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Deck, Detail, Pr, ProofLink, Worker } from '../types'
-import { footer, isBoss, mailContext, needsProof, otherBossLine, prDetails, stack, workerDetails } from './details'
+import { footer, isBoss, mailContext, needsProof, prDetails, stack, workerDetails } from './details'
 import type { PrView } from './details'
 
 const PANE = 'boss-deck'
@@ -12,6 +12,8 @@ const DATA_CMD = ['sh', '-c', 'exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss
 const REFRESH_MS = 60_000
 // A PR untouched this long folds into one 'stale' line.
 const STALE_PR_DAYS = 10
+// Unread messages listed in the inbox before it folds the rest into "+N more".
+const INBOX_ROWS = 5
 // Change a tag when its value's fields change: it declines what an earlier version stored.
 const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-7' })
 const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-3' })
@@ -261,22 +263,6 @@ export const register: Register = on => {
       <Box flexDirection="column" paddingX={1}>
         {d.error && text(`data error: ${d.error}`, false, 'error')}
         {d.review && linkButton('review', `review ↗ ${d.review.date}`, d.review.url)}
-        {(d.mail?.count ?? 0) > 0 && (
-          <Box flexDirection="column">
-            <Button
-              plain
-              key="mail"
-              onPress={() =>
-                void toggle($, 'mail', async () => ({
-                  rows: (d.mail?.items ?? []).map(m => ({ label: m.kind, value: `${m.from}: ${m.subject}` })),
-                }))
-              }
-            >
-              <Text color="suggestion">{`mail ${d.mail?.count} ↗`}</Text>
-            </Button>
-            {shown?.key === 'mail' && details(shown.rows)}
-          </Box>
-        )}
         <Text bold wrap="wrap">
           {d.next || 'Nothing needs you.'}
         </Text>
@@ -286,6 +272,20 @@ export const register: Register = on => {
             {rest(text(a.text, a.level !== 'act', a.level === 'act' ? 'warning' : undefined))}
           </Box>
         ))}
+
+        {/* Input from outside this session, today boss mail: shown only while something is unread. */}
+        {(d.mail?.count ?? 0) > 0 && (
+          <Box flexDirection="column">
+            {section('inbox', `${d.mail?.count} unread · boss-mail inbox`)}
+            {(d.mail?.items ?? []).slice(0, INBOX_ROWS).map(m => (
+              <Box flexDirection="row">
+                {cell(10, text(m.kind, false, 'warning'))}
+                {rest(text(`${m.from}: ${m.subject}`, false))}
+              </Box>
+            ))}
+            {(d.mail?.count ?? 0) > INBOX_ROWS && text(`+${(d.mail?.count ?? 0) - INBOX_ROWS} more`, true)}
+          </Box>
+        )}
 
         {section('workers', `${working} working · ${d.watchers.length} watched`)}
         {d.workers.length === 0 && text('none', true)}
@@ -307,15 +307,6 @@ export const register: Register = on => {
           </Box>
         )}
 
-        {(d.others ?? []).length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            {(d.others ?? []).map(b => (
-              <Button plain key={`boss-${b.id}`} onPress={() => void openWorkspace($, b.workspace)}>
-                <Text dimColor>{otherBossLine(b)}</Text>
-              </Button>
-            ))}
-          </Box>
-        )}
 
         {/* One quiet line when it fits: the tracker and the hint flow on the left, wrapping whole, the age stays right. */}
         <Box flexDirection="row" justifyContent="space-between" columnGap={2} marginTop={1}>

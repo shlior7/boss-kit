@@ -1,4 +1,4 @@
-import type { Deck, Detail, MailItem, OtherBoss, Pr, Worker } from '../types'
+import type { Deck, Detail, MailItem, Pr, Worker } from '../types'
 
 const ago = (s: number) => (s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`)
 const who = (login: string) => (login.includes('-') ? 'team' : (login.match(/^[A-Z]?[a-z]+/)?.[0] ?? login).toLowerCase())
@@ -109,11 +109,6 @@ export function stack(prs: Pr[]): [Pr, number][] {
 /** Ready to merge (approved, green, not a draft) but carrying no proof link: the one case the pane colors. */
 export function needsProof(p: Pr): boolean {
   return !p.draft && p.review === 'APPROVED' && p.ci === 'green' && p.proof.length === 0
-}
-
-/** One quiet line per other live boss: "<project> · N working · M for you ↗". */
-export function otherBossLine(b: OtherBoss): string {
-  return `${b.project} · ${b.working} working${b.forYou ? ` · ${b.forYou} for you` : ''} ↗`
 }
 
 /** The context line a prompt carries while mail is unread, or none. */
