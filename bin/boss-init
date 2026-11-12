@@ -7,8 +7,11 @@
 set -euo pipefail
 KIT=${BOSS_KIT_HOME:-$(cd "$(dirname "$0")/.." && pwd)}
 HOME_DIR=${BOSS_HOME:-$HOME/.claude/boss}
-NAME=${1:?usage: boss-init <project> [--repo owner/repo] [--base main] [--me login] [--worktree DIR]}; shift
-case "$NAME" in _*|*/*|.*|bosses.json|lessons.md) echo "boss-init: bad project name: $NAME" >&2; exit 2;; esac
+USAGE="usage: boss-init <project> [--repo owner/repo] [--base main] [--me login] [--worktree DIR]"
+NAME=${1:?$USAGE}; shift
+# A flag where the name goes ("boss-init --help") once scaffolded a project named after it.
+case "$NAME" in -h|--help) echo "$USAGE"; exit 0;; esac
+case "$NAME" in -*|_*|*/*|.*|bosses.json|lessons.md) echo "boss-init: bad project name: $NAME" >&2; echo "$USAGE" >&2; exit 2;; esac
 DEST="$HOME_DIR/$NAME"
 [ -e "$DEST" ] && { echo "boss-init: $DEST already exists" >&2; exit 1; }
 REPO=""; BASE=""; ME=""; WT=""
