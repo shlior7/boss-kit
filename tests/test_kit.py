@@ -392,7 +392,7 @@ class Lanes(Home):
         self.deck.join(workers, prs)
         self.assertEqual([(w["pr"] or {}).get("num") for w in workers], [57, None, 8])
         self.assertEqual([w.get("prTag") for w in workers], ["#57", None, "ws#8"])
-        self.assertEqual([p.get("ws") for p in prs], [None, "aaaaaaaa", "cccccccc", None])  # #60 stays under PULL REQUESTS
+        self.assertEqual([p.get("ws") for p in prs], [None, "aaaaaaaa", "cccccccc", None])  # #60 is a PR-only row
 
     def test_done_comment_and_its_time(self):
         p = {"number": 61, "title": "x", "comments": [
@@ -423,6 +423,50 @@ class Lanes(Home):
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(bosskit.events(ctx.bdir)[-1]["note"], "head 8c41d2e ok")
         self.assertNotEqual(subprocess.run([os.path.join(BIN, "boss-event"), "1a2b3c4d"], cwd=self.wt, capture_output=True).returncode, 0)
+
+
+
+class Bosses(Home):
+    """The BOSSES section: this project's live bosses from the registry, and the heartbeat that feeds it."""
+
+    def test_this_projects_bosses_this_one_first(self):
+        deck = load_script("boss-deck-data.py")
+        now = int(time.time())
+        ddir = os.path.join(self.home, "widgets", "domains")
+        os.makedirs(ddir)
+        open(os.path.join(ddir, "checkout-state.md"), "w").write("# Checkout state\n\n## Now\n- cart totals PR #61 in review\n- refund flow next\n\n- a\n- b\n")
+        reg = {"ws-co": {"project": "widgets", "workspace": "ws-co", "worktree": "/w/co", "domain": "checkout", "next": "merge #61",
+                         "heartbeat": now - 600, "working": 1, "forYou": 2},
+               "ws-me": {"project": "widgets", "workspace": "ws-me", "worktree": "/w/me", "domain": "", "next": "say merge 57",
+                         "heartbeat": now, "working": 2, "forYou": 1},
+               "ws-g": {"project": "gadgets", "workspace": "ws-g", "heartbeat": now},  # another project
+               "ws-gone": {"project": "widgets", "workspace": "ws-gone", "domain": "search", "heartbeat": now - bosskit.STALE_S - 1}}
+        got = deck.bosses(reg, "widgets", "ws-me", os.path.join(self.home, "widgets"), now, workspace="ws-me", wt="/w/me")
+        self.assertEqual([(b["domain"], b["me"], b["stale"]) for b in got], [("", True, False), ("checkout", False, True)])
+        self.assertEqual(got[1]["state"], ["- cart totals PR #61 in review", "- refund flow next", "- a"])
+        self.assertEqual((got[0]["state"], got[0]["next"], got[1]["forYou"]), ([], "say merge 57", 2))
+        # the current boss leads even when it is a domain boss
+        got = deck.bosses(reg, "widgets", "ws-co", os.path.join(self.home, "widgets"), now, workspace="ws-co", wt="/w/co")
+        self.assertEqual([b["domain"] for b in got], ["checkout", ""])
+
+    def test_heartbeat_carries_domain_and_next(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        json.dump({"repo": "acme/widgets", "me": "octocat", "superset_host": "h"}, open(os.path.join(self.home, "widgets", "config.json"), "w"))
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace\nDomain: checkout\n")
+        ctx = bosskit.load(self.wt)
+        open(os.path.join(ctx.bdir, "next.txt"), "w").write("Your move: merge #61\nmore\n")
+        stubs = os.path.join(self.tmp, "stubs")
+        os.makedirs(stubs)
+        for tool in ("gh", "superset"):  # no network, no Paradev
+            path = os.path.join(stubs, tool)
+            open(path, "w").write("#!/bin/sh\nexit 1\n")
+            os.chmod(path, 0o755)
+        out = subprocess.run([sys.executable, os.path.join(BIN, "boss-deck-data.py"), "--cwd", self.wt], capture_output=True, text=True,
+                             env={**os.environ, "PATH": f"{stubs}:/usr/bin:/bin"})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        entry = bosskit.registry()[ctx.bid]
+        self.assertEqual((entry["domain"], entry["next"]), ("checkout", "Your move: merge #61"))
+        self.assertEqual([(b["domain"], b["me"]) for b in json.loads(out.stdout)["bosses"]], [("checkout", True)])
 
 
 if __name__ == "__main__":

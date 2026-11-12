@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""boss-event: log one stage of a workspace's lifecycle, for the boss-deck lanes and timeline.
+"""boss-event: log one stage of a workspace's lifecycle, for the boss-deck stages and timeline.
 
   boss-event <workspace> <stage> [note...]
 

@@ -13,7 +13,7 @@
 # envelope, becomes non-draft or merges, and was not so at start (run from the repo, or set GH_REPO). Workers keep their PR
 # draft and post the envelope there; the boss marks it ready. `--ready < pr-list.json` prints the numbers (bin/test-boss-watch.sh).
 # Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen, 135 (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
-# On a fire it logs the stage to the boss's events.jsonl through bin/boss-event (DONE, BLOCKED, PR READY or merged), for the boss-deck lanes.
+# On a fire it logs the stage to the boss's events.jsonl through bin/boss-event (DONE, BLOCKED, PR READY or merged), for the boss-deck stages.
 # Env: BOSS_HOST (default: first host). Poll 20 s, timeout 3 h. Needs superset CLI, jq (gh for <branch>).
 # `sig` is "DONE|<id>|<first 30 chars of summary>" (or BLOCKED), so a new envelope with an already-seen task id still differs from the
 # baseline (a dispatch message that quotes the done-message once poisoned it). `boss-watch-done.sh --sig < screen` prints it, nothing if none (bin/test-boss-watch.sh).

@@ -5,9 +5,10 @@ Read-only. Sources: the project ledger's dispatch rows (task per workspace), `su
 (each worker's agent state), running `boss-watch-done*` processes (armed watchers), `gh` for my
 open PRs (cached 5 min so a 60 s refresh stays cheap), this boss's events.jsonl (each workspace's
 stage log, from bin/boss-event and the watcher), the tracker snapshot boss-tasks.py writes,
-this boss's inbox, and the registry of other bosses. Each run is also this boss's heartbeat.
-Each workspace joins its PR by branch and lands in one lane (stage): move, checking, working,
-review or done (merged or retired today, archived workspaces included).
+this boss's inbox, and the registry of bosses (this project's: the main boss and its domain
+bosses). Each run is also this boss's heartbeat, carrying its domain and next line.
+Each workspace joins its PR by branch and gets a stage: move, checking, working, review or done
+(merged or retired today, archived workspaces included).
 Paths and project resolution: bin/bosskit.py.
 
 usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--cwd DIR] [--selftest]
@@ -42,6 +43,9 @@ VERIFIED_LEDGER = {"VERIFIED", "CHECKED", "READY", "MERGED", "ARCHIVED"}
 DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*SUPERSET_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]")
 # What a boss names its own Paradev workspace at session start.
 BOSS_NAME = "BOSS"
+# A boss refreshes every minute; past this its heartbeat age shows (bosskit.live drops it after STALE_S).
+BOSS_STALE_S = 300
+STATE_LINES = 3  # a domain boss's state file, in its details
 # ponytail: a watcher is "stale" by age or an idle worker; a real liveness probe would read the terminal
 STALE_AGE_S = 7200
 IDLE_STALE_S = 1800
@@ -277,7 +281,7 @@ def stage(state, ledger, pr, evs, today):
 
 
 def lanes(workers, archived, evs, today):
-    """Stage, since and recent events on each workspace; the open ones, then DONE TODAY's newest few,
+    """Stage, since and recent events on each workspace; the open ones, then the newest few done today,
     archived workspaces included."""
     for w in workers + archived:
         mine = evs.get(w["ws"], [])
@@ -382,6 +386,29 @@ def others(reg, me, now=None, workspace="", wt=""):
             for i, b in sorted(best.values(), key=lambda ib: ib[0])]
 
 
+def domain_state(pdir, domain):
+    """The first few non-heading lines of <project>/domains/<domain>-state.md; none for the main boss."""
+    if not domain:
+        return []
+    lines = bosskit._read(os.path.join(pdir, "domains", f"{domain}-state.md")).splitlines()
+    return [l.strip()[:120] for l in lines if l.strip() and not l.lstrip().startswith("#")][:STATE_LINES]
+
+
+def bosses(reg, project, me, pdir, now=None, workspace="", wt=""):
+    """This project's live bosses, one per workspace: this boss first, then the main boss, then domains by name."""
+    now = now or time.time()
+    best = {}
+    for i, b in bosskit.live(reg, now, project).items():
+        k = "" if i == me or bosskit.same_boss(b, workspace, wt) else (b.get("workspace") or i)
+        if k not in best or b.get("heartbeat", 0) > best[k][1].get("heartbeat", 0):
+            best[k] = (i, b)
+    out = [{"id": i, "workspace": b.get("workspace", ""), "domain": b.get("domain", ""), "me": k == "",
+            "next": b.get("next", ""), "working": b.get("working", 0), "forYou": b.get("forYou", 0),
+            "heartbeat": b.get("heartbeat", 0), "stale": now - b.get("heartbeat", 0) > BOSS_STALE_S,
+            "state": domain_state(pdir, b.get("domain", ""))} for k, (i, b) in best.items()]
+    return sorted(out, key=lambda b: (not b["me"], b["domain"] != "", b["domain"]))
+
+
 def arg(name):
     """The value after *name* on the command line, or None."""
     return sys.argv[sys.argv.index(name) + 1] if name in sys.argv[:-1] else None
@@ -407,7 +434,7 @@ def main():
     evs = {}
     for e in bosskit.events(ctx.bdir):
         evs.setdefault(e["ws"][:8], []).append(e)
-    # Name, branch and PR tag of each workspace seen, so an archived one still reads right under DONE TODAY.
+    # Name, branch and PR tag of each workspace seen, so an archived one still reads right as done today.
     seen_path = os.path.join(ctx.cache, "workspaces.json")
     try:
         seen = json.load(open(seen_path))
@@ -457,13 +484,15 @@ def main():
     todo = attention([w for w in workers if w["stage"] != "done"], armed, pr_rows)
     working = sum(w["state"] == "working" for w in workers)
     for_you = sum(a["level"] == "act" for a in todo)
-    bosskit.heartbeat(ctx, host(cfg), {"working": working, "forYou": for_you})
+    bosskit.heartbeat(ctx, host(cfg), {"working": working, "forYou": for_you,
+                                       "domain": bosskit.boss_domain(ctx.worktree), "next": now_line})
     if "--session-start" in sys.argv:
         name_boss_workspace(cfg)
     print(json.dumps({
         "at": int(time.time()), "me": {"id": ctx.bid, "project": ctx.name}, "next": now_line, "review": review,
         "attention": todo, "workers": workers, "watchers": armed, "prs": pr_rows, "board": board(cfg, bosskit.tracker_snapshot(ctx)),
         "others": others(bosskit.registry(ctx.home), ctx.bid, workspace=ctx.workspace, wt=ctx.worktree), "mail": mail(ctx.inbox),
+        "bosses": bosses(bosskit.registry(ctx.home), ctx.name, ctx.bid, ctx.pdir, workspace=ctx.workspace, wt=ctx.worktree),
         "lessonsNew": lessons_new(ctx.home, ctx.bdir, "--session-start" in sys.argv),
     }))
 

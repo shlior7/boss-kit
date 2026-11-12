@@ -2,7 +2,7 @@
 export type ProofLink = { label: string; url: string }
 /** One line of a workspace's stage log (events.jsonl), with its local time. */
 export type StageEvent = { at: number; ws: string; stage: string; note: string; hm: string }
-/** Whose move a workspace is on: the lane it shows in. */
+/** Whose move a workspace is on. */
 export type Stage = 'move' | 'checking' | 'working' | 'review' | 'done'
 export type Worker = {
   ws: string
@@ -51,21 +51,39 @@ export type Pr = {
   proof: ProofLink[]
   /** when a comment starting a DONE envelope last landed (epoch s), 0 if never */
   doneAt?: number
-  /** the workspace prefix this PR's branch belongs to; such PRs show in the lanes, not under PULL REQUESTS */
+  /** the workspace prefix this PR's branch belongs to; a PR without one is its own row under WORKERS */
   ws?: string
 }
 export type Attention = { level: 'act' | 'check'; text: string }
 /** One expanded row's details: label, value, and an optional theme color. */
 export type Detail = { label: string; value: string; color?: string }
-export type Peek = { key: string; rows: Detail[]; url?: string; links?: ProofLink[] }
+export type Peek = { key: string; rows: Detail[]; links?: ProofLink[] }
 export type Board = { mine?: number; p1?: number; inProgress?: number }
 /** Another live boss, from the registry. */
 export type OtherBoss = { id: string; project: string; workspace: string; working: number; forYou: number }
+/** One of this project's live bosses: the main boss ('' domain) or a domain boss, from its heartbeat. */
+export type Boss = {
+  id: string
+  workspace: string
+  domain: string
+  /** this session's boss */
+  me: boolean
+  /** the first line of its next.txt */
+  next: string
+  working: number
+  forYou: number
+  /** its last heartbeat (epoch s), and whether that is older than a few refreshes */
+  heartbeat: number
+  stale: boolean
+  /** the first lines of its domain state file; none for the main boss */
+  state: string[]
+}
 export type MailItem = { id: string; kind: string; from: string; subject: string }
 export type Deck = {
   at: number
   me?: { id: string; project: string }
   others?: OtherBoss[]
+  bosses?: Boss[]
   mail?: { count: number; dir: string; items: MailItem[] }
   lessonsNew?: number
   next: string
