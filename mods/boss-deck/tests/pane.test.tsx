@@ -5,16 +5,20 @@ import type { Deck } from '../types'
 const pr = { title: 'x', draft: false, review: '', merge: '', ci: 'green', reviewers: [], url: '', base: 'main', updated: '', proof: [] }
 const DECK: Deck = {
   at: 0, next: '', attention: [], watchers: [], board: { mine: 2, p1: 1, inProgress: 1 },
-  workers: [{ ws: '1a2b3c4d', id: 'ws-1', term: 't', name: 'api', branch: 'b', task: 'retry-43', taskText: 'retry-43 (queued after fix-42)', ledger: 'QUEUED', date: '', state: 'idle', watched: false, proof: [] }],
+  workers: [
+    { ws: '1a2b3c4d', id: 'ws-1', term: 't', name: 'api', branch: 'b', task: 'retry-43', taskText: 'retry-43 (queued after fix-42)', ledger: 'QUEUED', date: '', state: 'idle', watched: false, proof: [], stage: 'working', since: 0 },
+    { ws: '5e6f7a8b', id: 'ws-2', term: 't', name: 'web-login', branch: 'c', task: 'fix-57', ledger: 'READY', date: '', state: 'idle', watched: false, proof: [], stage: 'review', since: 0, prTag: '#57' },
+  ],
   prs: [
     { ...pr, repo: 'acme/widgets', primary: true, num: 7, head: 'a', tag: 'w' } as Deck['prs'][0],
     { ...pr, repo: 'acme/widgets-sdk', primary: false, num: 42, head: 'b', tag: 'ws' } as Deck['prs'][0],
+    { ...pr, repo: 'acme/widgets', primary: true, num: 57, head: 'c', tag: 'w', ws: '5e6f7a8b' } as Deck['prs'][0],
   ],
   others: [{ id: 'ws-a', project: 'gadgets', workspace: 'ws-a', working: 1, forYou: 0 }],
   mail: { count: 1, dir: '/nonexistent', items: [{ id: 'm1', kind: 'question', from: 'gadgets', subject: 'is #42 safe?' }] },
 }
 
-test('the pane passes its workspace, and draws its inbox, short repo tags, task ids and the board', async ($, on) => {
+test('the pane passes its workspace, and draws its inbox, lanes, short repo tags, task ids and the board', async ($, on) => {
   const runs: string[][] = []
   mock.env(on, { SUPERSET_WORKSPACE_ID: 'ws-me' })
   mock.clock(on)
@@ -35,7 +39,14 @@ test('the pane passes its workspace, and draws its inbox, short repo tags, task 
   expect(texts.some(t => /gadgets · \d+ working/.test(t ?? ''))).toBe(false)  // other bosses are not listed
   expect(texts).toContain('#7')
   expect(texts).toContain('ws#42')
-  expect(texts).toContain('retry-43')
+  // lanes by whose move, empty ones hidden, each with its count; the workers section is gone
+  expect(texts).toContain('WORKING')
+  expect(texts).toContain('IN REVIEW')
+  expect(texts).not.toContain('YOUR MOVE')
+  expect(texts).not.toContain('WORKERS')
+  expect(texts.some(t => (t ?? '').includes('retry-43'))).toBe(true)
+  expect(texts.some(t => (t ?? '').includes('#57'))).toBe(true)
+  expect(texts).not.toContain('#57')  // joined to web-login: not repeated under PULL REQUESTS
   expect(texts.some(t => /queued after/.test(t ?? ''))).toBe(false)
   expect(texts).toContain('tracker: 2 mine · 1 P0/P1 · 1 in progress')
 })

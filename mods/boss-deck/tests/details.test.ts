@@ -1,22 +1,30 @@
 import { expect, test } from 'claude-code/testing'
 
-import { footer, isBoss, mailContext, needsProof, prDetails, stack, workerDetails } from '../hooks/details'
-import type { Pr } from '../types'
+import { ago, footer, isBoss, laneRow, mailContext, needsProof, nextStep, prDetails, stack, workerDetails } from '../hooks/details'
+import type { Pr, StageEvent, Worker } from '../types'
 
-const worker = { ws: '1a2b3c4d', id: 'x', term: 'y', name: 'api', branch: 'feat/a', task: 'restack-42', ledger: 'DISPATCHED', date: '', state: 'working', watched: true, proof: [] }
+const worker: Worker = { ws: '1a2b3c4d', id: 'x', term: 'y', name: 'api', branch: 'feat/a', task: 'restack-42', ledger: 'DISPATCHED', date: '2026-01-02', state: 'working', watched: true, proof: [], stage: 'working', since: 0 }
+const ev = (hm: string, at: number, stage: string, note = ''): StageEvent => ({ at, ws: '1a2b3c4d', stage, note, hm })
 
-test('a worker screen becomes state, doing, context and watcher', () => {
+test('an expanded workspace is its timed stage history, the next step, doing and context', () => {
   const screen = [
     '⏺ The only difference from the PR is the route count',
     '  Running the api and route tests',
     '✽ Whirlpooling… (1m 25s · ↓ 6.0k tokens)',
     '  api (feat/a) Opus 5.5 251k/1000k (25%)',
   ].join('\n')
-  const rows = Object.fromEntries(workerDetails(worker, screen).map(r => [r.label, r.value]))
-  expect(rows.state).toBe('working 1m 25s')
-  expect(rows.doing).toBe('Running the api and route tests')
-  expect(rows.context).toBe('251k · 25%')
-  expect(rows.watcher).toBe('armed')
+  const w = { ...worker, events: [ev('10:02', 1, 'sent', 'watcher armed'), ev('10:31', 2, 'DONE', 'PR #42 draft')] }
+  expect(workerDetails(w, screen).map(r => `${r.label}|${r.value}`)).toEqual([
+    '10:02|sent  watcher armed',
+    '10:31|DONE  PR #42 draft',
+    'next|worker: finish and post DONE',
+    'doing|Running the api and route tests · 1m 25s',
+    'context|251k · 25%',
+  ])
+  // no log yet: one quiet line with the ledger date, and a dispatch with no watcher is flagged
+  const bare = workerDetails({ ...worker, state: 'idle', watched: false }, '')
+  expect(bare[0]?.value).toBe('no stage log yet · dispatched 2026-01-02')
+  expect(bare.at(-1)).toEqual({ label: 'watcher', value: 'none', color: 'warning' })
 })
 
 test('an approval check is not a CI failure', () => {
@@ -55,6 +63,37 @@ test('the footer drops the tracker when none is synced, and spells out counts', 
   expect(footer({ board: {} })).toBe('')
   expect(footer({ board: {}, lessonsNew: 1 })).toBe('1 new shared lesson')
   expect(footer({ board: { mine: 6, p1: 2, inProgress: 1 }, lessonsNew: 2 })).toBe('tracker: 6 mine · 2 P0/P1 · 1 in progress · 2 new shared lessons')
+})
+
+const pr = (o: Partial<Pr> = {}): Pr => ({ ...mk(57, 'fix/a', 'main'), ...o })
+
+test('each lane row says whose move it is', () => {
+  const now = 10_000
+  const row = (o: Partial<Worker>) => {
+    const r = laneRow({ ...worker, ...o }, now)
+    return `${r.mark} ${r.tag} ${r.parts.filter(p => p.text).map(p => p.text).join(' · ')}`
+  }
+  const proof = [{ label: 'page', url: 'https://example.com/p' }]
+  expect(row({ stage: 'move', prTag: '#57', pr: pr({ review: 'APPROVED', proof }) })).toBe('› #57 approved + green · say merge')
+  expect(row({ stage: 'move', prTag: '#57', pr: pr({ review: 'APPROVED' }) })).toBe('› #57 approved + green · no proof')
+  expect(row({ stage: 'checking', prTag: '#61', events: [ev('9:58', now - 120, 'DONE')] })).toBe('◐ #61 DONE 2m ago · verifying')
+  expect(row({ stage: 'checking', prTag: '#61', pr: pr({ ci: 'red' }) })).toBe('◐ #61 CI red · checking')
+  expect(row({ stage: 'working', since: now - 360, events: [ev('', now - 360, 'sent', 'make test-http')] })).toBe('● restack-42 6m · make test-http')
+  expect(row({ stage: 'working', state: 'blocked', since: now - 60, events: [ev('', now - 60, 'BLOCKED', 'needs a token')] })).toBe('■ restack-42 blocked: needs a token · 60s')
+  const idle = laneRow({ ...worker, stage: 'working', state: 'idle', since: now - 600 }, now)
+  expect([idle.dim, idle.parts[0]]).toEqual([true, { text: 'idle 10m', color: 'warning' }])
+  expect(row({ stage: 'review', prTag: '#55', since: now - 86_400, pr: pr({ reviewers: ['JaneDoe42'] }) })).toBe('· #55 waiting on jane · 24h')
+  expect(row({ stage: 'done', prTag: '#52', events: [ev('10:41', 1, 'merged'), ev('10:50', 2, 'retired')] })).toBe('✓ #52 merged 10:41 · retired')
+  expect(row({ stage: 'done', events: [ev('11:02', 2, 'retired')] })).toBe('✓ restack-42 retired 11:02')
+})
+
+test('the next step names who acts', () => {
+  expect(nextStep({ ...worker, stage: 'move' })).toBe('you: say merge')
+  expect(nextStep({ ...worker, stage: 'checking' })).toBe('boss: verify, then mark the PR ready')
+  expect(nextStep({ ...worker, stage: 'review', prTag: '#55', pr: pr({ reviewers: ['JaneDoe42'] }) })).toBe('jane: review #55')
+  expect(nextStep({ ...worker, stage: 'done', events: [ev('10:41', 1, 'merged')] })).toBe('boss: retire the workspace')
+  expect(ago(30)).toBe('30s')
+  expect(ago(2 * 86_400)).toBe('2d')
 })
 
 test("a worker's details keep the ledger's whole task cell", () => {

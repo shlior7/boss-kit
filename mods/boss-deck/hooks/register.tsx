@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Deck, Detail, Pr, ProofLink, Worker } from '../types'
-import { footer, isBoss, mailContext, needsProof, prDetails, stack, workerDetails } from './details'
+import { LANES, ago, footer, isBoss, laneRow, mailContext, needsProof, prDetails, stack, workerDetails } from './details'
 import type { PrView } from './details'
 
 const PANE = 'boss-deck'
@@ -15,15 +15,13 @@ const STALE_PR_DAYS = 10
 // Unread messages listed in the inbox before it folds the rest into "+N more".
 const INBOX_ROWS = 5
 // Change a tag when its value's fields change: it declines what an earlier version stored.
-const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-7' })
+const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-8' })
 const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-3' })
 
 // Quiet by design: grey text, color only where it means something: state marks (CI, a working worker) and what needs attention.
-const STATE_MARK: Record<string, string> = { working: '●', idle: '·', blocked: '■' }
 const CI_MARK: Record<Pr['ci'], string> = { green: '✓', red: '✗', pending: '…' }
 const CI_COLOR: Record<Pr['ci'], string> = { green: 'success', red: 'error', pending: 'warning' }
 
-const ago = (s: number) => (s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`)
 // "JaneDoe42" -> "jane", "acme-reviewers" (a team) -> "team"
 const who = (login: string) => (login.includes('-') ? 'team' : (login.match(/^[A-Z]?[a-z]+/)?.[0] ?? login).toLowerCase())
 // Drops a conventional-commit prefix and a trailing #tag: "fix(api): x #team" -> "x".
@@ -200,36 +198,42 @@ export const register: Register = on => {
         )}
       </Box>
     )
-    const working = d.workers.filter(w => w.state === 'working').length
+    // PRs joined to a workspace show in its lane; the rest stay under PULL REQUESTS.
+    const loose = d.prs.filter(p => !p.ws)
     const cutoff = (now - STALE_PR_DAYS * 86400) * 1000
     const isStale = (p: Pr) => !!p.updated && Date.parse(p.updated) < cutoff
-    const live = d.prs.filter(p => !isStale(p))
-    const stale = d.prs.filter(isStale)
+    const live = loose.filter(p => !isStale(p))
+    const stale = loose.filter(isStale)
+    // Lane order is hotkey order: 1 is the first row of the first non-empty lane.
+    const lanes = LANES.map(([stage, name]) => [name, d.workers.filter(w => w.stage === stage)] as const).filter(([, ws]) => ws.length > 0)
+    const order = lanes.flatMap(([, ws]) => ws)
 
-    const worker = (w: Worker, i: number) => {
-      const dim = w.state !== 'working' && w.state !== 'blocked'
-      const color = w.state === 'blocked' ? 'error' : undefined
+    const worker = (w: Worker) => {
+      const i = order.indexOf(w)
+      const r = laneRow(w, now)
       const key = `w-${w.ws}`
       const open = shown?.key === key
+      const parts = r.parts.filter(p => p.text)
       return (
         <Box flexDirection="column">
           <Box flexDirection="row">
-            {cell(2, text(STATE_MARK[w.state] ?? '○', dim, color ?? (w.state === 'working' ? 'success' : undefined)))}
-            {/* The whole row expands; the workspace opens from the details. A hotkey's "1: " takes 3 of the name's 23 cells. */}
+            {cell(2, text(r.mark, r.dim && !r.markColor, r.markColor))}
+            {/* The whole row expands; the workspace opens from the details. A hotkey's "1: " takes 3 of the name's 18 cells. */}
             {rest(
               <Button plain key={`peek-${w.ws}`} hotkey={i < 9 ? String(i + 1) : undefined} onPress={() => void toggle($, key, () => workerPeek($, w))}>
-                <Text dimColor={dim} color={color} bold={open}>
-                  {w.name.slice(0, i < 9 ? 18 : 21).padEnd(i < 9 ? 20 : 23)}
-                </Text>
-                <Text dimColor={dim} color={color} wrap="truncate-end">
-                  {w.task}
+                <Text dimColor={r.dim} bold={open} wrap="truncate-end">
+                  {w.name.slice(0, i < 9 ? 13 : 16).padEnd(i < 9 ? 15 : 18)}
+                  {r.tag.slice(0, 8).padEnd(10)}
+                  {parts.map((p, n) => (
+                    <Text color={p.color}>{(n ? ' · ' : '') + p.text}</Text>
+                  ))}
                 </Text>
               </Button>,
             )}
           </Box>
           {open &&
             shown &&
-            details(shown.rows, { key: `open-${w.ws}`, label: 'open workspace ↗', press: () => void openWorkspace($, w.id) }, shown.links)}
+            details(shown.rows, w.id ? { key: `open-${w.ws}`, label: 'open workspace ↗', press: () => void openWorkspace($, w.id) } : undefined, shown.links)}
         </Box>
       )
     }
@@ -288,14 +292,19 @@ export const register: Register = on => {
           </Box>
         )}
 
-        {section('workers', `${working} working · ${d.watchers.length} watched`)}
-        {d.workers.length === 0 && text('none', true)}
-        {d.workers.map(worker)}
+        {/* Lanes by whose move it is; empty lanes are hidden. */}
+        {lanes.length === 0 && section('workers', 'none')}
+        {lanes.map(([name, ws]) => (
+          <Box flexDirection="column">
+            {section(name, String(ws.length))}
+            {ws.map(worker)}
+          </Box>
+        ))}
         {d.watchers
           .filter(w => w.stale)
           .map(w => text(`! watcher ${w.ws.slice(0, 8)} stale, ${ago(w.ageS)}`, false, 'error'))}
 
-        {section('pull requests', `${d.prs.filter(p => !p.draft).length} open · ${d.prs.filter(p => p.draft).length} draft`)}
+        {loose.length > 0 && section('pull requests', `${loose.filter(p => !p.draft).length} open · ${loose.filter(p => p.draft).length} draft`)}
         {stack(live).map(pr)}
         {stale.length > 0 && (
           <Box flexDirection="row" flexWrap="wrap">
@@ -312,7 +321,7 @@ export const register: Register = on => {
         {/* One quiet line when it fits: the tracker and the hint flow on the left, wrapping whole, the age stays right. */}
         <Box flexDirection="row" justifyContent="space-between" columnGap={2} marginTop={1}>
           <Box flexDirection="row" flexWrap="wrap" columnGap={2} flexShrink={1}>
-            {[footer(d), 'press a worker or a PR # for details'].filter(Boolean).map(t => (
+            {[footer(d), 'press a row or a PR # for details'].filter(Boolean).map(t => (
               <Box flexShrink={0}>
                 <Text dimColor>{t}</Text>
               </Box>

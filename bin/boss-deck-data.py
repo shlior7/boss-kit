@@ -276,6 +276,18 @@ def stage(state, ledger, pr, evs, today):
     return "working"
 
 
+def lanes(workers, archived, evs, today):
+    """Stage, since and recent events on each workspace; the open ones, then DONE TODAY's newest few,
+    archived workspaces included."""
+    for w in workers + archived:
+        mine = evs.get(w["ws"], [])
+        w["stage"] = stage(w["state"], w["ledger"], w.get("pr"), mine, today)
+        w["since"] = since(mine, w.get("pr"), w["date"])
+        w["events"] = [{**e, "hm": time.strftime("%H:%M", time.localtime(e["at"]))} for e in mine[-EVENT_ROWS:]]
+    finished = sorted([w for w in workers + archived if w["stage"] == "done"], key=lambda w: w["since"], reverse=True)
+    return [w for w in workers if w["stage"] != "done"] + finished[:DONE_TODAY_ROWS]
+
+
 def since(evs, pr, date):
     """When the workspace's current stage began: its newest event, else its PR's last update, else its ledger date."""
     if evs:
@@ -423,16 +435,10 @@ def main():
             "proof": proof, "prTag": old.get("prTag", ""),
         })
     join(workers, pr_rows)
-    for w in workers + done:
-        mine_evs = evs.get(w["ws"], [])
-        w["stage"] = stage(w["state"], w["ledger"], w.get("pr"), mine_evs, today)
-        w["since"] = since(mine_evs, w.get("pr"), w["date"])
-        w["events"] = [{**e, "hm": time.strftime("%H:%M", time.localtime(e["at"]))} for e in mine_evs[-EVENT_ROWS:]]
+    workers = lanes(workers, done, evs, today)
+    for w in workers:
         seen[w["ws"]] = {"name": w["name"], "branch": w["branch"], "prTag": w["prTag"]}
     bosskit.save_json(seen_path, seen)
-    # DONE TODAY: the newest few, archived workspaces included.
-    finished = sorted([w for w in workers + done if w["stage"] == "done"], key=lambda w: w["since"], reverse=True)
-    workers = [w for w in workers if w["stage"] != "done"] + finished[:DONE_TODAY_ROWS]
     states = {w["ws"]: w["state"] for w in workers}
     for w in armed:
         idle = states.get(w["ws"][:8]) not in ("working", None)

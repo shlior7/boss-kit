@@ -314,5 +314,100 @@ class Deck(Home):
         self.assertEqual(deck.lessons_new(self.home, ctx.bdir, True), 0)
 
 
+
+class Lanes(Home):
+    """Each workspace's lane (stage), its PR joined by branch, the stage log, DONE TODAY and the fallback age."""
+
+    def setUp(self):
+        super().setUp()
+        self.deck = load_script("boss-deck-data.py")
+        self.now = int(time.time())
+        self.today = self.deck.day_start(self.now)
+
+    def pr(self, **kw):
+        return {"draft": True, "review": "", "ci": "pending", "doneAt": 0, **kw}
+
+    def ev(self, stage, ago=0):
+        return {"at": self.now - ago, "ws": "1a2b3c4d", "stage": stage, "note": ""}
+
+    def test_each_lane_first_match_wins(self):
+        stage, pr, ev, today = self.deck.stage, self.pr, self.ev, self.today
+        approved = pr(draft=False, review="APPROVED", ci="green")
+        self.assertEqual(stage("idle", "DISPATCHED", approved, [], today), "move")
+        self.assertEqual(stage("working", "DISPATCHED", approved, [], today), "move")  # your move beats working
+        # checking: a DONE on the screen (the watcher's event) or in a PR comment, not yet verified
+        self.assertEqual(stage("idle", "DISPATCHED", pr(), [ev("sent", 600), ev("DONE", 60)], today), "checking")
+        self.assertEqual(stage("idle", "DISPATCHED", pr(doneAt=self.now - 60), [], today), "checking")
+        self.assertEqual(stage("idle", "DISPATCHED", pr(draft=False, ci="red"), [], today), "checking")  # ready, CI went red
+        # verified, by the ledger or a later checked event: no longer the boss's move
+        self.assertEqual(stage("idle", "VERIFIED", pr(doneAt=self.now - 60), [], today), "working")
+        self.assertNotEqual(stage("idle", "DISPATCHED", pr(), [ev("DONE", 60), ev("checked", 30)], today), "checking")
+        # a DONE from before the last dispatch does not count
+        self.assertEqual(stage("idle", "DISPATCHED", pr(doneAt=self.now - 900), [ev("sent", 600)], today), "working")
+        self.assertEqual(stage("working", "DISPATCHED", None, [], today), "working")
+        self.assertEqual(stage("blocked", "DISPATCHED", None, [ev("BLOCKED")], today), "working")
+        self.assertEqual(stage("idle", "DISPATCHED", None, [ev("sent", 60)], today), "working")  # idle without DONE
+        self.assertEqual(stage("idle", "READY", pr(draft=False, ci="green"), [ev("DONE", 90), ev("ready", 30)], today), "review")
+        self.assertEqual(stage("working", "READY", pr(draft=False, ci="green"), [], today), "working")  # fixing review notes
+        self.assertEqual(stage("gone", "ARCHIVED", None, [ev("merged", 120), ev("retired", 60)], today), "done")
+
+    def test_done_today_cutoff(self):
+        stage, today = self.deck.stage, self.today
+        at = lambda t, s: {"at": t, "ws": "1a2b3c4d", "stage": s, "note": ""}
+        self.assertEqual(stage("gone", "MERGED", None, [at(today + 1, "merged")], today), "done")
+        self.assertEqual(stage("gone", "MERGED", None, [at(today - 1, "merged")], today), "working")  # yesterday's
+        self.assertEqual(stage("idle", "DISPATCHED", None, [at(today + 1, "merged"), at(today + 2, "sent")], today), "working")
+        self.assertEqual(self.deck.day_start(today + 3600), today)
+
+    def test_done_today_keeps_archived_workspaces_and_the_newest_five(self):
+        row = lambda ws, state="gone": {"ws": ws, "state": state, "ledger": "ARCHIVED", "date": "2026-01-01"}
+        evs = {f"d{i}": [{"at": self.today + 60 * i, "ws": f"d{i}", "stage": "retired", "note": ""}] for i in range(7)}
+        evs["old"] = [{"at": self.today - 60, "ws": "old", "stage": "retired", "note": ""}]
+        got = self.deck.lanes([row("live", "working")], [row(f"d{i}") for i in range(7)] + [row("old")], evs, self.today)
+        self.assertEqual([(w["ws"], w["stage"]) for w in got], [("live", "working")] + [(f"d{i}", "done") for i in (6, 5, 4, 3, 2)])
+        self.assertEqual(got[1]["events"][0]["hm"], time.strftime("%H:%M", time.localtime(self.today + 360)))
+
+    def test_branch_join_prefers_the_projects_repo(self):
+        workers = [{"ws": "aaaaaaaa", "branch": "fix/a"}, {"ws": "bbbbbbbb", "branch": ""}, {"ws": "cccccccc", "branch": "fix/c"}]
+        prs = [{"repo": "acme/widgets-sdk", "tag": "ws", "primary": False, "num": 7, "head": "fix/a"},
+               {"repo": "acme/widgets", "primary": True, "num": 57, "head": "fix/a"},
+               {"repo": "acme/widgets-sdk", "tag": "ws", "primary": False, "num": 8, "head": "fix/c"},
+               {"repo": "acme/widgets", "primary": True, "num": 60, "head": "other"}]
+        self.deck.join(workers, prs)
+        self.assertEqual([(w["pr"] or {}).get("num") for w in workers], [57, None, 8])
+        self.assertEqual([w.get("prTag") for w in workers], ["#57", None, "ws#8"])
+        self.assertEqual([p.get("ws") for p in prs], [None, "aaaaaaaa", "cccccccc", None])  # #60 stays under PULL REQUESTS
+
+    def test_done_comment_and_its_time(self):
+        p = {"number": 61, "title": "x", "comments": [
+            {"body": "SUPERSET_WORKER_DONE task: fix-61\nsummary: done", "createdAt": "2026-01-02T10:31:00Z"},
+            {"body": "Will post the SUPERSET_WORKER_DONE envelope later", "createdAt": "2026-01-03T10:31:00Z"},
+            {"body": "SUPERSET_WORKER_DONE task: <id>", "createdAt": "2026-01-04T10:31:00Z"}]}
+        self.assertEqual(self.deck.pr_row("acme/widgets", p, True)["doneAt"], self.deck.epoch("2026-01-02T10:31:00Z"))
+        self.assertEqual(self.deck.pr_row("acme/widgets", {"number": 1, "title": "x"}, True)["doneAt"], 0)
+
+    def test_since_falls_back_to_the_pr_then_the_ledger(self):
+        since = self.deck.since
+        self.assertEqual(since([self.ev("sent", 300), self.ev("DONE", 60)], None, "2026-01-02"), self.now - 60)
+        self.assertEqual(since([], {"updated": "2026-01-02T10:31:00Z"}, "2026-01-01"), self.deck.epoch("2026-01-02T10:31:00Z"))
+        self.assertEqual(since([], {"updated": ""}, "2026-01-01"), int(time.mktime(time.strptime("2026-01-01", "%Y-%m-%d"))))
+        self.assertEqual(since([], None, "?"), 0)
+
+    def test_events_round_trip_and_the_cli(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        ctx = bosskit.load(self.wt)
+        bosskit.add_event(ctx, "1a2b3c4d-full-id", "sent", "watcher armed", now=200)
+        bosskit.add_event(ctx, "1a2b3c4d-full-id", "DONE", "fix-42: did it", now=100)
+        with open(os.path.join(ctx.bdir, "events.jsonl"), "a") as f:
+            f.write("not json\n{\"at\": 1}\n")
+        got = bosskit.events(ctx.bdir)
+        self.assertEqual([(e["at"], e["stage"], e["note"]) for e in got], [(100, "DONE", "fix-42: did it"), (200, "sent", "watcher armed")])
+        out = subprocess.run([os.path.join(BIN, "boss-event"), "1a2b3c4d", "checked", "head", "8c41d2e", "ok"],
+                             cwd=self.wt, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(bosskit.events(ctx.bdir)[-1]["note"], "head 8c41d2e ok")
+        self.assertNotEqual(subprocess.run([os.path.join(BIN, "boss-event"), "1a2b3c4d"], cwd=self.wt, capture_output=True).returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

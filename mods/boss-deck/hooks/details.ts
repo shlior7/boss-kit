@@ -1,13 +1,78 @@
-import type { Deck, Detail, MailItem, Pr, Worker } from '../types'
+import type { Deck, Detail, MailItem, Pr, Stage, Worker } from '../types'
 
-const ago = (s: number) => (s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`)
+export const ago = (s: number) =>
+  s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : s < 129_600 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`
 const who = (login: string) => (login.includes('-') ? 'team' : (login.match(/^[A-Z]?[a-z]+/)?.[0] ?? login).toLowerCase())
 const ACTIVITY = /^\s*(?:⏺\s+|⎿?\s*)?((?:Running|Ran|Reading|Read|Editing|Edited|Writing|Wrote|Searching|Fetching|Fixing|Merging|Pushing|Checking|Waiting)\b.*)$/
-const SAID = /^\s*⏺\s+(?!Background command)(.{12,})$/
 const SPINNER = /^\s*[✻✽✢✳·*]\s+\S+…\s+\((\d+m \d+s|\d+s|\d+h \d+m)/
 const CTX = /(\d+)k\/1000k \((\d+)%\)/
 
-/** A worker's screen as a few facts: what it is doing, for how long, how full, its last result. */
+/** The lanes, in order: whose move it is. Empty lanes are not drawn. */
+export const LANES: [Stage, string][] = [
+  ['move', 'your move'],
+  ['checking', 'boss checking'],
+  ['working', 'working'],
+  ['review', 'in review'],
+  ['done', 'done today'],
+]
+
+/** A lane row after the name: its mark, the tag (PR or task), then short parts joined by " · ". */
+export type LaneRow = { mark: string; markColor?: string; dim: boolean; tag: string; parts: { text: string; color?: string }[] }
+
+const lastEvent = (w: Worker, ...stages: string[]) => [...(w.events ?? [])].reverse().find(e => stages.includes(e.stage.toLowerCase()))
+
+export function laneRow(w: Worker, nowS: number): LaneRow {
+  const age = w.since ? ago(Math.max(0, nowS - w.since)) : ''
+  const tag = w.prTag || w.task
+  const p = w.pr
+  switch (w.stage) {
+    case 'move':
+      return { mark: '›', markColor: 'warning', dim: false, tag, parts: [{ text: 'approved + green' }, p && needsProof(p) ? { text: 'no proof', color: 'warning' } : { text: 'say merge' }] }
+    case 'checking': {
+      if (p && !p.draft && p.ci === 'red') return { mark: '◐', dim: false, tag, parts: [{ text: 'CI red', color: 'error' }, { text: 'checking' }] }
+      const done = lastEvent(w, 'done', 'pr ready')?.at ?? p?.doneAt ?? w.since
+      return { mark: '◐', dim: false, tag, parts: [{ text: `DONE ${ago(Math.max(0, nowS - done))} ago` }, { text: 'verifying' }] }
+    }
+    case 'review': {
+      const r = p?.reviewers[0]
+      return { mark: '·', dim: true, tag, parts: [{ text: r ? `waiting on ${who(r)}` : 'waiting on review' }, { text: age }] }
+    }
+    case 'done': {
+      const merged = lastEvent(w, 'merged')
+      const retired = lastEvent(w, 'retired')
+      const parts = merged ? [{ text: `merged ${merged.hm}` }, ...(retired ? [{ text: 'retired' }] : [])] : [{ text: `retired ${retired?.hm ?? ''}` }]
+      return { mark: '✓', markColor: 'success', dim: true, tag, parts }
+    }
+    default: {
+      const note = (w.events ?? []).at(-1)?.note ?? ''
+      if (w.state === 'blocked') {
+        const why = lastEvent(w, 'blocked')?.note
+        return { mark: '■', markColor: 'error', dim: false, tag: w.task, parts: [{ text: why ? `blocked: ${why}` : 'blocked', color: 'error' }, { text: age }] }
+      }
+      if (w.state === 'working') return { mark: '●', markColor: 'success', dim: false, tag: w.task, parts: [{ text: age }, ...(note ? [{ text: note }] : [])] }
+      return { mark: '·', dim: true, tag: w.task, parts: [{ text: `idle ${age}`, color: 'warning' }, { text: 'no DONE' }] }
+    }
+  }
+}
+
+/** Who acts next on a workspace, and what they do: the timeline's last line. */
+export function nextStep(w: Worker): string {
+  const p = w.pr
+  switch (w.stage) {
+    case 'move':
+      return 'you: say merge'
+    case 'checking':
+      return p && !p.draft && p.ci === 'red' ? 'boss: send the CI failure to the worker' : 'boss: verify, then mark the PR ready'
+    case 'review':
+      return `${p?.reviewers[0] ? who(p.reviewers[0]) : 'reviewer'}: review ${w.prTag ?? ''}`.trim()
+    case 'done':
+      return lastEvent(w, 'retired') ? 'nothing' : 'boss: retire the workspace'
+    default:
+      return w.state === 'blocked' ? 'boss: unblock it' : w.state === 'working' ? 'worker: finish and post DONE' : 'boss: read its screen'
+  }
+}
+
+/** An expanded workspace: its timed stage history, the next step, then what its screen says it is doing and its context use. */
 export function workerDetails(w: Worker, screen: string): Detail[] {
   const lines = screen.split('\n').map(l => l.replace(/\s+$/, ''))
   const last = (re: RegExp) => {
@@ -18,33 +83,22 @@ export function workerDetails(w: Worker, screen: string): Detail[] {
     return null
   }
   const doing = last(ACTIVITY)?.[1] ?? ''
-  const said = last(SAID)?.[1] ?? ''
   const spin = last(SPINNER)?.[1]
   const ctx = last(CTX)
-  const env = screen.lastIndexOf('SUPERSET_WORKER_')
-  const envelope =
-    env < 0
-      ? ''
-      : (() => {
-          const block = screen.slice(env, env + 1200).split('\n')
-          const kind = block[0]?.includes('DONE') ? 'done' : 'blocked'
-          const task = block.find(l => l.trim().startsWith('task:'))?.split(':')[1]?.trim() ?? ''
-          const summary = block.find(l => /^\s*(summary|reason):/.test(l))?.replace(/^\s*(summary|reason):\s*/, '') ?? ''
-          return `${kind} ${task}: ${summary}`
-        })()
-  const rows: Detail[] = [
-    { label: 'state', value: w.state === 'working' && spin ? `working ${spin}` : w.state, color: w.state === 'blocked' ? 'error' : undefined },
-    { label: 'branch', value: w.branch || '—' },
-  ]
+  const rows: Detail[] = (w.events ?? []).map(e => ({
+    label: e.hm,
+    value: [e.stage, e.note].filter(Boolean).join('  '),
+    color: e.stage.toLowerCase() === 'blocked' ? 'error' : undefined,
+  }))
+  if (rows.length === 0) rows.push({ label: '', value: `no stage log yet · dispatched ${w.date || '?'}` })
   if (w.taskText && w.taskText !== w.task) rows.unshift({ label: 'task', value: w.taskText })
-  if (doing) rows.push({ label: 'doing', value: doing })
-  if (said && said !== doing) rows.push({ label: 'said', value: said })
-  if (envelope) rows.push({ label: 'last', value: envelope, color: envelope.startsWith('blocked') ? 'error' : undefined })
+  rows.push({ label: 'next', value: nextStep(w), color: w.stage === 'move' ? 'warning' : undefined })
+  if (doing || (w.state === 'working' && spin)) rows.push({ label: 'doing', value: [doing, spin].filter(Boolean).join(' · ') })
   if (ctx) {
     const pct = Number(ctx[2])
     rows.push({ label: 'context', value: `${ctx[1]}k · ${pct}%${pct >= 60 ? ' · clear soon' : ''}`, color: pct >= 60 ? 'warning' : undefined })
   }
-  rows.push({ label: 'watcher', value: w.watched ? 'armed' : 'none', color: !w.watched && w.ledger === 'DISPATCHED' ? 'warning' : undefined })
+  if (!w.watched && w.ledger === 'DISPATCHED' && w.stage === 'working') rows.push({ label: 'watcher', value: 'none', color: 'warning' })
   return rows
 }
 

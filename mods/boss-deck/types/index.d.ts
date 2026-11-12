@@ -1,5 +1,9 @@
 /** A proof link: a published page, an artifact or a demo video. */
 export type ProofLink = { label: string; url: string }
+/** One line of a workspace's stage log (events.jsonl), with its local time. */
+export type StageEvent = { at: number; ws: string; stage: string; note: string; hm: string }
+/** Whose move a workspace is on: the lane it shows in. */
+export type Stage = 'move' | 'checking' | 'working' | 'review' | 'done'
 export type Worker = {
   ws: string
   id: string
@@ -15,6 +19,15 @@ export type Worker = {
   state: string
   watched: boolean
   proof: ProofLink[]
+  stage: Stage
+  /** when the current stage began (epoch s): its newest event, else its PR's update, else its ledger date */
+  since: number
+  /** its open PR, joined by branch */
+  pr?: Pr | null
+  /** that PR's tag ("#57", "ws#7"), remembered after it merges */
+  prTag?: string
+  /** its newest stage events, oldest first */
+  events?: StageEvent[]
 }
 export type Watcher = { ws: string; term: string; ageS: number; stale: boolean }
 export type Pr = {
@@ -36,6 +49,10 @@ export type Pr = {
   head: string
   updated: string
   proof: ProofLink[]
+  /** when a comment starting a DONE envelope last landed (epoch s), 0 if never */
+  doneAt?: number
+  /** the workspace prefix this PR's branch belongs to; such PRs show in the lanes, not under PULL REQUESTS */
+  ws?: string
 }
 export type Attention = { level: 'act' | 'check'; text: string }
 /** One expanded row's details: label, value, and an optional theme color. */
