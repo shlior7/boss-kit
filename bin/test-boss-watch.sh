@@ -26,6 +26,25 @@ check "dispatch message quoting the done-message, wrapped, with '...' fields" ""
 │ post a one-line envelope: SUPERSET_WORKER_DONE
 │ task: demo-task summary: ... checks: ...
 X
+check "boss message box (indented past column 20) quoting a done-message with real values" "" <<'X'
+╭──────────────────────────────────────────────────╮
+│ ⏺ working on it                                  │
+╰──────────────────────────────────────────────────╯
+You ⬤
+                              ╭─────────────────────────────────────────╮
+                              │ reply with: post SUPERSET_WORKER_BLOCKED │
+                              │ task: e2e-exclusive reason: proof runs   │
+                              │ needs: boss go                           │
+                              ╰─────────────────────────────────────────╯
+X
+check "worker envelope above a boss message box still fires" "DONE|demo-task|did it" <<'X'
+╭──────────────────────────────────────────╮
+│ ⏺ SUPERSET_WORKER_DONE task: demo-task summary: did it │
+╰──────────────────────────────────────────╯
+                              ╭─────────────────────────────╮
+                              │ SUPERSET_WORKER_BLOCKED task: other reason: x │
+                              ╰─────────────────────────────╯
+X
 a=$("$S" --sig <<'X'
 │ SUPERSET_WORKER_DONE task: demo-task summary: first run checks: ok
 X
