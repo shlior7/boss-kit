@@ -28,6 +28,7 @@ PRUNE_S = 7 * 86400                 # a registry entry silent for a week is drop
 SHARED_BUDGET_LINES, SHARED_RECENT = 150, 20
 # The CLAUDE.local.md heading that makes a worktree a boss, optionally naming the one workspace that is.
 MARKER = re.compile(r"^# Boss workspace(?:[ \t]+(\S+))?[ \t]*$", re.M)
+DOMAIN = re.compile(r"^Domain:[ \t]*([A-Za-z0-9._-]+)[ \t]*$", re.M)
 HEADING = re.compile(r"^## (\d+)\. (.*)$", re.M)
 
 
@@ -108,6 +109,13 @@ def boss_marker(wt):
     """The worktree's boss marker: None when absent, else the workspace id it binds ('' for a bare marker)."""
     m = MARKER.search(_read(os.path.join(wt, "CLAUDE.local.md")))
     return None if m is None else (m.group(1) or "")
+
+
+def boss_domain(wt):
+    """The domain this boss owns inside its project ('' for the project's main boss): a 'Domain: <name>' line in
+    CLAUDE.local.md. A domain boss also loads <project>/domains/<name>.md (its charter) and <name>-state.md (its notes)."""
+    m = DOMAIN.search(_read(os.path.join(wt, "CLAUDE.local.md")))
+    return m.group(1) if m else ""
 
 
 def is_boss(ctx):
@@ -210,7 +218,12 @@ def instructions(ctx):
              (f"{ctx.name}/BOSS.md", _read(os.path.join(ctx.pdir, "BOSS.md"))),
              (f"{ctx.name}/lessons.md (project lessons)", _read(os.path.join(ctx.pdir, "lessons.md"))),
              ("lessons.md (shared lessons)", shared_view(_read(os.path.join(ctx.home, "lessons.md"))))]
-    head = f"# Boss session: project {ctx.name}, boss {ctx.bid}\n"
+    domain = boss_domain(ctx.worktree)
+    if domain:
+        ddir = os.path.join(ctx.pdir, "domains")
+        parts.insert(2, (f"{ctx.name}/domains/{domain}.md (domain charter)", _read(os.path.join(ddir, f"{domain}.md"))))
+        parts.insert(3, (f"{ctx.name}/domains/{domain}-state.md (domain state, you keep it current)", _read(os.path.join(ddir, f"{domain}-state.md"))))
+    head = f"# Boss session: project {ctx.name}, boss {ctx.bid}" + (f", domain {domain}" if domain else "") + "\n"
     return head + "".join(f"\n\n<!-- {name} -->\n\n{body.strip()}\n" for name, body in parts if body.strip())
 
 
