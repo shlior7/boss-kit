@@ -189,6 +189,11 @@ def workspaces(cfg):
             for w in rows if isinstance(w, dict) and w.get("id")} if isinstance(rows, list) else {}
 
 
+def in_folder(tags, folder):
+    """Whether a workspace's tags hold *folder*, case-insensitively; with no folder (the main boss) every workspace does."""
+    return not folder or folder.lower() in (t.lower() for t in tags or [])
+
+
 def notes_tail(wt, n=NOTE_ROWS):
     """The last few lines of the worktree's .boss/notes.md, which its worker keeps: decisions and open questions."""
     lines = bosskit._read(os.path.join(wt, ".boss", "notes.md")).splitlines() if wt else []
@@ -590,6 +595,8 @@ def main():
     spaces = snapshot(cfg)
     by_prefix = {w["id"][:8]: w for w in spaces}
     listed = workspaces(cfg)
+    # A domain boss covers only the workspaces in its sidebar folder; the main boss ('' folder) covers all.
+    folder = bosskit.boss_folder(ctx.worktree)
     watched = {w["ws"][:8] for w in armed}
     pr_rows = prs(cfg, ctx.cache, "--fresh" in sys.argv)
     for p in pr_rows:
@@ -616,6 +623,9 @@ def main():
             continue
         old = seen.get(prefix, {})
         info = listed.get((w or {}).get("id", ""), {})
+        tags = info.get("tags", old.get("tags", []))
+        if not in_folder(tags, folder):
+            continue  # another folder's workspace: its domain boss's, or the main boss's
         agents = [t for t in (w or {}).get("terminals", []) if t.get("agent")]
         agent_states = [t["agent"].get("state") for t in agents]
         state = "working" if "working" in agent_states else (agent_states[0] if agent_states else "gone")
@@ -623,13 +633,17 @@ def main():
             "ws": prefix, "id": (w or {}).get("id", ""), "term": agents[0]["id"] if agents else "",
             "name": (w or {}).get("name", old.get("name", task))[:28], "branch": (w or {}).get("branch", old.get("branch", "")),
             "task": task, "taskText": text, "ledger": status, "date": date, "state": state, "watched": prefix in watched,
-            "proof": proof, "prTag": old.get("prTag", ""),
+            "proof": proof, "prTag": old.get("prTag", ""), "tags": tags,
             "tasks": read_status(info.get("worktree", "")), "notes": notes_tail(info.get("worktree", ""), BOSS_NOTE_ROWS),
         })
     join(workers, pr_rows)
+    if folder:  # only this folder's workspaces, their watchers and their PRs; no PR-only rows
+        kept = {w["ws"] for w in workers + done}
+        armed = [w for w in armed if w["ws"][:8] in kept]
+        pr_rows = [p for p in pr_rows if p.get("ws")]
     workers = lanes(workers, done, evs, today)
     for w in workers:
-        seen[w["ws"]] = {"name": w["name"], "branch": w["branch"], "prTag": w["prTag"]}
+        seen[w["ws"]] = {"name": w["name"], "branch": w["branch"], "prTag": w["prTag"], "tags": w["tags"]}
     bosskit.save_json(seen_path, seen)
     states = {w["ws"]: w["state"] for w in workers}
     for w in armed:
@@ -726,6 +740,7 @@ if __name__ == "__main__":
         write_status(wt, json.dumps({"tasks_done": 3, "tasks_total": 5, "current": "run tests"}), now=7)
         open(os.path.join(wt, ".boss", "notes.md"), "w").write("# Notes\n\n- decided: cap at 5\n- open: retry 4xx?\n")
         assert read_status(wt) == {"done": 3, "total": 5, "current": "run tests", "at": 7} and notes_tail(wt, 1) == ["- open: retry 4xx?"]
+        assert in_folder(["Checkout Flow"], "checkout flow") and not in_folder(["UI"], "checkout") and in_folder([], "")
         print("ok")
     else:
         main()

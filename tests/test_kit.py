@@ -565,8 +565,8 @@ class WorkerView(Home):
         self.assertEqual(open(os.path.join(self.wt, exclude)).read().split().count(".boss/"), 1)
 
 
-class BossRow(Home):
-    """The boss's expanded worker row reads each worktree's .boss/status.json and notes."""
+class Folders(Home):
+    """A domain boss covers only the workspaces in its sidebar folder; the main boss covers all."""
 
     def setUp(self):
         super().setUp()
@@ -596,6 +596,23 @@ class BossRow(Home):
 
     def local(self, text):
         open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write(text)
+
+    def test_folder_parse_and_default(self):
+        self.local("# Boss workspace\n")
+        self.assertEqual(bosskit.boss_folder(self.wt), "")  # the main boss: every folder
+        self.local("# Boss workspace\nDomain: checkout\n")
+        self.assertEqual(bosskit.boss_folder(self.wt), "checkout")
+        self.local("# Boss workspace\nDomain: checkout\nFolder:  Checkout Flow  \n")
+        self.assertEqual(bosskit.boss_folder(self.wt), "Checkout Flow")
+        self.assertIn("Paradev workspaces tagged 'Checkout Flow'", bosskit.instructions(bosskit.load(self.wt)))
+
+    def test_domain_boss_sees_only_its_folder(self):
+        self.local("# Boss workspace\nDomain: checkout\nFolder: checkout flow\n")
+        d = deck_json(self.wt, self.tools)
+        self.assertEqual([w["name"] for w in d["workers"]], ["cart-totals"])
+        self.assertEqual([p["num"] for p in d["prs"]], [1])  # its workspace's PR; no PR-only rows
+        self.assertEqual([a["text"] for a in d["attention"]], ["#1 CI red"])
+        self.assertEqual(bosskit.registry()[bosskit.load(self.wt).bid]["working"], 1)
 
     def test_main_boss_sees_everything_and_reads_each_workers_status_and_notes(self):
         self.local("# Boss workspace\n")

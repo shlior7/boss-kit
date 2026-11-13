@@ -29,6 +29,7 @@ SHARED_BUDGET_LINES, SHARED_RECENT = 150, 20
 # The CLAUDE.local.md heading that makes a worktree a boss, optionally naming the one workspace that is.
 MARKER = re.compile(r"^# Boss workspace(?:[ \t]+(\S+))?[ \t]*$", re.M)
 DOMAIN = re.compile(r"^Domain:[ \t]*([A-Za-z0-9._-]+)[ \t]*$", re.M)
+FOLDER = re.compile(r"^Folder:[ \t]*(\S(?:.*\S)?)[ \t]*$", re.M)
 HEADING = re.compile(r"^## (\d+)\. (.*)$", re.M)
 
 
@@ -116,6 +117,14 @@ def boss_domain(wt):
     CLAUDE.local.md. A domain boss also loads <project>/domains/<name>.md (its charter) and <name>-state.md (its notes)."""
     m = DOMAIN.search(_read(os.path.join(wt, "CLAUDE.local.md")))
     return m.group(1) if m else ""
+
+
+def boss_folder(wt):
+    """The Paradev sidebar folder (workspace tag) a domain boss owns: a 'Folder: <tag>' line in CLAUDE.local.md (spaces
+    allowed), else its domain name. '' for the project's main boss, which covers every folder."""
+    domain = boss_domain(wt)
+    m = FOLDER.search(_read(os.path.join(wt, "CLAUDE.local.md"))) if domain else None
+    return m.group(1) if m else domain
 
 
 def is_boss(ctx):
@@ -247,6 +256,9 @@ def instructions(ctx):
         parts.insert(2, (f"{ctx.name}/domains/{domain}.md (domain charter)", _read(os.path.join(ddir, f"{domain}.md"))))
         parts.insert(3, (f"{ctx.name}/domains/{domain}-state.md (domain state, you keep it current)", _read(os.path.join(ddir, f"{domain}-state.md"))))
     head = f"# Boss session: project {ctx.name}, boss {ctx.bid}" + (f", domain {domain}" if domain else "") + "\n"
+    if domain:
+        head += (f"\nYour folder: Paradev workspaces tagged '{boss_folder(ctx.worktree)}'. Tag every workspace you create with it, and read, "
+                 "message, verify and archive only workspaces in it; anything else goes to the main boss by boss-mail.\n")
     return head + "".join(f"\n\n<!-- {name} -->\n\n{body.strip()}\n" for name, body in parts if body.strip())
 
 
