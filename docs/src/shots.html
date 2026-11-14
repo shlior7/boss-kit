@@ -22,7 +22,7 @@
   * { box-sizing: border-box; margin: 0; }
   body { background: var(--bg); font: 13px/1.55 "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--fg); padding: 28px; }
   .shot { display: none; }
-  body[data-shot="main"] #main, body[data-shot="peek"] #peek { display: block; }
+  body[data-shot="main"] #main, body[data-shot="peek"] #peek, body[data-shot="worker"] #worker { display: block; }
   .win { background: var(--term); border-radius: 10px; overflow: hidden; box-shadow: 0 18px 50px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.3); border: 1px solid #2a2b30; }
   .bar { background: var(--chrome); height: 34px; display: flex; align-items: center; padding: 0 14px; gap: 8px; border-bottom: 1px solid var(--rule); }
   .bar i { width: 12px; height: 12px; border-radius: 50%; background: #3a3b40; }
@@ -83,6 +83,13 @@
   </div>
 </section>
 
+<section class="shot" id="worker">
+  <div class="win" style="width: max-content">
+    <div class="bar"><i></i><i></i><i></i><span>Worker</span></div>
+    <div class="pane" id="pane-worker"></div>
+  </div>
+</section>
+
 <script>
 // Pane width in columns. Rows are [text, class] segments, laid out like register.tsx's cells.
 const W = 56
@@ -133,6 +140,9 @@ const active = (open) =>
   (open ? detail('10:02', 'sent  fix-61, watcher armed') +
     detail('10:31', 'DONE  fix-61: cache warms before traffic') +
     detail('next', 'boss: verify, then mark the PR ready') +
+    detail('tasks', '5 of 5 · now posting the DONE envelope') +
+    detail('notes', '- decided: warm the top 200 keys, not all') +
+    detail('', '- open: should a cold start block traffic?') +
     detail('pr', 'warm the cache before traffic') +
     detail('ci', '14 pass', 'ok') +
     detail('merge', 'mergeable · clean') +
@@ -159,9 +169,39 @@ const main =
 
 const peek = head() + bosses() + active(true) + idle() + foot('4s')
 
+// The worker view: a dispatched worker's own session. Label column 7 wide, like register.tsx's field().
+const field = (label, value, c = 'd') => line(seg(pad(label, 7), 'd'), seg(value, c))
+const fieldParts = (label, ps) => line(seg(pad(label, 7), 'd'), parts(ps, W - 7, true))
+const task = (mark, mc, t, dim) => line(seg(pad(mark, 2), mc), seg(t, dim ? 'd' : ''))
+const worker =
+  justify('WORKER  api-retries · fix-42', 'boss: widgets', 'b', 'd') +
+  field('goal', 'retry failed webhooks with backoff', '') +
+  fieldParts('pr', [['#63'], ['draft'], ['CI ✓', 'ok'], ['mergeable'], ['no review']]) +
+  fieldParts('state', [['working', 'ok'], ['sent 18m ago'], ['now: Bash(make test-http)']]) +
+  section('tasks', '3 of 5 done') +
+  task('✓', 'ok', 'add a retry queue for failed webhooks', true) +
+  task('✓', 'ok', 'back off 1s, 2s, 4s, capped at five tries', true) +
+  task('✓', 'ok', 'regression test: the sixth try is dropped', true) +
+  task('●', 'su', 'Running the http tests') +
+  task('○', 'f', 'update the webhook docs', true) +
+  section('delivered', '4 newest') +
+  field('10:44', '4b9e1a2 test: sixth retry is dropped') +
+  field('10:39', '8c41d2e add exponential backoff') +
+  field('10:31', '2f07c5b add the retry queue') +
+  field('10:26', 'sent  fix-42, watcher armed') +
+  section('notes', '.boss-worker/notes.md') +
+  line(seg('- decided: 4xx never retries, only 5xx and timeouts', 'd')) +
+  line(seg('- open: log dropped webhooks to the audit table?', 'd')) +
+  section('from boss', '1 new') +
+  field('10:41', 'also cover the 429 case: retry after its header', '') +
+  field('10:27', 'base it on main, not on #57', 'd') +
+  '\n' + line(seg('! 3 behind origin/main', 'wa')) + '\n' +
+  justify('page ↗  PR ↗  boss ↗', 'ctx 31% · 8s ago', 'su', 'd')
+
 const paneTitle = '<div class="pane-title"><span>Boss</span></div>'
 document.getElementById('pane-main').innerHTML = paneTitle + '<pre>' + main + '</pre>'
 document.getElementById('pane-peek').innerHTML = '<pre>' + peek + '</pre>'
+document.getElementById('pane-worker').innerHTML = '<pre>' + worker + '</pre>'
 document.body.dataset.shot = location.hash.slice(1) || 'main'
 </script>
 </body>

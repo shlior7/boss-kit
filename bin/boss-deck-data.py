@@ -11,12 +11,18 @@ Each workspace joins its PR by branch and gets a stage: move, checking, working,
 (merged or retired today, archived workspaces included).
 Paths and project resolution: bin/bosskit.py.
 
+Worker mode (--worker): the same pane in a dispatched worker's own session. It finds the workspace's newest
+dispatch row across every project's ledger, its boss, its PR (the boss's fetch and cache), pushed commits, its
+events and the messages the boss sent it, and keeps the worktree's .boss-worker/ (notes.md, status.json) git-ignored.
+
 usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--cwd DIR] [--selftest]
+       boss-deck-data.py --worker --workspace ID [--cwd DIR] [--status JSON]
   --fresh: skip the PR cache (the pane passes it right after the boss merges, comments or dispatches)
   --session-start: also mark this boss's new session (the base for "N new shared lessons"), and
                    rename this boss's own Paradev workspace to BOSS
   --workspace, --cwd: the session's workspace id and directory, which the mod passes so its process
                       resolves the same boss as the session's shell
+  --status: the worker pane's task progress, {tasks_done, tasks_total, current}, written to .boss-worker/status.json
 """
 import json
 import os
@@ -50,6 +56,12 @@ STATE_LINES = 3  # a domain boss's state file, in its details
 # ponytail: a watcher is "stale" by age or an idle worker; a real liveness probe would read the terminal
 STALE_AGE_S = 7200
 IDLE_STALE_S = 1800
+# Worker mode: rows per section, and the event stages DELIVERED lists ("msg" goes to FROM BOSS instead).
+DELIVERED_ROWS = 5
+MSG_ROWS = 10
+NOTE_ROWS = 4
+BOSS_NOTE_ROWS = 2
+DELIVERED_EVENTS = {"sent", "pr ready", "done", "checked", "ready", "merged"}
 PR_FIELDS = ("number,title,isDraft,reviewDecision,mergeable,statusCheckRollup,reviewRequests,"
              "url,baseRefName,headRefName,updatedAt,body,comments")
 # Proof links a PR or a ledger row can carry: a published page, an artifact, a demo video.
@@ -165,6 +177,49 @@ def name_boss_workspace(cfg):
     ws = os.environ.get("SUPERSET_WORKSPACE_ID")
     if ws:
         run(["superset", "workspaces", "update", ws, "--host", host(cfg), "--name", BOSS_NAME], timeout=20)
+
+
+def workspaces(cfg):
+    """Workspace id -> its tags (sidebar folders) and worktree, from `superset workspaces list`: the snapshot has neither."""
+    try:
+        rows = json.loads(run(["superset", "workspaces", "list", "--host", host(cfg), "--json"]) or "[]")
+    except ValueError:
+        return {}
+    return {w["id"]: {"tags": [t.strip() for t in (w.get("tags") or "").split(",") if t.strip()], "worktree": w.get("worktreePath") or ""}
+            for w in rows if isinstance(w, dict) and w.get("id")} if isinstance(rows, list) else {}
+
+
+def in_folder(tags, folder):
+    """Whether a workspace's tags hold *folder*, case-insensitively; with no folder (the main boss) every workspace does."""
+    return not folder or folder.lower() in (t.lower() for t in tags or [])
+
+
+def notes_tail(wt, n=NOTE_ROWS):
+    """The last few lines of the worktree's .boss-worker/notes.md, which its worker keeps: decisions and open questions."""
+    lines = bosskit._read(os.path.join(wt, ".boss-worker", "notes.md")).splitlines() if wt else []
+    return [l.strip()[:120] for l in lines if l.strip() and not l.lstrip().startswith("#")][-n:]
+
+
+def read_status(wt):
+    """The worker pane's task progress in <worktree>/.boss-worker/status.json, or None."""
+    try:
+        s = json.load(open(os.path.join(wt, ".boss-worker", "status.json")))
+        return {"done": int(s["tasks_done"]), "total": int(s["tasks_total"]), "current": str(s.get("current") or "")[:80],
+                "at": int(s.get("at") or 0)}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def exclude_boss_dir(wt):
+    """Adds .boss-worker/ to the worktree's .git/info/exclude once, so its notes and status are never committed."""
+    path = bosskit._git(wt, "rev-parse", "--git-path", "info/exclude")
+    if not path:
+        return
+    path = os.path.join(wt, path)
+    if ".boss-worker/" not in bosskit._read(path).split():
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write("\n.boss-worker/\n")
 
 
 def snapshot(cfg):
@@ -412,6 +467,110 @@ def bosses(reg, project, me, pdir, now=None, workspace="", wt=""):
     return sorted(out, key=lambda b: (not b["me"], b["domain"] != "", b["domain"]))
 
 
+# ---- worker mode: the pane in a dispatched worker's own session -------------------------------
+
+def find_dispatch(home, ws):
+    """The newest ledger row for workspace *ws* in any project: (project, cfg, row), or None when no boss dispatched it."""
+    best = None
+    for name in bosskit.projects(home):
+        pdir = os.path.join(home, name)
+        try:
+            cfg = json.load(open(os.path.join(pdir, "config.json")))
+        except (OSError, ValueError):
+            continue
+        row = ledger_tasks(os.path.join(pdir, cfg.get("ledger", "ledger.md"))).get(ws[:8])
+        if row and (best is None or row[2] > best[2][2]):
+            best = (name, cfg, row)
+    return best
+
+
+def worker_boss(reg, project, named):
+    """A dispatch's boss: the row's Boss column, else the project's live main boss, else its newest live boss."""
+    if named:
+        return named
+    live = sorted(bosskit.live(reg, project=project).items(), key=lambda ib: (ib[1].get("domain", "") != "", -ib[1].get("heartbeat", 0)))
+    return live[0][0] if live else ""
+
+
+def project_events(pdir, ws):
+    """Workspace *ws*'s events from every boss of the project, oldest first."""
+    bdirs = os.path.join(pdir, "bosses")
+    evs = [e for b in (sorted(os.listdir(bdirs)) if os.path.isdir(bdirs) else []) for e in bosskit.events(os.path.join(bdirs, b))
+           if e["ws"][:8] == ws[:8]]
+    return sorted(evs, key=lambda e: e["at"])
+
+
+def hm(at):
+    return time.strftime("%H:%M", time.localtime(at))
+
+
+def pushed(wt, branch, n=DELIVERED_ROWS):
+    """The newest commits on origin/<branch>: [{sha, at, subject}]."""
+    out = bosskit._git(wt, "log", f"origin/{branch}", f"-{n}", "--format=%H%x1f%ct%x1f%s") if branch else ""
+    rows = [l.split("\x1f") for l in out.splitlines()]
+    return [{"sha": r[0], "at": int(r[1]), "subject": r[2][:80]} for r in rows if len(r) == 3]
+
+
+def delivered(commits, evs, n=DELIVERED_ROWS):
+    """Pushed commits merged with the workspace's milestone events, newest first."""
+    rows = [{"at": c["at"], "kind": "commit", "text": f"{c['sha'][:7]} {c['subject']}"} for c in commits]
+    rows += [{"at": e["at"], "kind": e["stage"], "text": e["note"]} for e in evs if e["stage"].lower() in DELIVERED_EVENTS]
+    rows.sort(key=lambda r: r["at"], reverse=True)
+    return [{**r, "hm": hm(r["at"])} for r in rows[:n]]
+
+
+def write_status(wt, status, now=None):
+    """Writes the worker pane's task progress to <worktree>/.boss-worker/status.json, which the boss's row reads."""
+    try:
+        s = json.loads(status)
+        os.makedirs(os.path.join(wt, ".boss-worker"), exist_ok=True)
+        bosskit.save_json(os.path.join(wt, ".boss-worker", "status.json"),
+                          {"tasks_done": int(s["tasks_done"]), "tasks_total": int(s["tasks_total"]),
+                           "current": str(s.get("current") or "")[:80], "at": int(now or time.time())})
+    except (OSError, ValueError, KeyError, TypeError):
+        pass  # an unwritable worktree, or a bad --status: progress just does not reach the boss
+
+
+def worker_view(home, ws, cwd, status=None, fresh=False):
+    """This workspace's own view: its dispatch, boss, PR, delivered work, notes and the boss's messages; None without a row."""
+    found = find_dispatch(home, ws)
+    if not found:
+        return None
+    project, cfg, (task, ledger, date, proof, named, text) = found
+    pdir = os.path.join(home, project)
+    wt = bosskit.worktree(cwd)
+    exclude_boss_dir(wt)
+    if status:
+        write_status(wt, status)
+    reg = bosskit.registry(home)
+    bid = worker_boss(reg, project, named)
+    cache = os.path.join(pdir, "bosses", bid, "cache") if bid else ""
+    if not os.path.isdir(cache):
+        cache = os.path.join(wt, ".boss-worker")
+        os.makedirs(cache, exist_ok=True)
+    branch = bosskit._git(wt, "rev-parse", "--abbrev-ref", "HEAD")
+    pr = next((p for p in sorted(prs(cfg, cache, fresh), key=lambda p: not p.get("primary")) if branch and p["head"] == branch), None)
+    base = (pr or {}).get("base") or cfg.get("base_branch") or "main"
+    behind = bosskit._git(wt, "rev-list", "--count", f"HEAD..origin/{base}")
+    evs = project_events(pdir, ws)
+    try:
+        spaces = json.loads(run(["superset", "snapshot", "--workspace", ws, "--json"], timeout=20) or "{}").get("workspaces", [])
+    except (ValueError, AttributeError):
+        spaces = []
+    me = next((w for w in spaces if w.get("id") == ws), {})
+    msgs = [e for e in evs if e["stage"].lower() == "msg"]
+    stages = [e for e in evs if e["stage"].lower() != "msg"]
+    return {
+        "project": project, "task": task, "goal": re.sub(r"^\S+?(?::\s*|\s+|$)", "", text, count=1) or text, "ledger": ledger, "date": date,
+        "ws": ws, "name": (me.get("name") or task)[:28], "branch": branch, "base": base, "behind": int(behind or 0),
+        "pr": pr, "proof": proof, "boss": {"id": bid, "workspace": (reg.get(bid) or {}).get("workspace") or ("" if bid.startswith("wt-") else bid)},
+        "stage": {**stages[-1], "hm": hm(stages[-1]["at"])} if stages else None,
+        "sentAt": max((e["at"] for e in stages if e["stage"].lower() == "sent"), default=0),
+        "delivered": delivered(pushed(wt, branch), stages), "notes": notes_tail(wt),
+        "msgs": [{"at": e["at"], "hm": hm(e["at"]), "text": e["note"]} for e in reversed(msgs[-MSG_ROWS:])],
+    }
+
+
 def arg(name):
     """The value after *name* on the command line, or None."""
     return sys.argv[sys.argv.index(name) + 1] if name in sys.argv[:-1] else None
@@ -420,6 +579,11 @@ def arg(name):
 def main():
     if arg("--workspace"):
         os.environ["SUPERSET_WORKSPACE_ID"] = arg("--workspace")
+    if "--worker" in sys.argv:
+        ws = os.environ.get("SUPERSET_WORKSPACE_ID", "")
+        view = worker_view(bosskit.home(), ws, arg("--cwd"), arg("--status"), "--fresh" in sys.argv) if ws else None
+        print(json.dumps({"at": int(time.time()), "worker": view}))
+        return
     ctx = bosskit.load(arg("--cwd"))
     if not bosskit.is_boss(ctx):
         sys.exit(bosskit.not_boss_note(ctx))  # no heartbeat, no rename: another workspace is the boss
@@ -430,6 +594,9 @@ def main():
     armed = [w for w in watchers() if w["ws"][:8] in mine]
     spaces = snapshot(cfg)
     by_prefix = {w["id"][:8]: w for w in spaces}
+    listed = workspaces(cfg)
+    # A domain boss covers only the workspaces in its sidebar folder; the main boss ('' folder) covers all.
+    folder = bosskit.boss_folder(ctx.worktree)
     watched = {w["ws"][:8] for w in armed}
     pr_rows = prs(cfg, ctx.cache, "--fresh" in sys.argv)
     for p in pr_rows:
@@ -455,6 +622,10 @@ def main():
         if not archived and len(workers) >= MAX_WORKERS and prefix not in watched:
             continue
         old = seen.get(prefix, {})
+        info = listed.get((w or {}).get("id", ""), {})
+        tags = info.get("tags", old.get("tags", []))
+        if not in_folder(tags, folder):
+            continue  # another folder's workspace: its domain boss's, or the main boss's
         agents = [t for t in (w or {}).get("terminals", []) if t.get("agent")]
         agent_states = [t["agent"].get("state") for t in agents]
         state = "working" if "working" in agent_states else (agent_states[0] if agent_states else "gone")
@@ -462,12 +633,17 @@ def main():
             "ws": prefix, "id": (w or {}).get("id", ""), "term": agents[0]["id"] if agents else "",
             "name": (w or {}).get("name", old.get("name", task))[:28], "branch": (w or {}).get("branch", old.get("branch", "")),
             "task": task, "taskText": text, "ledger": status, "date": date, "state": state, "watched": prefix in watched,
-            "proof": proof, "prTag": old.get("prTag", ""),
+            "proof": proof, "prTag": old.get("prTag", ""), "tags": tags,
+            "tasks": read_status(info.get("worktree", "")), "notes": notes_tail(info.get("worktree", ""), BOSS_NOTE_ROWS),
         })
     join(workers, pr_rows)
+    if folder:  # only this folder's workspaces, their watchers and their PRs; no PR-only rows
+        kept = {w["ws"] for w in workers + done}
+        armed = [w for w in armed if w["ws"][:8] in kept]
+        pr_rows = [p for p in pr_rows if p.get("ws")]
     workers = lanes(workers, done, evs, today)
     for w in workers:
-        seen[w["ws"]] = {"name": w["name"], "branch": w["branch"], "prTag": w["prTag"]}
+        seen[w["ws"]] = {"name": w["name"], "branch": w["branch"], "prTag": w["prTag"], "tags": w["tags"]}
     bosskit.save_json(seen_path, seen)
     states = {w["ws"]: w["state"] for w in workers}
     for w in armed:
@@ -549,6 +725,22 @@ if __name__ == "__main__":
         open(os.path.join(d, "junk.txt"), "w").write("x")
         got = mail(d)
         assert got["count"] == 2 and [m["subject"] for m in got["items"]] == ["s1", "s2"], got
+        # worker mode: the dispatch row in whichever project has it, DELIVERED newest first, .boss-worker/ files
+        home = tempfile.mkdtemp()
+        for name, row in (("gadgets", ""), ("widgets", "| 2026-01-02 | fix-42: retry webhooks | 1a2b3c4d | mid | DISPATCHED |\n")):
+            os.makedirs(os.path.join(home, name))
+            json.dump({"repo": f"acme/{name}"}, open(os.path.join(home, name, "config.json"), "w"))
+            open(os.path.join(home, name, "ledger.md"), "w").write(row)
+        assert find_dispatch(home, "1a2b3c4d-full")[0] == "widgets" and find_dispatch(home, "9f9f9f9f") is None
+        evs = [{"at": 100, "stage": "sent", "note": "go"}, {"at": 300, "stage": "DONE", "note": "fix-42"}, {"at": 250, "stage": "msg", "note": "x"}]
+        got = delivered([{"sha": "8c41d2e07", "at": 200, "subject": "add backoff"}], evs)
+        assert [(r["kind"], r["text"]) for r in got] == [("DONE", "fix-42"), ("commit", "8c41d2e add backoff"), ("sent", "go")], got
+        wt = tempfile.mkdtemp()
+        assert notes_tail(wt) == [] and read_status(wt) is None
+        write_status(wt, json.dumps({"tasks_done": 3, "tasks_total": 5, "current": "run tests"}), now=7)
+        open(os.path.join(wt, ".boss-worker", "notes.md"), "w").write("# Notes\n\n- decided: cap at 5\n- open: retry 4xx?\n")
+        assert read_status(wt) == {"done": 3, "total": 5, "current": "run tests", "at": 7} and notes_tail(wt, 1) == ["- open: retry 4xx?"]
+        assert in_folder(["Checkout Flow"], "checkout flow") and not in_folder(["UI"], "checkout") and in_folder([], "")
         print("ok")
     else:
         main()

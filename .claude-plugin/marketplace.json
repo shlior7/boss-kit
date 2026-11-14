@@ -6,8 +6,8 @@
     {
       "name": "boss-deck",
       "source": "./mods/boss-deck",
-      "description": "Quiet boss pane: what needs you, Paradev workers, watchers, PRs and the tracker",
-      "version": "0.6.0"
+      "description": "Quiet boss pane: what needs you, Paradev workers, watchers, PRs and the tracker; a worker view in each worker's session",
+      "version": "0.7.0"
     }
   ]
 }

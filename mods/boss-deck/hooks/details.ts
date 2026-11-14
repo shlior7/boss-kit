@@ -3,7 +3,7 @@ import type { Boss, Deck, Detail, MailItem, Pr, Worker } from '../types'
 export const ago = (s: number) =>
   s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : s < 129_600 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`
 // "JaneDoe42" -> "jane", "acme-reviewers" (a team) -> "team"
-const who = (login: string) => (login.includes('-') ? 'team' : (login.match(/^[A-Z]?[a-z]+/)?.[0] ?? login).toLowerCase())
+export const who = (login: string) => (login.includes('-') ? 'team' : (login.match(/^[A-Z]?[a-z]+/)?.[0] ?? login).toLowerCase())
 // Drops a conventional-commit prefix and a trailing #tag: "fix(api): x #team" -> "x".
 const shortTitle = (t: string) => t.replace(/^\w+\([^)]*\): /, '').replace(/ #[\w-]+$/, '')
 const ACTIVITY = /^\s*(?:⏺\s+|⎿?\s*)?((?:Running|Ran|Reading|Read|Editing|Edited|Writing|Wrote|Searching|Fetching|Fixing|Merging|Pushing|Checking|Waiting)\b.*)$/
@@ -139,7 +139,11 @@ export function workerDetails(w: Worker, screen: string, pr: Detail[] = []): Det
   const doneElsewhere = w.pr?.doneAt ? 'DONE  posted as a PR comment' : w.ledger.toUpperCase() === 'DONE' ? 'DONE  in the ledger' : ''
   if (rows.length === 0) rows.push({ label: '', value: doneElsewhere || `no stage log yet · dispatched ${w.date || '?'}` })
   if (w.taskText && w.taskText !== w.task) rows.unshift({ label: 'task', value: w.taskText })
-  rows.push({ label: 'next', value: nextStep(w), color: w.stage === 'move' ? 'warning' : undefined }, ...pr)
+  rows.push({ label: 'next', value: nextStep(w), color: w.stage === 'move' ? 'warning' : undefined })
+  // What its worker pane reports: task progress (.boss-worker/status.json) and its notes' last lines (.boss-worker/notes.md).
+  const t = w.tasks
+  if (t?.total) rows.push({ label: 'tasks', value: `${t.done} of ${t.total}${t.current ? ` · now ${t.current}` : ''}` })
+  rows.push(...(w.notes ?? []).map((n, i) => ({ label: i ? '' : 'notes', value: n })), ...pr)
   if (doing || (w.state === 'working' && spin)) rows.push({ label: 'doing', value: [doing, spin].filter(Boolean).join(' · ') })
   if (ctx) {
     const pct = Number(ctx[2])

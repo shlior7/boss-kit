@@ -473,5 +473,170 @@ class Bosses(Home):
         self.assertEqual([(b["domain"], b["me"]) for b in json.loads(out.stdout)["bosses"]], [("checkout", True)])
 
 
+def stub_tools(tmp, fix):
+    """gh and superset stubs that print fixtures from *fix*: no network, no Paradev."""
+    stubs = os.path.join(tmp, "stubs")
+    os.makedirs(stubs, exist_ok=True)
+    scripts = {"superset": 'case "$1 $2" in\n  "snapshot "*) cat "$FIX/snapshot.json";;\n  "workspaces list") cat "$FIX/list.json";;\n  *) exit 1;;\nesac\n',
+               "gh": 'case "$1 $2" in\n  "pr list") cat "$FIX/prs.json";;\n  *) exit 1;;\nesac\n'}
+    for tool, body in scripts.items():
+        path = os.path.join(stubs, tool)
+        open(path, "w").write("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+    return {**os.environ, "PATH": f"{stubs}:/usr/bin:/bin", "FIX": fix}
+
+
+def deck_json(wt, env, *args):
+    out = subprocess.run([sys.executable, os.path.join(BIN, "boss-deck-data.py"), "--cwd", wt, *args], capture_output=True, text=True, env=env)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+class WorkerView(Home):
+    """The pane in a worker's own session: its dispatch row in any project, its PR, delivered work, notes, the boss's messages."""
+
+    WS = "1a2b3c4d-0000-4000-8000-000000000001"
+
+    def setUp(self):
+        super().setUp()
+        self.deck = load_script("boss-deck-data.py")
+        self.fix = os.path.join(self.tmp, "fix")
+        os.makedirs(self.fix)
+        self.tools = stub_tools(self.tmp, self.fix)
+
+    def ledger(self, project, row):
+        open(os.path.join(self.home, project, "ledger.md"), "w").write(
+            "## Dispatches 2026-01-02\n\n| Date | Task | Workspace | Model | Status | Proof | Boss |\n|---|---|---|---|---|---|---|\n" + row)
+
+    def test_the_row_is_found_in_any_project_and_no_row_is_no_pane(self):
+        self.assertIsNone(self.deck.find_dispatch(self.home, self.WS))
+        self.assertIsNone(deck_json(self.wt, self.tools, "--worker", "--workspace", self.WS)["worker"])
+        self.ledger("gadgets", "| 2026-01-02 | fix-42: retry webhooks | 1a2b3c4d / 5e6f | mid | DISPATCHED | | ws-boss |\n")
+        self.ledger("widgets", "| 2026-01-01 | fix-9: older | 1a2b3c4d / 5e6f | mid | MERGED | | |\n")  # an older dispatch elsewhere
+        project, _, row = self.deck.find_dispatch(self.home, self.WS)
+        self.assertEqual((project, row[0], row[4]), ("gadgets", "fix-42", "ws-boss"))
+        self.assertIsNone(self.deck.find_dispatch(self.home, "9f9f9f9f-0000"))
+
+    def test_the_boss_is_the_boss_column_else_the_live_main_boss(self):
+        now = time.time()
+        reg = {"ws-co": {"project": "widgets", "domain": "checkout", "heartbeat": now},
+               "ws-main": {"project": "widgets", "domain": "", "heartbeat": now - 60},
+               "ws-g": {"project": "gadgets", "heartbeat": now}}
+        self.assertEqual(self.deck.worker_boss(reg, "widgets", "ws-named"), "ws-named")
+        self.assertEqual(self.deck.worker_boss(reg, "widgets", ""), "ws-main")
+        self.assertEqual(self.deck.worker_boss({}, "widgets", ""), "")
+
+    def test_a_boss_hint_file_and_the_worker_files_live_side_by_side(self):
+        open(os.path.join(self.wt, ".boss"), "w").write("project: widgets\n")  # bosskit's project hint, a file
+        self.ledger("widgets", "| 2026-01-02 | fix-42: retry webhooks | 1a2b3c4d | mid | DISPATCHED | | |\n")
+        json.dump([], open(os.path.join(self.fix, "prs.json"), "w"))
+        os.makedirs(os.path.join(self.wt, ".boss-worker"))
+        open(os.path.join(self.wt, ".boss-worker", "notes.md"), "w").write("- open: retry 4xx?\n")
+        status = json.dumps({"tasks_done": 2, "tasks_total": 4, "current": "run the tests"})
+        w = deck_json(self.wt, self.tools, "--worker", "--workspace", self.WS, "--status", status)["worker"]
+        self.assertEqual(w["notes"], ["- open: retry 4xx?"])
+        self.assertEqual((self.deck.read_status(self.wt)["done"], self.deck.read_status(self.wt)["total"]), (2, 4))
+        self.assertEqual(bosskit.project_name(self.wt), "widgets")  # the hint still resolves
+
+    def test_the_view_joins_pr_commits_events_messages_and_keeps_boss_dir_ignored(self):
+        origin = os.path.join(self.tmp, "origin.git")
+        git(self.tmp, "init", "-q", "--bare", origin)
+        git(self.wt, "remote", "add", "origin", origin)
+        git(self.wt, "checkout", "-q", "-b", "fix/retry")
+        for i, subject in enumerate(["add retry queue", "add backoff"]):
+            subprocess.run(["git", "-C", self.wt, "-c", "user.name=jane", "-c", "user.email=jane@example.com", "commit", "-q", "--allow-empty",
+                            "-m", subject], check=True, capture_output=True, env={**os.environ, "GIT_COMMITTER_DATE": f"@{1000 + i * 100} +0000"})
+        git(self.wt, "push", "-q", "origin", "fix/retry")
+        self.ledger("widgets", "| 2026-01-02 | fix-42: retry webhooks | 1a2b3c4d | mid | DISPATCHED | | |\n")
+        bosskit.save_json(os.path.join(self.home, "bosses.json"), {"ws-main": {"project": "widgets", "workspace": "ws-main", "heartbeat": time.time()}})
+        bdir = os.path.join(self.home, "widgets", "bosses", "ws-main")
+        os.makedirs(os.path.join(bdir, "cache"))
+        with open(os.path.join(bdir, "events.jsonl"), "w") as f:
+            for at, stage, note in ((900, "sent", "fix-42"), (2000, "msg", "also cover 429"), (2100, "msg", "rebase on main"),
+                                    (2200, "DONE", "fix-42: done"), (2300, "msg", "thanks")):
+                f.write(json.dumps({"at": at, "ws": self.WS, "stage": stage, "note": note}) + "\n")
+            f.write(json.dumps({"at": 2400, "ws": "ffffffff", "stage": "msg", "note": "not mine"}) + "\n")
+        json.dump([{"number": 61, "title": "Retry webhooks", "isDraft": True, "headRefName": "fix/retry", "baseRefName": "main",
+                    "mergeable": "MERGEABLE", "statusCheckRollup": [{"name": "ci", "conclusion": "SUCCESS"}], "comments": []}],
+                  open(os.path.join(self.fix, "prs.json"), "w"))
+        json.dump({"workspaces": [{"id": self.WS, "name": "webhook-retries", "terminals": []}]}, open(os.path.join(self.fix, "snapshot.json"), "w"))
+        status = json.dumps({"tasks_done": 1, "tasks_total": 3, "current": "run the tests"})
+        w = deck_json(self.wt, self.tools, "--worker", "--workspace", self.WS, "--status", status)["worker"]
+        self.assertEqual((w["project"], w["task"], w["goal"], w["name"], w["branch"]), ("widgets", "fix-42", "retry webhooks", "webhook-retries", "fix/retry"))
+        self.assertEqual((w["pr"]["num"], w["pr"]["draft"], w["pr"]["ci"], w["boss"]["workspace"]), (61, True, "green", "ws-main"))
+        self.assertEqual([m["text"] for m in w["msgs"]], ["thanks", "rebase on main", "also cover 429"])  # newest first
+        self.assertEqual([d["kind"] for d in w["delivered"]], ["DONE", "commit", "commit", "sent"])
+        self.assertTrue(w["delivered"][1]["text"].endswith("add backoff"))
+        self.assertEqual((w["stage"]["stage"], w["sentAt"]), ("DONE", 900))
+        self.assertTrue(os.path.exists(os.path.join(bdir, "cache", "deck-prs.json")))  # the boss's PR cache
+        exclude = subprocess.run(["git", "-C", self.wt, "rev-parse", "--git-path", "info/exclude"], capture_output=True, text=True).stdout.strip()
+        self.assertIn(".boss-worker/", open(os.path.join(self.wt, exclude)).read().split())
+        self.assertEqual(self.deck.read_status(self.wt)["total"], 3)
+        self.assertEqual(subprocess.run(["git", "-C", self.wt, "status", "--porcelain"], capture_output=True, text=True).stdout, "")
+        deck_json(self.wt, self.tools, "--worker", "--workspace", self.WS)  # exclude is added once
+        self.assertEqual(open(os.path.join(self.wt, exclude)).read().split().count(".boss-worker/"), 1)
+
+
+class Folders(Home):
+    """A domain boss covers only the workspaces in its sidebar folder; the main boss covers all."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["BOSS_PROJECT"] = "widgets"
+        json.dump({"repo": "acme/widgets", "me": "octocat", "superset_host": "h"}, open(os.path.join(self.home, "widgets", "config.json"), "w"))
+        self.fix = os.path.join(self.tmp, "fix")
+        os.makedirs(self.fix)
+        self.tools = stub_tools(self.tmp, self.fix)
+        self.worker_wt = os.path.join(self.tmp, "worker-a")
+        os.makedirs(os.path.join(self.worker_wt, ".boss-worker"))
+        json.dump({"tasks_done": 3, "tasks_total": 5, "current": "run the http tests", "at": 1},
+                  open(os.path.join(self.worker_wt, ".boss-worker", "status.json"), "w"))
+        open(os.path.join(self.worker_wt, ".boss-worker", "notes.md"), "w").write("- decided: cap at 5\n- open: retry 4xx?\n- open: log drops?\n")
+        ids = {"a": "aaaaaaaa-0000-4000-8000-000000000001", "b": "bbbbbbbb-0000-4000-8000-000000000002"}
+        open(os.path.join(self.home, "widgets", "ledger.md"), "w").write(
+            "## Dispatches 2026-01-02\n\n| Date | Task | Workspace | Model | Status |\n|---|---|---|---|---|\n"
+            "| 2026-01-02 | fix-1: a | aaaaaaaa | mid | DISPATCHED |\n| 2026-01-02 | fix-2: b | bbbbbbbb | mid | DISPATCHED |\n")
+        agent = [{"id": "t", "agent": {"state": "working"}}]
+        json.dump({"workspaces": [{"id": ids["a"], "name": "cart-totals", "branch": "fix/a", "terminals": agent},
+                                  {"id": ids["b"], "name": "search-ui", "branch": "fix/b", "terminals": agent}]},
+                  open(os.path.join(self.fix, "snapshot.json"), "w"))
+        json.dump([{"id": ids["a"], "tags": "Checkout Flow", "worktreePath": self.worker_wt}, {"id": ids["b"], "tags": "UI", "worktreePath": ""}],
+                  open(os.path.join(self.fix, "list.json"), "w"))
+        pr = lambda n, head: {"number": n, "title": "x", "isDraft": False, "headRefName": head, "baseRefName": "main",
+                              "statusCheckRollup": [{"name": "ci", "conclusion": "FAILURE"}]}
+        json.dump([pr(1, "fix/a"), pr(2, "fix/b"), pr(3, "loose")], open(os.path.join(self.fix, "prs.json"), "w"))
+
+    def local(self, text):
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write(text)
+
+    def test_folder_parse_and_default(self):
+        self.local("# Boss workspace\n")
+        self.assertEqual(bosskit.boss_folder(self.wt), "")  # the main boss: every folder
+        self.local("# Boss workspace\nDomain: checkout\n")
+        self.assertEqual(bosskit.boss_folder(self.wt), "checkout")
+        self.local("# Boss workspace\nDomain: checkout\nFolder:  Checkout Flow  \n")
+        self.assertEqual(bosskit.boss_folder(self.wt), "Checkout Flow")
+        self.assertIn("Paradev workspaces tagged 'Checkout Flow'", bosskit.instructions(bosskit.load(self.wt)))
+
+    def test_domain_boss_sees_only_its_folder(self):
+        self.local("# Boss workspace\nDomain: checkout\nFolder: checkout flow\n")
+        d = deck_json(self.wt, self.tools)
+        self.assertEqual([w["name"] for w in d["workers"]], ["cart-totals"])
+        self.assertEqual([p["num"] for p in d["prs"]], [1])  # its workspace's PR; no PR-only rows
+        self.assertEqual([a["text"] for a in d["attention"]], ["#1 CI red"])
+        self.assertEqual(bosskit.registry()[bosskit.load(self.wt).bid]["working"], 1)
+
+    def test_main_boss_sees_everything_and_reads_each_workers_status_and_notes(self):
+        self.local("# Boss workspace\n")
+        d = deck_json(self.wt, self.tools)
+        self.assertEqual([w["name"] for w in d["workers"]], ["cart-totals", "search-ui"])
+        self.assertEqual(sorted(p["num"] for p in d["prs"]), [1, 2, 3])
+        self.assertEqual(len(d["attention"]), 3)
+        a, b = d["workers"]
+        self.assertEqual((a["tasks"]["done"], a["tasks"]["total"], a["tasks"]["current"]), (3, 5, "run the http tests"))
+        self.assertEqual(a["notes"], ["- open: retry 4xx?", "- open: log drops?"])
+        self.assertEqual((b["tasks"], b["notes"]), (None, []))
+
+
 if __name__ == "__main__":
     unittest.main()
