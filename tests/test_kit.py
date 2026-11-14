@@ -638,5 +638,32 @@ class Folders(Home):
         self.assertEqual((b["tasks"], b["notes"]), (None, []))
 
 
+class StatusAsk(unittest.TestCase):
+    def test_dry_run_text_has_all_six_questions_and_no_new_work(self):
+        out = subprocess.run([os.path.join(BIN, "boss-status-ask"), "--dry-run", "--as", "Studio 2 boss"],
+                             capture_output=True, text=True, check=True).stdout
+        for n in range(1, 7):
+            self.assertIn(f"({n})", out)
+        self.assertIn("do NOT start new work", out)
+        self.assertIn("Studio 2 boss", out)
+
+    def test_odd_pair_args_exit_with_usage(self):
+        r = subprocess.run([os.path.join(BIN, "boss-status-ask"), "only-a-workspace"], capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class Close(unittest.TestCase):
+    def test_dead_panes_are_terminal_panes_whose_session_ended(self):
+        mod = load_script("boss-close")
+        panes = [("pane-a", "t-live"), ("pane-b", "t-dead"), ("pane-c", None)]
+        self.assertEqual(mod.dead_panes(panes, {"t-live"}), ["pane-b"])
+
+    def test_no_args_prints_usage_and_fails(self):
+        r = subprocess.run([os.path.join(BIN, "boss-close")], capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Session ended", r.stdout)
+

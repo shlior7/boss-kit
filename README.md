@@ -56,6 +56,8 @@ flowchart LR
 | `bin/boss-lesson` | Records and promotes lessons |
 | `bin/boss-migrate` | Moves an older kit's project data into the data root |
 | `bin/boss-watch-done.sh` | The watcher: one per dispatch, run in the background |
+| `bin/boss-status-ask` | Sends the standard six-question status check to a worker session before a cleanup (the status layover) |
+| `bin/boss-close` | Closes sessions by their pane, so no "Session ended" tab stays behind; `--dead` sweeps tabs whose session already ended |
 | `bin/boss-event` | Logs a workspace's stage (sent, DONE, checked, ready, merged, retired) for the pane's stages and timeline |
 | `bin/boss-sync.py` | Keeps your open PRs conflict-free: merges each base into its branch in a throwaway worktree |
 | `bin/boss-tasks.py` | Read-only tracker sync: `none`, or any HTTP endpoint that returns `{"tasks": [...]}` |

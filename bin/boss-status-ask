@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""boss-status-ask: send the standard status check to a worker session (the cleanup question block).
+
+  boss-status-ask [--dry-run] [--as "<who>"] <workspace> <terminal> [<workspace> <terminal> ...]
+
+The boss runs this on EVERY workspace it owns before a cleanup, at each status report and at each DONE,
+so the user always has the layover: which workspaces and sessions exist, why each stays, which can go.
+It clears the input line (ctrl+u: idle sessions show auto-suggestions that are not the boss's), sends the
+questions (submitted), and logs a `msg` event. --dry-run prints the text only. Use the FULL workspace and
+terminal UUIDs. Only ask sessions your ledger dispatch rows name as yours; for another boss's, boss-mail.
+"""
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+QUESTIONS = (
+    "Status check from the {who} (Lior asked me to clean up finished work). Reply in <= 6 lines, "
+    "do NOT start new work: "
+    "(1) is your task fully done? "
+    '(2) is everything pushed: give the pushed sha and branch/PR, and say "unpushed: none" or list it; '
+    "(3) uncommitted or untracked files in your worktree? "
+    "(4) any dev server, test DB, container or background process still running from you? stop them now if yes; "
+    "(5) OPEN items you still own (decisions, review threads, not-run checks)? "
+    "(6) can this workspace be archived (worktree folder removed; branch stays)? yes/no + why."
+)
+
+
+def text(who="boss"):
+    return QUESTIONS.format(who=who)
+
+
+def send(ws, term, who):
+    base = ["superset", "terminals", "send", "--workspace", ws, "--terminal", term, "--local"]
+    subprocess.run(base + ["--keys", "ctrl+u"], check=True)
+    subprocess.run(base + ["--text", text(who)], check=True)
+
+
+def main(argv):
+    dry = "--dry-run" in argv
+    who = "boss"
+    args = []
+    it = iter([a for a in argv if a != "--dry-run"])
+    for a in it:
+        if a == "--as":
+            who = next(it, who)
+        else:
+            args.append(a)
+    if dry and not args:
+        print(text(who))
+        return
+    if not args or len(args) % 2:
+        sys.exit(__doc__)
+    for ws, term in zip(args[0::2], args[1::2]):
+        if dry:
+            print(f"{ws} {term}\n{text(who)}")
+            continue
+        send(ws, term, who)
+        subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), "boss-event"), ws, "msg", "status check"])
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
