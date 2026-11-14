@@ -41,7 +41,7 @@ def dead_panes(pane_list, live):
 
 
 def resolve(prefix, ids):
-    hits = [i for i in ids if i.startswith(prefix)]
+    hits = sorted({i for i in ids if i.startswith(prefix)})
     if len(hits) != 1:
         raise SystemExit(f"boss-close: terminal {prefix!r} matches {len(hits)} sessions")
     return hits[0]

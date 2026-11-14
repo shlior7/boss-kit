@@ -662,6 +662,10 @@ class Close(unittest.TestCase):
         panes = [("pane-a", "t-live"), ("pane-b", "t-dead"), ("pane-c", None)]
         self.assertEqual(mod.dead_panes(panes, {"t-live"}), ["pane-b"])
 
+    def test_resolve_counts_a_terminal_listed_as_session_and_pane_once(self):
+        mod = load_script("boss-close")
+        self.assertEqual(mod.resolve("0a41", ["0a419636-x", "0a419636-x", "ffff"]), "0a419636-x")
+
     def test_no_args_prints_usage_and_fails(self):
         r = subprocess.run([os.path.join(BIN, "boss-close")], capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
