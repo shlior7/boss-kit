@@ -14,7 +14,7 @@ mkdir -p "$DIR"
 
 free_pct() { sysctl -n kern.memorystatus_level 2>/dev/null || echo 0; }
 level() { sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null || echo 4; }
-swap_pct() { sysctl -n vm.swapusage | awk '{t=$3; u=$6; gsub("M","",t); gsub("M","",u); print (t>0)? int(u*100/t) : 0}'; }
+swap_pct() { sysctl -n vm.swapusage | awk '{t=$3; u=$6; gsub("M","",t); gsub("M","",u); print (t+0>0)? int(u*100/t) : 0}'; }
 reap() { for s in "$DIR"/slot.*; do [ -d "$s" ] || continue; p=$(cat "$s/pid" 2>/dev/null); kill -0 "$p" 2>/dev/null || rm -rf "$s"; done; }
 
 if [ "${1:-}" = "--status" ]; then
