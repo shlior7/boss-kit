@@ -65,3 +65,26 @@ test('the pane passes its workspace, and draws its inbox, its bosses, one WORKER
   expect(open.filter(t => t.endsWith('↗'))).toEqual(['page ↗', 'demo ↗', 'open workspace ↗', 'open on GitHub ↗'])
   expect(texts).toContain('tracker: 2 mine · 1 P0/P1 · 1 in progress')
 })
+
+test("each message the boss sends a worker is logged as that workspace's msg event; a key-only send is not", async ($, on) => {
+  const runs: string[][] = []
+  mock.env(on, { SUPERSET_WORKSPACE_ID: 'ws-me' })
+  mock.clock(on)
+  on('fs.read', async () => ({ value: '# Boss workspace ws-me\n' }))
+  on('session.cwd', async () => ({ value: '/w/boss' }))
+  on('session.start', async () => ({ cwd: '/w/boss' }))
+  on('command.register', async (_$, e) => ({ value: { command: e.name } }) as never)
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('process.run', async (_$, e) => {
+    runs.push([...e.argv])
+    return { value: { exitCode: 0, stdout: JSON.stringify(DECK), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('tool.call', async () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: '' }) as never)
+  await $.session.start({ cwd: '/w/boss', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'superset terminals send --workspace 1a2b3c4d-full --terminal t --keys ctrl+u --local' })
+  await $.tool.call({ tool: 'Bash', command: 'superset terminals send --workspace 1a2b3c4d-full --terminal t --text "also cover 429" --local' })
+  const logged = runs.filter(r => r.includes('msg'))
+  expect(logged.map(r => r.slice(-4))).toEqual([['ws-me', '1a2b3c4d-full', 'msg', 'also cover 429']])
+  // The send's own refresh runs unawaited; one awaited refresh lets it settle before the test ends.
+  await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
+})

@@ -28,7 +28,14 @@ export type Worker = {
   prTag?: string
   /** its newest stage events, oldest first */
   events?: StageEvent[]
+  /** its Paradev tags (sidebar folders) */
+  tags?: string[]
+  /** its task progress, from <worktree>/.boss/status.json, which its worker pane writes */
+  tasks?: TaskProgress | null
+  /** the last lines of <worktree>/.boss/notes.md: its worker's decisions and open questions */
+  notes?: string[]
 }
+export type TaskProgress = { done: number; total: number; current: string; at: number }
 export type Watcher = { ws: string; term: string; ageS: number; stale: boolean }
 export type Pr = {
   /** owner/repo */
@@ -96,8 +103,45 @@ export type Deck = {
   error?: string
 }
 
+/** One DELIVERED line of a worker's view: a pushed commit ("commit") or a stage event (its stage). */
+export type Delivered = { at: number; hm: string; kind: string; text: string }
+/** A message the boss sent this workspace (a "msg" event). */
+export type BossMsg = { at: number; hm: string; text: string }
+/** A worker session's own view: its dispatch row, boss, PR, delivered work, notes and the boss's messages. */
+export type WorkerView = {
+  project: string
+  task: string
+  /** the ledger task cell without its id */
+  goal: string
+  ledger: string
+  date: string
+  ws: string
+  name: string
+  branch: string
+  base: string
+  /** commits origin/<base> has that HEAD lacks */
+  behind: number
+  pr: Pr | null
+  proof: ProofLink[]
+  boss: { id: string; workspace: string }
+  /** its newest stage event other than a message */
+  stage: StageEvent | null
+  /** the last dispatch (epoch s), 0 if none logged */
+  sentAt: number
+  delivered: Delivered[]
+  notes: string[]
+  /** newest first */
+  msgs: BossMsg[]
+}
+export type WorkerDeck = { at: number; worker: WorkerView | null; error?: string }
+/** One item of the session's own task list (TodoWrite or the Task tools). */
+export type Task = { id: string; subject: string; status: 'pending' | 'in_progress' | 'completed'; active?: string }
+/** What the worker pane reads from its own session: whether a turn runs, when the last one began, the task list,
+ * the latest activity and the context use. */
+export type Live = { busy: boolean; turnAt: number; tasks: Task[]; now: string; ctx: number | null }
+
 declare module 'claude-code' {
   interface PluginState {
-    'boss-deck': { deck: Shaped<Deck | null>; peek: Shaped<Peek | null> }
+    'boss-deck': { deck: Shaped<Deck | null>; peek: Shaped<Peek | null>; mine: Shaped<WorkerDeck | null>; live: Shaped<Live | null> }
   }
 }
