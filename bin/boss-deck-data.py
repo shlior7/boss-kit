@@ -13,7 +13,7 @@ Paths and project resolution: bin/bosskit.py.
 
 Worker mode (--worker): the same pane in a dispatched worker's own session. It finds the workspace's newest
 dispatch row across every project's ledger, its boss, its PR (the boss's fetch and cache), pushed commits, its
-events and the messages the boss sent it, and keeps the worktree's .boss/ (notes.md, status.json) git-ignored.
+events and the messages the boss sent it, and keeps the worktree's .boss-worker/ (notes.md, status.json) git-ignored.
 
 usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--cwd DIR] [--selftest]
        boss-deck-data.py --worker --workspace ID [--cwd DIR] [--status JSON]
@@ -22,7 +22,7 @@ usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--cwd DIR
                    rename this boss's own Paradev workspace to BOSS
   --workspace, --cwd: the session's workspace id and directory, which the mod passes so its process
                       resolves the same boss as the session's shell
-  --status: the worker pane's task progress, {tasks_done, tasks_total, current}, written to .boss/status.json
+  --status: the worker pane's task progress, {tasks_done, tasks_total, current}, written to .boss-worker/status.json
 """
 import json
 import os
@@ -195,15 +195,15 @@ def in_folder(tags, folder):
 
 
 def notes_tail(wt, n=NOTE_ROWS):
-    """The last few lines of the worktree's .boss/notes.md, which its worker keeps: decisions and open questions."""
-    lines = bosskit._read(os.path.join(wt, ".boss", "notes.md")).splitlines() if wt else []
+    """The last few lines of the worktree's .boss-worker/notes.md, which its worker keeps: decisions and open questions."""
+    lines = bosskit._read(os.path.join(wt, ".boss-worker", "notes.md")).splitlines() if wt else []
     return [l.strip()[:120] for l in lines if l.strip() and not l.lstrip().startswith("#")][-n:]
 
 
 def read_status(wt):
-    """The worker pane's task progress in <worktree>/.boss/status.json, or None."""
+    """The worker pane's task progress in <worktree>/.boss-worker/status.json, or None."""
     try:
-        s = json.load(open(os.path.join(wt, ".boss", "status.json")))
+        s = json.load(open(os.path.join(wt, ".boss-worker", "status.json")))
         return {"done": int(s["tasks_done"]), "total": int(s["tasks_total"]), "current": str(s.get("current") or "")[:80],
                 "at": int(s.get("at") or 0)}
     except (OSError, ValueError, KeyError, TypeError):
@@ -211,15 +211,15 @@ def read_status(wt):
 
 
 def exclude_boss_dir(wt):
-    """Adds .boss/ to the worktree's .git/info/exclude once, so its notes and status are never committed."""
+    """Adds .boss-worker/ to the worktree's .git/info/exclude once, so its notes and status are never committed."""
     path = bosskit._git(wt, "rev-parse", "--git-path", "info/exclude")
     if not path:
         return
     path = os.path.join(wt, path)
-    if ".boss/" not in bosskit._read(path).split():
+    if ".boss-worker/" not in bosskit._read(path).split():
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a") as f:
-            f.write("\n.boss/\n")
+            f.write("\n.boss-worker/\n")
 
 
 def snapshot(cfg):
@@ -520,15 +520,15 @@ def delivered(commits, evs, n=DELIVERED_ROWS):
 
 
 def write_status(wt, status, now=None):
-    """Writes the worker pane's task progress to <worktree>/.boss/status.json, which the boss's row reads."""
+    """Writes the worker pane's task progress to <worktree>/.boss-worker/status.json, which the boss's row reads."""
     try:
         s = json.loads(status)
-        os.makedirs(os.path.join(wt, ".boss"), exist_ok=True)
-        bosskit.save_json(os.path.join(wt, ".boss", "status.json"),
+        os.makedirs(os.path.join(wt, ".boss-worker"), exist_ok=True)
+        bosskit.save_json(os.path.join(wt, ".boss-worker", "status.json"),
                           {"tasks_done": int(s["tasks_done"]), "tasks_total": int(s["tasks_total"]),
                            "current": str(s.get("current") or "")[:80], "at": int(now or time.time())})
     except (OSError, ValueError, KeyError, TypeError):
-        pass  # a .boss file (a project hint) where the folder would go, or a bad --status: progress just doesn't reach the boss
+        pass  # an unwritable worktree, or a bad --status: progress just does not reach the boss
 
 
 def worker_view(home, ws, cwd, status=None, fresh=False):
@@ -546,7 +546,7 @@ def worker_view(home, ws, cwd, status=None, fresh=False):
     bid = worker_boss(reg, project, named)
     cache = os.path.join(pdir, "bosses", bid, "cache") if bid else ""
     if not os.path.isdir(cache):
-        cache = os.path.join(wt, ".boss")
+        cache = os.path.join(wt, ".boss-worker")
         os.makedirs(cache, exist_ok=True)
     branch = bosskit._git(wt, "rev-parse", "--abbrev-ref", "HEAD")
     pr = next((p for p in sorted(prs(cfg, cache, fresh), key=lambda p: not p.get("primary")) if branch and p["head"] == branch), None)
@@ -725,7 +725,7 @@ if __name__ == "__main__":
         open(os.path.join(d, "junk.txt"), "w").write("x")
         got = mail(d)
         assert got["count"] == 2 and [m["subject"] for m in got["items"]] == ["s1", "s2"], got
-        # worker mode: the dispatch row in whichever project has it, DELIVERED newest first, .boss/ files
+        # worker mode: the dispatch row in whichever project has it, DELIVERED newest first, .boss-worker/ files
         home = tempfile.mkdtemp()
         for name, row in (("gadgets", ""), ("widgets", "| 2026-01-02 | fix-42: retry webhooks | 1a2b3c4d | mid | DISPATCHED |\n")):
             os.makedirs(os.path.join(home, name))
@@ -738,7 +738,7 @@ if __name__ == "__main__":
         wt = tempfile.mkdtemp()
         assert notes_tail(wt) == [] and read_status(wt) is None
         write_status(wt, json.dumps({"tasks_done": 3, "tasks_total": 5, "current": "run tests"}), now=7)
-        open(os.path.join(wt, ".boss", "notes.md"), "w").write("# Notes\n\n- decided: cap at 5\n- open: retry 4xx?\n")
+        open(os.path.join(wt, ".boss-worker", "notes.md"), "w").write("# Notes\n\n- decided: cap at 5\n- open: retry 4xx?\n")
         assert read_status(wt) == {"done": 3, "total": 5, "current": "run tests", "at": 7} and notes_tail(wt, 1) == ["- open: retry 4xx?"]
         assert in_folder(["Checkout Flow"], "checkout flow") and not in_folder(["UI"], "checkout") and in_folder([], "")
         print("ok")

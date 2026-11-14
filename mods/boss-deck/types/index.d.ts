@@ -30,9 +30,9 @@ export type Worker = {
   events?: StageEvent[]
   /** its Paradev tags (sidebar folders) */
   tags?: string[]
-  /** its task progress, from <worktree>/.boss/status.json, which its worker pane writes */
+  /** its task progress, from <worktree>/.boss-worker/status.json, which its worker pane writes */
   tasks?: TaskProgress | null
-  /** the last lines of <worktree>/.boss/notes.md: its worker's decisions and open questions */
+  /** the last lines of <worktree>/.boss-worker/notes.md: its worker's decisions and open questions */
   notes?: string[]
 }
 export type TaskProgress = { done: number; total: number; current: string; at: number }

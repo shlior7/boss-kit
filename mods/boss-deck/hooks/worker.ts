@@ -28,7 +28,7 @@ export function taskList(msgs: readonly SessionMessage[]): Task[] {
   return tasks
 }
 
-/** What .boss/status.json carries for the boss's row. */
+/** What .boss-worker/status.json carries for the boss's row. */
 export const progress = (tasks: Task[]) => {
   const cur = tasks.find(t => t.status === 'in_progress')
   return { tasks_done: tasks.filter(t => t.status === 'completed').length, tasks_total: tasks.length, current: cur?.active || cur?.subject || '' }

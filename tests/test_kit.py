@@ -526,6 +526,18 @@ class WorkerView(Home):
         self.assertEqual(self.deck.worker_boss(reg, "widgets", ""), "ws-main")
         self.assertEqual(self.deck.worker_boss({}, "widgets", ""), "")
 
+    def test_a_boss_hint_file_and_the_worker_files_live_side_by_side(self):
+        open(os.path.join(self.wt, ".boss"), "w").write("project: widgets\n")  # bosskit's project hint, a file
+        self.ledger("widgets", "| 2026-01-02 | fix-42: retry webhooks | 1a2b3c4d | mid | DISPATCHED | | |\n")
+        json.dump([], open(os.path.join(self.fix, "prs.json"), "w"))
+        os.makedirs(os.path.join(self.wt, ".boss-worker"))
+        open(os.path.join(self.wt, ".boss-worker", "notes.md"), "w").write("- open: retry 4xx?\n")
+        status = json.dumps({"tasks_done": 2, "tasks_total": 4, "current": "run the tests"})
+        w = deck_json(self.wt, self.tools, "--worker", "--workspace", self.WS, "--status", status)["worker"]
+        self.assertEqual(w["notes"], ["- open: retry 4xx?"])
+        self.assertEqual((self.deck.read_status(self.wt)["done"], self.deck.read_status(self.wt)["total"]), (2, 4))
+        self.assertEqual(bosskit.project_name(self.wt), "widgets")  # the hint still resolves
+
     def test_the_view_joins_pr_commits_events_messages_and_keeps_boss_dir_ignored(self):
         origin = os.path.join(self.tmp, "origin.git")
         git(self.tmp, "init", "-q", "--bare", origin)
@@ -558,11 +570,11 @@ class WorkerView(Home):
         self.assertEqual((w["stage"]["stage"], w["sentAt"]), ("DONE", 900))
         self.assertTrue(os.path.exists(os.path.join(bdir, "cache", "deck-prs.json")))  # the boss's PR cache
         exclude = subprocess.run(["git", "-C", self.wt, "rev-parse", "--git-path", "info/exclude"], capture_output=True, text=True).stdout.strip()
-        self.assertIn(".boss/", open(os.path.join(self.wt, exclude)).read().split())
+        self.assertIn(".boss-worker/", open(os.path.join(self.wt, exclude)).read().split())
         self.assertEqual(self.deck.read_status(self.wt)["total"], 3)
         self.assertEqual(subprocess.run(["git", "-C", self.wt, "status", "--porcelain"], capture_output=True, text=True).stdout, "")
         deck_json(self.wt, self.tools, "--worker", "--workspace", self.WS)  # exclude is added once
-        self.assertEqual(open(os.path.join(self.wt, exclude)).read().split().count(".boss/"), 1)
+        self.assertEqual(open(os.path.join(self.wt, exclude)).read().split().count(".boss-worker/"), 1)
 
 
 class Folders(Home):
@@ -576,10 +588,10 @@ class Folders(Home):
         os.makedirs(self.fix)
         self.tools = stub_tools(self.tmp, self.fix)
         self.worker_wt = os.path.join(self.tmp, "worker-a")
-        os.makedirs(os.path.join(self.worker_wt, ".boss"))
+        os.makedirs(os.path.join(self.worker_wt, ".boss-worker"))
         json.dump({"tasks_done": 3, "tasks_total": 5, "current": "run the http tests", "at": 1},
-                  open(os.path.join(self.worker_wt, ".boss", "status.json"), "w"))
-        open(os.path.join(self.worker_wt, ".boss", "notes.md"), "w").write("- decided: cap at 5\n- open: retry 4xx?\n- open: log drops?\n")
+                  open(os.path.join(self.worker_wt, ".boss-worker", "status.json"), "w"))
+        open(os.path.join(self.worker_wt, ".boss-worker", "notes.md"), "w").write("- decided: cap at 5\n- open: retry 4xx?\n- open: log drops?\n")
         ids = {"a": "aaaaaaaa-0000-4000-8000-000000000001", "b": "bbbbbbbb-0000-4000-8000-000000000002"}
         open(os.path.join(self.home, "widgets", "ledger.md"), "w").write(
             "## Dispatches 2026-01-02\n\n| Date | Task | Workspace | Model | Status |\n|---|---|---|---|---|\n"

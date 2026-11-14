@@ -302,7 +302,7 @@ export const register: Register = on => {
           {v.delivered.length > 0 && section('delivered', `${v.delivered.length} newest`)}
           {v.delivered.map(r => field(r.hm, text(r.kind === 'commit' ? r.text : [r.kind, r.text].filter(Boolean).join('  '), true)))}
 
-          {v.notes.length > 0 && section('notes', '.boss/notes.md')}
+          {v.notes.length > 0 && section('notes', '.boss-worker/notes.md')}
           {v.notes.map(n => text(n, true))}
 
           {v.msgs.length > 0 && section('from boss', `${fresh} new`)}

@@ -140,7 +140,7 @@ export function workerDetails(w: Worker, screen: string, pr: Detail[] = []): Det
   if (rows.length === 0) rows.push({ label: '', value: doneElsewhere || `no stage log yet · dispatched ${w.date || '?'}` })
   if (w.taskText && w.taskText !== w.task) rows.unshift({ label: 'task', value: w.taskText })
   rows.push({ label: 'next', value: nextStep(w), color: w.stage === 'move' ? 'warning' : undefined })
-  // What its worker pane reports: task progress (.boss/status.json) and its notes' last lines (.boss/notes.md).
+  // What its worker pane reports: task progress (.boss-worker/status.json) and its notes' last lines (.boss-worker/notes.md).
   const t = w.tasks
   if (t?.total) rows.push({ label: 'tasks', value: `${t.done} of ${t.total}${t.current ? ` · now ${t.current}` : ''}` })
   rows.push(...(w.notes ?? []).map((n, i) => ({ label: i ? '' : 'notes', value: n })), ...pr)
