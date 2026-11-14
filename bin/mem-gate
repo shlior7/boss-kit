@@ -1,0 +1,43 @@
+#!/bin/bash
+# mem-gate -- <command...>
+# Machine-wide admission gate for heavy local runs (full test suites, Playwright stacks, builds).
+# Waits for a free slot (MEM_GATE_SLOTS, default 2) and for memory headroom, then runs the command.
+# Headroom = the kernel's pressure level is normal (kern.memorystatus_vm_pressure_level 1; 2 = warn, 4 = critical) AND
+# kern.memorystatus_level (available %) >= MEM_GATE_MIN_FREE (default 25). Swap % is shown but not gated: macOS keeps
+# swap files long after pressure ends, so a swap threshold would block forever.
+# Slots are lock dirs under $MEM_GATE_DIR (default ~/.cache/mem-gate); a dead holder's slot is reclaimed.
+# `mem-gate --status` prints free %, swap % and the slot holders. Exit code is the command's.
+set -u
+DIR=${MEM_GATE_DIR:-$HOME/.cache/mem-gate}; SLOTS=${MEM_GATE_SLOTS:-2}
+MIN_FREE=${MEM_GATE_MIN_FREE:-25}; POLL=${MEM_GATE_POLL:-20}
+mkdir -p "$DIR"
+
+free_pct() { sysctl -n kern.memorystatus_level 2>/dev/null || echo 0; }
+level() { sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null || echo 4; }
+swap_pct() { sysctl -n vm.swapusage | awk '{t=$3; u=$6; gsub("M","",t); gsub("M","",u); print (t+0>0)? int(u*100/t) : 0}'; }
+reap() { for s in "$DIR"/slot.*; do [ -d "$s" ] || continue; p=$(cat "$s/pid" 2>/dev/null); kill -0 "$p" 2>/dev/null || rm -rf "$s"; done; }
+
+if [ "${1:-}" = "--status" ]; then
+  reap; echo "pressure_level=$(level) free=$(free_pct)% swap=$(swap_pct)% slots=$SLOTS min_free=$MIN_FREE"
+  for s in "$DIR"/slot.*; do [ -d "$s" ] && echo "  $(basename "$s"): pid $(cat "$s/pid") $(cat "$s/cmd" 2>/dev/null)"; done; exit 0
+fi
+[ "${1:-}" = "--" ] && shift
+[ $# -gt 0 ] || { echo "usage: mem-gate -- <command...> | mem-gate --status" >&2; exit 2; }
+
+said=""; slot=""
+while :; do
+  reap
+  f=$(free_pct); w=$(swap_pct); l=$(level)
+  if [ "${l:-4}" -eq 1 ] && [ "${f:-0}" -ge "$MIN_FREE" ]; then
+    for i in $(seq 1 "$SLOTS"); do
+      if mkdir "$DIR/slot.$i" 2>/dev/null; then echo $$ > "$DIR/slot.$i/pid"; echo "$*" | cut -c1-120 > "$DIR/slot.$i/cmd"; slot="$DIR/slot.$i"; break; fi
+    done
+  fi
+  [ -n "$slot" ] && break
+  msg="mem-gate: waiting (level=${l} free=${f}% swap=${w}%, slots busy or headroom low)"
+  [ "$msg" != "$said" ] && { echo "$msg" >&2; said=$msg; }
+  sleep "$POLL"
+done
+trap 'rm -rf "$slot"' EXIT
+echo "mem-gate: admitted to $(basename "$slot") (free=${f}% swap=${w}%)" >&2
+"$@"
