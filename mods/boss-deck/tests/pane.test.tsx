@@ -92,3 +92,30 @@ test("each message the boss sends a worker is logged as that workspace's msg eve
   // The send's own refresh runs unawaited; one awaited refresh lets it settle before the test ends.
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
 })
+
+test('the boss pane shows an attention line once the kit on disk moves past the one it loaded, and the PR drift note on a row', async ($, on) => {
+  let kit = 'a1b2c3d'
+  const behind = { ...PR57, behind: 3 }
+  mock.env(on, { SUPERSET_WORKSPACE_ID: 'ws-me' })
+  mock.clock(on)
+  on('fs.read', async () => ({ value: '# Boss workspace ws-me\n' }))
+  on('session.cwd', async () => ({ value: '/w/boss' }))
+  on('session.start', async () => ({ cwd: '/w/boss' }))
+  on('command.register', async (_$, e) => ({ value: { command: e.name } }) as never)
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('process.run', async () => {
+    const deck: Deck = { ...DECK, kit, workers: [DECK.workers[0]!, { ...DECK.workers[1]!, pr: behind }], prs: [DECK.prs[0]!, DECK.prs[1]!, behind] }
+    return { value: { exitCode: 0, stdout: JSON.stringify(deck), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  const run = () => $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
+  await $.session.start({ cwd: '/w/boss', surface: 'terminal', isInteractive: true })
+  await run()
+  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const texts = async () => (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
+  expect(await texts()).not.toContain('kit updated · run /reload-plugins')
+  kit = 'e4f5a6b'
+  await run()
+  const after = await texts()
+  expect(after).toContain('kit updated · run /reload-plugins')
+  expect(after.find(t => t.startsWith('web-login'))?.replace(/ +/g, ' ')).toBe('web-login #57 in review · 3 behind main · waiting on review')
+})

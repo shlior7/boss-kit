@@ -314,6 +314,31 @@ class Deck(Home):
                       open(os.path.join(ctx.inbox, f"m{i}.json"), "w"))
         self.assertEqual(deck.mail(ctx.inbox)["count"], 3)
 
+    def test_pr_rows_carry_drift_from_the_pr_fetch_and_the_compare(self):
+        deck = load_script("boss-deck-data.py")
+        pr = {"number": 7, "title": "t", "headRefOid": "abc123", "baseRefName": "main", "mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND"}
+        listed = json.dumps([pr, {**pr, "number": 8, "headRefOid": "def456", "mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY"}])
+        calls = []
+
+        def fake_run(argv, timeout=40):
+            calls.append(argv)
+            return listed if argv[:3] == ["gh", "pr", "list"] else ("3\n" if "abc123" in argv[2] else "garbage")
+
+        with mock.patch.object(deck, "run", fake_run):
+            rows = deck.prs({"repo": "acme/widgets", "me": "octocat"}, self.tmp, fresh=True)
+        self.assertEqual([(r["num"], r["behind"], r["conflicts"]) for r in rows], [(7, 3, False), (8, 0, True)])
+        self.assertIn("repos/acme/widgets/compare/main...abc123", calls[1][2])
+        self.assertIn("mergeStateStatus", deck.PR_FIELDS)
+
+    def test_kit_head_is_the_short_sha_of_the_kit_checkout_or_empty(self):
+        deck = load_script("boss-deck-data.py")
+        git(self.wt, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "x")
+        with mock.patch.object(bosskit, "KIT", self.wt):
+            head = deck.kit_head()
+        self.assertEqual(head, subprocess.run(["git", "-C", self.wt, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip())
+        with mock.patch.object(bosskit, "KIT", self.tmp):  # not a git checkout
+            self.assertEqual(deck.kit_head(), "")
+
     def test_board_reads_the_tracker_snapshot_or_the_migrated_one(self):
         deck = load_script("boss-deck-data.py")
         os.environ["BOSS_PROJECT"] = "widgets"
@@ -736,6 +761,77 @@ class StatusAsk(unittest.TestCase):
     def test_odd_pair_args_exit_with_usage(self):
         r = subprocess.run([os.path.join(BIN, "boss-status-ask"), "only-a-workspace"], capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
+
+
+class KitUpdate(Home):
+    """bin/boss-kit-update against a temp origin and kit clone, and a fake `superset` that records any call."""
+
+    def setUp(self):
+        super().setUp()
+        self.origin, self.kit = (os.path.join(self.tmp, n) for n in ("origin", "kit"))
+        os.makedirs(self.origin)
+        git(self.origin, "init", "-q", "-b", "main")
+        self.commit(self.origin, "one")
+        subprocess.run(["git", "clone", "-q", self.origin, self.kit], check=True, capture_output=True)
+        self.bindir = os.path.join(self.tmp, "fakebin")
+        self.calls = os.path.join(self.tmp, "superset-calls")
+        os.makedirs(self.bindir)
+        fake = os.path.join(self.bindir, "superset")
+        open(fake, "w").write(f'#!/bin/sh\necho "$@" >> "{self.calls}"\n')
+        os.chmod(fake, 0o755)
+        now = time.time()
+        json.dump({"live-a": {"project": "widgets", "workspace": "live-a", "heartbeat": now},
+                   "old-b": {"project": "gadgets", "workspace": "old-b", "heartbeat": now - 4000}},
+                  open(os.path.join(self.home, "bosses.json"), "w"))
+
+    def commit(self, repo, name):
+        open(os.path.join(repo, name), "w").write(name)
+        git(repo, "add", name)
+        git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", f"add {name}")
+
+    def update(self):
+        env = {**os.environ, "BOSS_KIT": self.kit, "PATH": self.bindir + os.pathsep + os.environ["PATH"]}
+        return subprocess.run([os.path.join(BIN, "boss-kit-update")], capture_output=True, text=True, env=env)
+
+    def inbox(self, project, boss):
+        d = os.path.join(self.home, project, "bosses", boss, "inbox")
+        return [json.load(open(os.path.join(d, f))) for f in sorted(os.listdir(d)) if f.endswith(".json")] if os.path.isdir(d) else []
+
+    def test_pull_prints_the_range_and_mails_only_live_bosses_without_touching_a_terminal(self):
+        self.commit(self.origin, "two")
+        r = self.update()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"kit updated [0-9a-f]+\.\.[0-9a-f]+\n[0-9a-f]+ add two")
+        self.assertTrue(os.path.exists(os.path.join(self.kit, "two")))
+        (m,) = self.inbox("widgets", "live-a")
+        self.assertEqual((m["kind"], m["from_project"]), ("fyi", "kit"))
+        self.assertRegex(m["subject"], r"^kit updated [0-9a-f]+\.\.[0-9a-f]+: run /reload-plugins$")
+        self.assertIn("add two", m["body"])
+        self.assertEqual(self.inbox("gadgets", "old-b"), [])  # no heartbeat for 30 min: not live
+        self.assertFalse(os.path.exists(self.calls))  # nothing was sent to any terminal
+
+    def test_up_to_date_mails_nobody(self):
+        r = self.update()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("already up to date", r.stdout)
+        self.assertEqual(self.inbox("widgets", "live-a"), [])
+
+    def test_dirty_kit_is_refused_and_left_alone(self):
+        self.commit(self.origin, "two")
+        open(os.path.join(self.kit, "one"), "w").write("edited")
+        r = self.update()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("uncommitted", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.kit, "two")))
+        self.assertEqual(self.inbox("widgets", "live-a"), [])
+
+    def test_diverged_kit_is_refused(self):
+        self.commit(self.origin, "two")
+        self.commit(self.kit, "local")
+        r = self.update()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("cannot fast-forward", r.stderr)
+        self.assertEqual(self.inbox("widgets", "live-a"), [])
 
 
 FAKE_GH = """#!/bin/sh
