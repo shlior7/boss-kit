@@ -217,6 +217,30 @@ def events(bdir):
     return sorted(out, key=lambda e: e["at"])
 
 
+# ---- leftovers: what archiving a worktree would lose (BOSS-template.md section 8) ------------
+
+# Ignored output a fresh checkout rebuilds: dependency and build folders, caches, the boss's worker notes.
+REBUILDABLE = {"node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "dist", "build",
+               "out", ".next", ".turbo", ".cache", ".parcel-cache", "coverage", "target", ".gradle", ".boss-worker"}
+
+
+def leftovers(wt, branch):
+    """Uncommitted files, commits not on origin/<branch>, and ignored files beyond rebuildable output, one line each.
+    [] means the worktree can be archived."""
+    if not os.path.isdir(wt):
+        return [f"worktree {wt} is missing"]
+    out = []
+    for line in subprocess.run(["git", "-C", wt, "status", "--porcelain", "--ignored"], capture_output=True, text=True).stdout.splitlines():
+        path = line[3:].rstrip("/")
+        if not line.startswith("!! "):
+            out.append(f"uncommitted: {line}")
+        elif not REBUILDABLE.intersection(path.split("/")) and not path.endswith(".pyc"):
+            out.append(f"ignored: {path}")
+    if not _git(wt, "rev-parse", "--verify", "-q", f"origin/{branch}"):
+        return out + [f"unpushed: origin/{branch} not found, cannot tell"]
+    return out + [f"unpushed: {c}" for c in _git(wt, "log", "--oneline", f"origin/{branch}..HEAD").splitlines()]
+
+
 # ---- lessons --------------------------------------------------------------------------------
 
 def lesson_entries(text):
