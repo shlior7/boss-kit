@@ -652,6 +652,147 @@ class StatusAsk(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
 
 
+FAKE_GH = """#!/bin/sh
+case "$1 $2" in
+  "pr view") if [ -f "$FIX/merged" ]; then cat "$FIX/pr-merged.json"; else cat "$FIX/pr.json"; fi;;
+  "api graphql") cat "$FIX/threads.json";;
+  "pr merge") echo "$*" >> "$FIX/merge.log"
+    case "$*" in *--admin*) ;; *) if [ -f "$FIX/policy" ]; then
+      echo "X Pull request acme/widgets#7 is not mergeable: the base branch policy prohibits the merge." >&2; exit 1; fi;; esac
+    touch "$FIX/merged";;
+  "api repos/"*"/rules/branches/"*) cat "$FIX/rules.json";;
+  "api repos/"*"/rulesets/"*) cat "$FIX/ruleset.json";;
+  *) exit 1;;
+esac
+"""
+
+
+class Merge(Home):
+    """boss-merge against a fake gh and superset on PATH: what it refuses, what it merges, and the --admin retry."""
+
+    WS = "7e7e7e7e-0000-4000-8000-000000000007"
+    HEAD = "a1b2c3d4e5" + "0" * 30
+
+    def setUp(self):
+        super().setUp()
+        os.environ["BOSS_PROJECT"] = "widgets"
+        self.fix = os.path.join(self.tmp, "fix")
+        stubs = os.path.join(self.tmp, "stubs")
+        os.makedirs(self.fix)
+        os.makedirs(stubs)
+        for tool, body in (("gh", FAKE_GH), ("superset", '#!/bin/sh\n[ "$1 $2" = "workspaces list" ] && cat "$FIX/list.json"\n')):
+            open(os.path.join(stubs, tool), "w").write(body)
+            os.chmod(os.path.join(stubs, tool), 0o755)
+        self.tools = {**os.environ, "PATH": f"{stubs}:/usr/bin:/bin", "FIX": self.fix}
+        self.worker = os.path.join(self.tmp, "worker")
+        os.makedirs(self.worker)
+        git(self.worker, "init", "-q", "-b", "feat/x")
+        git(self.worker, "-c", "user.name=jane", "-c", "user.email=jane@example.com", "commit", "-q", "--allow-empty", "-m", "x")
+        git(self.worker, "update-ref", "refs/remotes/origin/feat/x", "HEAD")
+        self.put("list.json", [{"id": self.WS, "branch": "feat/x", "worktreePath": self.worker}])
+        pr = {"number": 7, "state": "OPEN", "headRefOid": self.HEAD, "headRefName": "feat/x", "baseRefName": "main",
+              "mergeable": "MERGEABLE", "statusCheckRollup": [{"name": "ci", "conclusion": "SUCCESS"}], "author": {"login": "jane"}}
+        self.put("pr.json", pr)
+        self.put("pr-merged.json", {**pr, "state": "MERGED", "mergeCommit": {"oid": "f" * 40}})
+        self.threads()
+        self.ctx = bosskit.load(self.wt)
+
+    def put(self, name, data):
+        json.dump(data, open(os.path.join(self.fix, name), "w"))
+
+    def threads(self, *threads):
+        self.put("threads.json", {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+            {"isResolved": resolved, "path": "src/cart.py", "line": 3,
+             "comments": {"nodes": [{"author": {"login": who}, "body": body} for who, body in comments]}}
+            for resolved, comments in threads]}}}}})
+
+    def merge(self, *args):
+        return subprocess.run([os.path.join(BIN, "boss-merge"), "7", *args], cwd=self.wt, env=self.tools, capture_output=True, text=True)
+
+    def merges(self):
+        return bosskit._read(os.path.join(self.fix, "merge.log")).splitlines()
+
+    def test_head_mismatch_and_no_verified_sha_are_refused(self):
+        r = self.merge("--sha", "9999999")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("refused: head a1b2c3d4e500 is not the verified 9999999", r.stdout)
+        self.assertIn("no verified sha", self.merge().stdout)  # no --sha and no checked event
+        bosskit.add_event(self.ctx, self.WS, "checked", "0123abcd tests green")  # checked an older head
+        self.assertIn("is not the verified 0123abcd", self.merge().stdout)
+        self.assertEqual(self.merges(), [])
+
+    def test_unanswered_thread_is_refused_and_listed(self):
+        self.threads((False, [("rev", "please rename this")]), (False, [("rev", "why?"), ("jane", "because")]))
+        r = self.merge("--sha", self.HEAD[:10])
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout.strip(), "refused: unanswered thread: src/cart.py:3 rev: please rename this")
+        self.assertEqual(self.merges(), [])
+
+    def test_answered_threads_pass_and_the_merge_is_logged_and_checked_for_leftovers(self):
+        self.threads((False, [("rev", "why?"), ("jane", "because")]), (True, [("rev", "nit")]))
+        bosskit.add_event(self.ctx, self.WS, "checked", f"{self.HEAD[:10]} tests green")
+        r = self.merge()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.merges(), [f"pr merge 7 --squash --match-head-commit {self.HEAD}"])
+        self.assertIn("merged PR #7: " + "f" * 40, r.stdout)
+        self.assertIn("leftovers: none", r.stdout)
+        self.assertIn(f"superset workspaces archive {self.WS} --local", r.stdout)
+        self.assertEqual([(e["ws"], e["stage"], e["note"]) for e in bosskit.events(self.ctx.bdir)][-1], (self.WS, "merged", "PR #7"))
+
+    def test_failing_or_pending_checks_and_conflicts_are_refused(self):
+        self.put("pr.json", {**json.load(open(os.path.join(self.fix, "pr.json"))), "mergeable": "CONFLICTING",
+                             "statusCheckRollup": [{"name": "ci", "conclusion": "FAILURE"}, {"context": "lint", "state": "PENDING"}]})
+        out = self.merge("--sha", self.HEAD).stdout
+        for want in ("mergeable is CONFLICTING", "failing check: ci", "pending check: lint"):
+            self.assertIn(want, out)
+        self.assertEqual(self.merges(), [])
+
+    def test_policy_refusal_is_retried_with_admin_only_when_bypass_is_allowed(self):
+        open(os.path.join(self.fix, "policy"), "w").close()
+        self.put("rules.json", [{"type": "pull_request", "ruleset_id": 5}])
+        self.put("ruleset.json", {"id": 5, "current_user_can_bypass": "never"})
+        r = self.merge("--sha", self.HEAD)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("cannot bypass", r.stderr)
+        self.assertEqual(self.merges(), [f"pr merge 7 --squash --match-head-commit {self.HEAD}"])
+        os.remove(os.path.join(self.fix, "merge.log"))
+        self.put("ruleset.json", {"id": 5, "current_user_can_bypass": "always"})
+        r = self.merge("--sha", self.HEAD)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("retrying with --admin", r.stdout)
+        self.assertEqual(self.merges(), [f"pr merge 7 --squash --match-head-commit {self.HEAD}",
+                                         f"pr merge 7 --squash --match-head-commit {self.HEAD} --admin"])
+
+    def test_leftovers_are_local_changes_unpushed_commits_and_ignored_files_beyond_rebuildable_output(self):
+        self.assertEqual(bosskit.leftovers(self.worker, "feat/x"), [])
+        open(os.path.join(self.worker, ".gitignore"), "w").write("node_modules/\n.env\n")
+        git(self.worker, "add", ".gitignore")
+        git(self.worker, "-c", "user.name=jane", "-c", "user.email=jane@example.com", "commit", "-q", "-m", "ignore")
+        os.makedirs(os.path.join(self.worker, "node_modules", "left-pad"))
+        open(os.path.join(self.worker, "node_modules", "left-pad", "index.js"), "w").close()
+        open(os.path.join(self.worker, ".env"), "w").write("TOKEN=x\n")
+        open(os.path.join(self.worker, "notes.txt"), "w").close()
+        got = bosskit.leftovers(self.worker, "feat/x")
+        self.assertEqual([g.split(" ")[0] for g in got], ["uncommitted:", "ignored:", "unpushed:"])
+        self.assertIn("ignored: .env", got)
+        self.assertIn("?? notes.txt", got[0])
+        self.assertIn("unpushed: origin/gone not found, cannot tell", bosskit.leftovers(self.worker, "gone"))
+
+
+class Verify(unittest.TestCase):
+    def test_junk_guard_flags_committed_junk_only(self):
+        verify = load_script("verify")
+        repo = tempfile.mkdtemp()
+        git(repo, "init", "-q")
+        for path in ("ok.py", ".DS_Store", "pkg/__pycache__/m.cpython-312.pyc", "default.profraw", "docs/a.tmp", "docs/tmp.md"):
+            os.makedirs(os.path.dirname(os.path.join(repo, path)), exist_ok=True)
+            open(os.path.join(repo, path), "w").close()
+        git(repo, "add", "-f", ".")
+        self.assertEqual(sorted(verify.junk(verify.git(repo, "ls-files").splitlines())),
+                         [".DS_Store", "default.profraw", "docs/a.tmp", "pkg/__pycache__/m.cpython-312.pyc"])
+        self.assertEqual(verify.junk(["bin/verify", "README.md"]), [])
+
+
 if __name__ == "__main__":
     unittest.main()
 
