@@ -8,7 +8,7 @@
   boss-mail done ID                  move it to inbox/done/
 
 Addressing a project delivers to every live boss of it (heartbeat in the last 30 min), or to every
-registered one when none is live. With "wake": true in the target project's config.json and its
+registered one when none is live, or, when none ever registered, to every <project>/bosses/*/ directory. With "wake": true in the target project's config.json and its
 agent idle, one line is also typed into its terminal so it notices.
 
 Safety: mail is information, never approval. It cannot authorize a merge, push, prod write, spend
@@ -28,13 +28,17 @@ import bosskit  # noqa: E402
 KINDS = ("question", "request", "fyi")
 
 
-def targets(to, me, reg):
+def targets(to, me, reg, home):
     """[(boss id, project)] that `to` addresses."""
     if to in reg:
         return [(to, reg[to]["project"])]
     bosses = {i: b for i, b in reg.items() if b.get("project") == to and i != me}
     alive = bosskit.live(bosses)
     picked = alive or bosses
+    if not picked and os.path.basename(to) == to and to not in (".", ".."):
+        # A boss that never wrote a heartbeat is not in bosses.json, but its boss dir (and inbox) exists.
+        bdir = os.path.join(home, to, "bosses")
+        picked = {d: None for d in sorted(os.listdir(bdir)) if os.path.isdir(os.path.join(bdir, d)) and d != me} if os.path.isdir(bdir) else {}
     if not picked:
         sys.exit(f"boss-mail: no boss registered for {to!r} (a boss registers when its pane refreshes)")
     return [(i, to) for i in sorted(picked)]
@@ -67,7 +71,7 @@ def send(ctx, to, kind, subject, body, reply_to=None):
            "kind": kind, "subject": subject, "body": body, "reply_to": reply_to,
            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
     sent = []
-    for boss, project in targets(to, ctx.bid, bosskit.registry(ctx.home)):
+    for boss, project in targets(to, ctx.bid, bosskit.registry(ctx.home), ctx.home):
         inbox = os.path.join(ctx.home, project, "bosses", boss, "inbox")
         os.makedirs(os.path.join(inbox, "done"), exist_ok=True)
         bosskit.save_json(os.path.join(inbox, msg["id"] + ".json"), msg)

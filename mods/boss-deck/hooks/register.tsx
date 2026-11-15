@@ -21,7 +21,7 @@ const STALE_PR_DAYS = 10
 // Unread messages listed in the inbox before it folds the rest into "+N more".
 const INBOX_ROWS = 5
 // Change a tag when its value's fields change: it declines what an earlier version stored.
-const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-9' })
+const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-10' })
 const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-4' })
 const mine = atom({ plugin: 'boss-deck', key: 'mine' } as const, null, { shape: 'mine-1' })
 const live = atom({ plugin: 'boss-deck', key: 'live' } as const, null, { shape: 'live-1' })
@@ -34,7 +34,9 @@ let workerShown = false
 async function refresh($: EngineInterface, sessionStart = false, skipCache = false) {
   // The session's own workspace and directory, so the script resolves the boss the session's shell does.
   const ws = await $.env.get('SUPERSET_WORKSPACE_ID')
-  const argv = [...DATA_CMD, '--cwd', await $.session.cwd(), ...(ws ? ['--workspace', ws] : []), ...(sessionStart ? ['--session-start'] : []), ...(skipCache ? ['--fresh'] : [])]
+  // Its own terminal, so the boss's sessions list leaves it out.
+  const term = await $.env.get('SUPERSET_TERMINAL_ID')
+  const argv = [...DATA_CMD, ...(term ? ['--terminal', term] : []), '--cwd', await $.session.cwd(), ...(ws ? ['--workspace', ws] : []), ...(sessionStart ? ['--session-start'] : []), ...(skipCache ? ['--fresh'] : [])]
   const { exitCode, stdout, stderr } = await $.process.run(argv, { timeoutMs: 90_000 })
   const at = Math.floor((await $.clock.now()) / 1000)
   const fresh: Deck =
