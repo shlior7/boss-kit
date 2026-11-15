@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""verify: the kit's checks, one summary line each; exits non-zero when any fails.
+
+  verify [dir]        dir defaults to the repo root this script is in
+
+Runs the unit tests, the pane data selftest, the watcher test, the mod's tests, its manifest validation and its type
+check, plus a junk guard: no committed *.profraw, .DS_Store, __pycache__ or *.tmp. The type check needs the gitignored
+mods/boss-deck/.claude-plugin/types/, which Claude Code writes only when an interactive session loads the mod; when it
+is missing, verify copies it from another worktree of the repo or from the installed kit ($BOSS_KIT_HOME, else
+~/.claude/boss-kit), read-only. If none has it, open `claude --plugin-dir mods/boss-deck` once.
+"""
+import fnmatch
+import os
+import shutil
+import subprocess
+import sys
+
+TYPES = os.path.join("mods", "boss-deck", ".claude-plugin", "types")
+JUNK = ("*.profraw", ".DS_Store", "__pycache__", "*.tmp")
+CHECKS = [
+    ("unit tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests"]),
+    ("deck selftest", [sys.executable, "bin/boss-deck-data.py", "--selftest"]),
+    ("watcher test", ["bin/test-boss-watch.sh"]),
+    ("plugin test", ["claude", "plugin", "test", "mods/boss-deck"]),
+    ("plugin validate", ["claude", "plugin", "validate", "mods/boss-deck"]),
+    ("tsc", ["npm", "exec", "-y", "--package=typescript@5.6.3", "--", "tsc", "-p", "mods/boss-deck", "--noEmit"]),
+]
+
+
+def junk(files):
+    """Committed paths that are junk: a path part matching any JUNK pattern."""
+    return [f for f in files if any(fnmatch.fnmatch(part, p) for part in f.split("/") for p in JUNK)]
+
+
+def git(d, *args):
+    return subprocess.run(["git", "-C", d, *args], capture_output=True, text=True).stdout
+
+
+def types_sources(d):
+    """Where a copy of the mod's types may be: the repo's other worktrees, then the installed kit."""
+    trees = [l[9:] for l in git(d, "worktree", "list", "--porcelain").splitlines() if l.startswith("worktree ")]
+    kit = os.environ.get("BOSS_KIT_HOME") or os.path.expanduser("~/.claude/boss-kit")
+    return [os.path.join(t, TYPES) for t in trees + [kit] if os.path.realpath(t) != os.path.realpath(d)]
+
+
+def ensure_types(d):
+    """'' when the types are there (copying them in if need be), else why not."""
+    dest = os.path.join(d, TYPES)
+    if os.path.isfile(os.path.join(dest, "tsconfig.json")):
+        return ""
+    src = next((s for s in types_sources(d) if os.path.isfile(os.path.join(s, "tsconfig.json"))), None)
+    if not src:
+        return f"no {TYPES} here or in another worktree or the kit: open `claude --plugin-dir mods/boss-deck` once"
+    shutil.copytree(src, dest)
+    print(f"copied {TYPES} from {src}")
+    return ""
+
+
+def run(d, cmd):
+    try:
+        r = subprocess.run(cmd, cwd=d, capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    tail = (r.stdout + r.stderr).strip().splitlines()
+    return r.returncode == 0, tail[-1] if tail else ""
+
+
+def main(argv):
+    if argv and argv[0].startswith("-"):
+        sys.exit(__doc__)
+    d = os.path.abspath(argv[0] if argv else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    failed = 0
+    for name, cmd in CHECKS:
+        why = ensure_types(d) if name == "tsc" else ""
+        ok, last = (False, why) if why else run(d, cmd)
+        failed += not ok
+        print(f"{'ok  ' if ok else 'FAIL'} {name}: {last[:160]}")
+    bad = junk(git(d, "ls-files").splitlines())
+    failed += bool(bad)
+    print(f"{'FAIL' if bad else 'ok  '} junk guard: " + (", ".join(bad[:10]) if bad else "no committed junk"))
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
