@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""boss-kit-update: pull the installed kit and tell every live boss by mail to reload its plugins.
+
+  boss-kit-update          git pull --ff-only in the kit, print old..new, then mail each live boss
+
+The kit is $BOSS_KIT, else $BOSS_KIT_HOME, else ~/.claude/boss-kit. It refuses a kit with uncommitted
+changes to tracked files, or one that has diverged from its upstream. The mail is an 'fyi' (boss-mail's
+information kind) written straight to each live boss's inbox: the script never sends keys or text to a
+terminal, so nothing lands in a boss's input box. Each boss sees it in its pane's INBOX and runs
+/reload-plugins when it is between turns.
+"""
+import os
+import secrets
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosskit  # noqa: E402
+
+LOG_LINES = 10
+
+
+def kit_dir():
+    return os.environ.get("BOSS_KIT") or os.environ.get("BOSS_KIT_HOME") or os.path.expanduser("~/.claude/boss-kit")
+
+
+def git(kit, *args):
+    return subprocess.run(["git", "-C", kit, *args], capture_output=True, text=True)
+
+
+def pull(kit):
+    """Fast-forward the kit; (old, new) short shas. Exits on a dirty or diverged kit."""
+    if not os.path.isdir(os.path.join(kit, ".git")):
+        sys.exit(f"boss-kit-update: {kit} is not a git checkout")
+    if git(kit, "status", "--porcelain", "--untracked-files=no").stdout.strip():
+        sys.exit(f"boss-kit-update: {kit} has uncommitted changes; commit or discard them first")
+    old = git(kit, "rev-parse", "--short", "HEAD").stdout.strip()
+    r = git(kit, "pull", "--ff-only", "--quiet")
+    if r.returncode:
+        sys.exit(f"boss-kit-update: {kit} cannot fast-forward (diverged from its upstream, or no upstream): {r.stderr.strip()}")
+    return old, git(kit, "rev-parse", "--short", "HEAD").stdout.strip()
+
+
+def notify(h, old, new, log, now=None):
+    """Mail every live boss in the registry; the boss ids mailed. Writes inbox files only."""
+    now = now or time.time()
+    msg = {"id": time.strftime("%Y%m%d-%H%M%S-", time.localtime(now)) + secrets.token_hex(3), "from_boss": "boss-kit-update",
+           "from_project": "kit", "kind": "fyi", "subject": f"kit updated {old}..{new}: run /reload-plugins",
+           "body": log, "reply_to": None, "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now))}
+    sent = []
+    for boss, b in sorted(bosskit.live(bosskit.registry(h), now).items()):
+        if not b.get("project"):
+            continue
+        inbox = os.path.join(h, b["project"], "bosses", boss, "inbox")
+        os.makedirs(os.path.join(inbox, "done"), exist_ok=True)
+        bosskit.save_json(os.path.join(inbox, msg["id"] + ".json"), msg)
+        sent.append(boss)
+    return sent
+
+
+def main():
+    kit = kit_dir()
+    old, new = pull(kit)
+    if old == new:
+        print(f"kit already up to date at {new}")
+        return
+    log = git(kit, "log", "--oneline", f"-{LOG_LINES}", f"{old}..{new}").stdout.strip()
+    sent = notify(bosskit.home(), old, new, log)
+    print(f"kit updated {old}..{new}\n{log}\nmailed {len(sent)} live boss{'' if len(sent) == 1 else 'es'}"
+          + (": " + ", ".join(sent) if sent else ""))
+
+
+if __name__ == "__main__":
+    main()

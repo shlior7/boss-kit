@@ -62,8 +62,9 @@ MSG_ROWS = 10
 NOTE_ROWS = 4
 BOSS_NOTE_ROWS = 2
 DELIVERED_EVENTS = {"sent", "pr ready", "done", "checked", "ready", "merged"}
-PR_FIELDS = ("number,title,isDraft,reviewDecision,mergeable,statusCheckRollup,reviewRequests,"
-             "url,baseRefName,headRefName,updatedAt,body,comments")
+PR_FIELDS = ("number,title,isDraft,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,"
+             "url,baseRefName,headRefName,headRefOid,updatedAt,body,comments")
+BEHIND_PRS = 20  # PRs per fetch that get a compare call for "N behind <base>"
 # Proof links a PR or a ledger row can carry: a published page, an artifact, a demo video.
 URL_RE = re.compile(r"https?://[^\s)<>\]\"']+")
 PROOF_KINDS = (
@@ -260,7 +261,18 @@ def day_start(now):
     return int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1)))
 
 
-def pr_row(repo, p, primary):
+def kit_head():
+    """The installed kit's short HEAD, "" when the kit is not a git checkout. The pane compares it with the one it loaded."""
+    return bosskit._git(bosskit.KIT, "rev-parse", "--short", "HEAD")
+
+
+def behind_by(repo, base, head):
+    """How many commits *base* has that *head* (a sha) lacks, by GitHub's compare; 0 when it cannot say."""
+    out = run(["gh", "api", f"repos/{repo}/compare/{base}...{head}", "--jq", ".behind_by"], timeout=20).strip()
+    return int(out) if out.isdigit() else 0
+
+
+def pr_row(repo, p, primary, behind=0):
     comments = p.get("comments") or []
     text = " ".join([p.get("body") or ""] + [c.get("body") or "" for c in comments])
     return {
@@ -269,6 +281,8 @@ def pr_row(repo, p, primary):
         "proof": proof_links(text),
         "repo": repo, "primary": primary, "num": p["number"], "title": p["title"][:60],
         "draft": p.get("isDraft", False), "review": p.get("reviewDecision") or "",
+        # Drift from its base: commits it lacks, and a merge conflict (GitHub's CONFLICTING, or mergeStateStatus DIRTY).
+        "behind": behind, "conflicts": p.get("mergeable") == "CONFLICTING" or p.get("mergeStateStatus") == "DIRTY",
         "merge": p.get("mergeable") or "", "ci": ci_summary(p.get("statusCheckRollup")),
         "reviewers": [r.get("login") or r.get("name") or "" for r in p.get("reviewRequests") or []],
         "url": p.get("url", ""), "base": p.get("baseRefName", ""), "head": p.get("headRefName", ""),
@@ -288,13 +302,15 @@ def prs(cfg, cache_dir, fresh=False):
     rows = []
     raw = run(["gh", "pr", "list", "--repo", cfg["repo"], "--author", cfg["me"],
                "--state", "open", "--json", PR_FIELDS, "--limit", "30"], timeout=60)
-    for p in json.loads(raw or "[]"):
-        rows.append(pr_row(cfg["repo"], p, True))
+    for n, p in enumerate(json.loads(raw or "[]")):
+        behind = behind_by(cfg["repo"], p.get("baseRefName"), p["headRefOid"]) if n < BEHIND_PRS and p.get("headRefOid") else 0
+        rows.append(pr_row(cfg["repo"], p, True, behind))
     for ref in cfg.get("extra_prs", []):  # "owner/repo#123"
         repo, _, num = ref.partition("#")
         raw = run(["gh", "pr", "view", num, "--repo", repo, "--json", PR_FIELDS + ",state"], timeout=60)
         if raw and json.loads(raw).get("state") == "OPEN":
-            rows.append(pr_row(repo, json.loads(raw), repo == cfg["repo"]))
+            x = json.loads(raw)
+            rows.append(pr_row(repo, x, repo == cfg["repo"], behind_by(repo, x.get("baseRefName"), x["headRefOid"]) if x.get("headRefOid") else 0))
     json.dump({"at": time.time(), "prs": rows}, open(cache, "w"))
     return rows
 
@@ -582,7 +598,7 @@ def main():
     if "--worker" in sys.argv:
         ws = os.environ.get("SUPERSET_WORKSPACE_ID", "")
         view = worker_view(bosskit.home(), ws, arg("--cwd"), arg("--status"), "--fresh" in sys.argv) if ws else None
-        print(json.dumps({"at": int(time.time()), "worker": view}))
+        print(json.dumps({"at": int(time.time()), "worker": view, "kit": kit_head()}))
         return
     ctx = bosskit.load(arg("--cwd"))
     if not bosskit.is_boss(ctx):
@@ -668,7 +684,7 @@ def main():
     if "--session-start" in sys.argv:
         name_boss_workspace(cfg)
     print(json.dumps({
-        "at": int(time.time()), "me": {"id": ctx.bid, "project": ctx.name}, "next": now_line, "review": review,
+        "at": int(time.time()), "kit": kit_head(), "me": {"id": ctx.bid, "project": ctx.name}, "next": now_line, "review": review,
         "attention": todo, "workers": workers, "watchers": armed, "prs": pr_rows, "board": board(cfg, bosskit.tracker_snapshot(ctx)),
         "others": others(bosskit.registry(ctx.home), ctx.bid, workspace=ctx.workspace, wt=ctx.worktree), "mail": mail(ctx.inbox),
         "bosses": bosses(bosskit.registry(ctx.home), ctx.name, ctx.bid, ctx.pdir, workspace=ctx.workspace, wt=ctx.worktree),
@@ -741,6 +757,11 @@ if __name__ == "__main__":
         open(os.path.join(wt, ".boss-worker", "notes.md"), "w").write("# Notes\n\n- decided: cap at 5\n- open: retry 4xx?\n")
         assert read_status(wt) == {"done": 3, "total": 5, "current": "run tests", "at": 7} and notes_tail(wt, 1) == ["- open: retry 4xx?"]
         assert in_folder(["Checkout Flow"], "checkout flow") and not in_folder(["UI"], "checkout") and in_folder([], "")
+        row = pr_row("acme/widgets", {"number": 3, "title": "t", "mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND"}, True, 3)
+        assert row["behind"] == 3 and not row["conflicts"], row
+        assert pr_row("acme/widgets", {"number": 3, "title": "t", "mergeable": "CONFLICTING"}, True)["conflicts"]
+        assert pr_row("acme/widgets", {"number": 3, "title": "t", "mergeable": "UNKNOWN", "mergeStateStatus": "DIRTY"}, True)["conflicts"]
+        assert not pr_row("acme/widgets", {"number": 3, "title": "t"}, True)["conflicts"]
         print("ok")
     else:
         main()
