@@ -179,6 +179,27 @@ class Mail(Home):
         with self.assertRaises(SystemExit):
             mail.send(a, "nobody", "fyi", "x", "")  # unknown target
 
+    def test_a_boss_that_never_wrote_a_heartbeat_still_gets_its_mail(self):
+        mail = load_script("boss-mail")
+        a = self.boss("widgets", self.wt)
+        self.assertEqual(bosskit.registry(), {a.bid: bosskit.registry()[a.bid]})
+        json.dump({}, open(os.path.join(self.home, "bosses.json"), "w"))  # nobody registered
+        with self.assertRaises(SystemExit):
+            mail.send(a, "gadgets", "fyi", "x", "")  # no bosses/ dir yet: still an error
+        bdir = os.path.join(self.home, "gadgets", "bosses")
+        os.makedirs(bdir)
+        with self.assertRaises(SystemExit):
+            mail.send(a, "gadgets", "fyi", "x", "")  # an empty bosses/ dir has nobody to deliver to
+        for b in ("ws-x", "ws-y"):
+            os.makedirs(os.path.join(bdir, b, "inbox"))
+        open(os.path.join(bdir, "stray-file"), "w").close()
+        mid, sent = mail.send(a, "gadgets", "question", "is #42 safe?", "body")
+        self.assertEqual(sent, ["gadgets/ws-x", "gadgets/ws-y"])
+        for b in ("ws-x", "ws-y"):
+            self.assertEqual(json.load(open(os.path.join(bdir, b, "inbox", mid + ".json")))["subject"], "is #42 safe?")
+        with self.assertRaises(SystemExit):
+            mail.send(a, "../gadgets", "fyi", "x", "")  # a project name is a name, not a path
+
 
 class Migrate(unittest.TestCase):
     def test_dry_run_changes_nothing_apply_moves_and_links(self):
@@ -360,7 +381,7 @@ class Lanes(Home):
         # no DONE event logged: a DONE ledger row still means the boss checks it, a draft PR or none
         self.assertEqual(stage("idle", "DONE", pr(), [ev("sent", 600)], today), "checking")
         self.assertEqual(stage("working", "DONE", None, [], today), "checking")
-        self.assertEqual(stage("idle", "DONE", None, [ev("sent", 600), ev("checked", 30)], today), "working")  # verified
+        self.assertEqual(stage("idle", "DONE", None, [ev("sent", 600), ev("checked", 30)], today), "waiting")  # verified, nothing left but the user
         self.assertNotEqual(stage("idle", "DISPATCHED", pr(), [ev("DONE", 60), ev("checked", 30)], today), "checking")
         # a DONE from before the last dispatch does not count
         self.assertEqual(stage("idle", "DISPATCHED", pr(doneAt=self.now - 900), [ev("sent", 600)], today), "working")
@@ -370,6 +391,19 @@ class Lanes(Home):
         self.assertEqual(stage("idle", "READY", pr(draft=False, ci="green"), [ev("DONE", 90), ev("ready", 30)], today), "review")
         self.assertEqual(stage("working", "READY", pr(draft=False, ci="green"), [], today), "working")  # fixing review notes
         self.assertEqual(stage("gone", "ARCHIVED", None, [ev("merged", 120), ev("retired", 60)], today), "done")
+
+    def test_checked_with_a_draft_or_no_pr_is_waiting_on_you(self):
+        stage, pr, ev, today = self.deck.stage, self.pr, self.ev, self.today
+        checked = [ev("sent", 900), ev("DONE", 600), ev("checked", 300)]
+        self.assertEqual(stage("idle", "DISPATCHED", pr(), checked, today), "waiting")  # the PR stays draft by project rule
+        self.assertEqual(stage("idle", "DISPATCHED", None, checked, today), "waiting")  # no PR at all
+        self.assertEqual(stage("idle", "DISPATCHED", pr(), [ev("sent", 900), ev("DONE", 600), ev("ready", 300)], today), "waiting")
+        self.assertEqual(stage("working", "DISPATCHED", pr(), checked, today), "working")  # the agent picked it up again
+        self.assertEqual(stage("idle", "DISPATCHED", pr(), [ev("sent", 900), ev("DONE", 600)], today), "checking")  # not checked yet
+        self.assertEqual(stage("idle", "DISPATCHED", pr(), [ev("sent", 900), ev("checked", 300)], today), "working")  # no DONE
+        self.assertEqual(stage("idle", "DISPATCHED", pr(), checked + [ev("sent", 60)], today), "working")  # re-dispatched since
+        self.assertEqual(stage("idle", "DISPATCHED", pr(draft=False, ci="green"), checked, today), "review")  # a ready PR is review
+        self.assertEqual(stage("gone", "ARCHIVED", None, checked + [ev("merged", 60)], today), "done")  # merged today is done
 
     def test_done_today_cutoff(self):
         stage, today = self.deck.stage, self.today
@@ -636,6 +670,43 @@ class Folders(Home):
         self.assertEqual((a["tasks"]["done"], a["tasks"]["total"], a["tasks"]["current"]), (3, 5, "run the http tests"))
         self.assertEqual(a["notes"], ["- open: retry 4xx?", "- open: log drops?"])
         self.assertEqual((b["tasks"], b["notes"]), (None, []))
+
+
+class BossSessions(Home):
+    """A boss's own workspace is never a worker; its other agent terminals are rows of its BOSSES entry."""
+
+    BOSS = "bbbbbbbb-0000-4000-8000-000000000009"
+    WORKER = "aaaaaaaa-0000-4000-8000-000000000001"
+
+    def test_own_workspace_is_sessions_not_a_worker(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        json.dump({"repo": "acme/widgets", "me": "octocat", "superset_host": "h"}, open(os.path.join(self.home, "widgets", "config.json"), "w"))
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace\n")
+        fix = os.path.join(self.tmp, "fix")
+        os.makedirs(fix)
+        tools = {**stub_tools(self.tmp, fix), "SUPERSET_WORKSPACE_ID": self.BOSS, "SUPERSET_TERMINAL_ID": "boss-term-0000"}
+        open(os.path.join(self.home, "widgets", "ledger.md"), "w").write(
+            "## Dispatches 2026-01-02\n\n| Date | Task | Workspace | Model | Status |\n|---|---|---|---|---|\n"
+            "| 2026-01-02 | research-1: map the api | bbbbbbbb / ab12 | mid | DISPATCHED |\n"
+            "| 2026-01-02 | fix-1: a | aaaaaaaa | mid | DISPATCHED |\n")
+        agent = lambda state: {"state": state}
+        json.dump({"workspaces": [
+            {"id": self.BOSS, "name": "BOSS", "branch": "main", "terminals": [
+                {"id": "boss-term-0000", "title": "boss", "agent": agent("working")},
+                {"id": "ab120000-0000", "title": "api research", "agent": agent("idle")},
+                {"id": "cd340000-0000", "title": "ops: deploy check", "agent": agent("working")},
+                {"id": "sh000000-0000", "title": "zsh"}]},
+            {"id": self.WORKER, "name": "cart-totals", "branch": "fix/a", "terminals": [{"id": "t", "agent": agent("working")}]}]},
+            open(os.path.join(fix, "snapshot.json"), "w"))
+        json.dump([], open(os.path.join(fix, "list.json"), "w"))
+        json.dump([], open(os.path.join(fix, "prs.json"), "w"))
+        d = deck_json(self.wt, tools)
+        self.assertEqual([w["name"] for w in d["workers"]], ["cart-totals"])  # never "BOSS"
+        me = next(b for b in d["bosses"] if b["me"])
+        self.assertEqual([(s["title"], s["state"], s["task"]) for s in me["sessions"]],
+                         [("api research", "idle", "research-1: map the api"), ("ops: deploy check", "working", "")])
+        self.assertTrue(all(s["ageS"] >= 0 for s in me["sessions"]))
+        self.assertEqual(d["workers"][0]["ws"], "aaaaaaaa")
 
 
 class StatusAsk(unittest.TestCase):

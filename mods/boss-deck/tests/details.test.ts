@@ -73,6 +73,10 @@ test('each workspace row is its stage, age and note, with its PR tag or a dash',
   expect(workerRow({ ...worker, stage: 'move', pr: pr({ review: 'APPROVED' }) }, now).parts.at(-1)).toEqual({ text: 'no proof', color: 'warning' })
   expect(row({ stage: 'checking', prTag: '#61', events: [ev('9:58', now - 120, 'DONE')] })).toBe('◐ #61 boss checking · DONE 2m ago · verifying')
   expect(row({ stage: 'checking', prTag: '#61', since: now - 60, pr: pr({ ci: 'red' }) })).toBe('◐ #61 boss checking · 60s · CI red')
+  // checked, yet the PR stays draft (or there is none): done, and the user's call, in the active part
+  expect(row({ stage: 'waiting', state: 'idle', prTag: '#61', since: now - 300, pr: pr({ draft: true }) })).toBe('› #61 done · waiting on you · 5m · PR draft')
+  expect(row({ stage: 'waiting', state: 'idle', since: now - 300 })).toBe('› — done · waiting on you · 5m · no PR')
+  expect(isActive({ ...worker, stage: 'waiting', state: 'idle' })).toBe(true)
   expect(row({ stage: 'working', since: now - 360, events: [ev('', now - 360, 'sent', 'make test-http')] })).toBe('● — working · 6m · make test-http')
   expect(row({ stage: 'working', state: 'blocked', since: now - 60, events: [ev('', now - 60, 'BLOCKED', 'needs a token')] })).toBe('■ — blocked · 60s · needs a token')
   const idle = workerRow({ ...worker, stage: 'working', state: 'idle', since: now - 600 }, now)
@@ -82,8 +86,9 @@ test('each workspace row is its stage, age and note, with its PR tag or a dash',
   expect(row({ stage: 'done', events: [ev('11:02', 2, 'retired')] })).toBe('✓ — done today · 11:02 · retired')
 })
 
-test('active rows first (your move, boss checking, working, blocked), then the idle ones', () => {
+test('active rows first (your move, waiting on you, boss checking, working, blocked), then the idle ones', () => {
   const ws: Worker[] = [
+    { ...worker, name: 'waiting', stage: 'waiting', state: 'idle' },
     { ...worker, name: 'done', stage: 'done', state: 'gone' },
     { ...worker, name: 'idle', stage: 'working', state: 'idle' },
     { ...worker, name: 'review', stage: 'review', state: 'idle' },
@@ -93,8 +98,8 @@ test('active rows first (your move, boss checking, working, blocked), then the i
     { ...worker, name: 'move', stage: 'move', state: 'idle' },
   ]
   const sorted = [...ws].sort((a, b) => rank(a) - rank(b))
-  expect(sorted.map(w => w.name)).toEqual(['move', 'checking', 'working', 'blocked', 'review', 'idle', 'done'])
-  expect(sorted.filter(isActive).length).toBe(4)
+  expect(sorted.map(w => w.name)).toEqual(['move', 'waiting', 'checking', 'working', 'blocked', 'review', 'idle', 'done'])
+  expect(sorted.filter(isActive).length).toBe(5)
 })
 
 test('a PR no workspace owns is a row: its tag as the name, a dash, its status', () => {
@@ -123,6 +128,10 @@ test('a boss row: its domain or main, (this), counts, and its age only once stal
   expect(bossRow(b, 1000).parts[1]?.color).toBe('warning')
   expect(bossDetails(b, 1000).map(r => `${r.label}|${r.value}`)).toEqual(['next|merge #61', 'state|- cart totals in review', 'seen|10m ago'])
   expect(bossDetails({ ...b, domain: '', state: [], next: '' }, 1000).map(r => r.label)).toEqual(['next', 'seen'])
+  // this boss's other agent sessions: title, state, age and the ledger's task text when a row names the terminal
+  const sessions = [{ id: 'ab120000', title: 'api research', state: 'idle', ageS: 600, task: 'research-1: map the api' }, { id: 'cd340000', title: '', state: 'working', ageS: 30, task: '' }]
+  expect(bossDetails({ ...b, domain: '', me: true, state: [], sessions }, 1000).map(r => `${r.label}|${r.value}`)).toEqual([
+    'next|merge #61', 'sessions|api research · idle · 10m · research-1: map the api', '|cd340000 · working · 30s', 'seen|10m ago'])
 })
 
 test('a DONE with no logged event (PR comment or ledger) still reads as DONE, never as a missing log', () => {
@@ -139,6 +148,7 @@ test('a DONE with no logged event (PR comment or ledger) still reads as DONE, ne
 
 test('the next step names who acts', () => {
   expect(nextStep({ ...worker, stage: 'move' })).toBe('you: say merge')
+  expect(nextStep({ ...worker, stage: 'waiting' })).toBe('you: decide the next step')
   expect(nextStep({ ...worker, stage: 'checking' })).toBe('boss: verify, then mark the PR ready')
   expect(nextStep({ ...worker, stage: 'review', prTag: '#55', pr: pr({ reviewers: ['JaneDoe42'] }) })).toBe('jane: review #55')
   expect(nextStep({ ...worker, stage: 'done', events: [ev('10:41', 1, 'merged')] })).toBe('boss: retire the workspace')

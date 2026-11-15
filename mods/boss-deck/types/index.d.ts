@@ -2,8 +2,8 @@
 export type ProofLink = { label: string; url: string }
 /** One line of a workspace's stage log (events.jsonl), with its local time. */
 export type StageEvent = { at: number; ws: string; stage: string; note: string; hm: string }
-/** Whose move a workspace is on. */
-export type Stage = 'move' | 'checking' | 'working' | 'review' | 'done'
+/** Whose move a workspace is on. 'waiting': checked or ready, yet its PR stays draft (or it has none): the user's call. */
+export type Stage = 'move' | 'waiting' | 'checking' | 'working' | 'review' | 'done'
 export type Worker = {
   ws: string
   id: string
@@ -68,6 +68,8 @@ export type Peek = { key: string; rows: Detail[]; links?: ProofLink[] }
 export type Board = { mine?: number; p1?: number; inProgress?: number }
 /** Another live boss, from the registry. */
 export type OtherBoss = { id: string; project: string; workspace: string; working: number; forYou: number }
+/** One of the boss workspace's other agent sessions (research, ops): a row of its BOSSES entry. */
+export type BossSession = { id: string; title: string; state: string; ageS: number; task: string }
 /** One of this project's live bosses: the main boss ('' domain) or a domain boss, from its heartbeat. */
 export type Boss = {
   id: string
@@ -84,6 +86,8 @@ export type Boss = {
   stale: boolean
   /** the first lines of its domain state file; none for the main boss */
   state: string[]
+  /** this session's boss only: its workspace's other agent terminals */
+  sessions?: BossSession[]
 }
 export type MailItem = { id: string; kind: string; from: string; subject: string }
 export type Deck = {
