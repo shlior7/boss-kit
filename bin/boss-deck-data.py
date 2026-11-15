@@ -7,21 +7,23 @@ open PRs (cached 5 min so a 60 s refresh stays cheap), this boss's events.jsonl 
 stage log, from bin/boss-event and the watcher), the tracker snapshot boss-tasks.py writes,
 this boss's inbox, and the registry of bosses (this project's: the main boss and its domain
 bosses). Each run is also this boss's heartbeat, carrying its domain and next line.
-Each workspace joins its PR by branch and gets a stage: move, checking, working, review or done
-(merged or retired today, archived workspaces included).
+Each workspace joins its PR by branch and gets a stage: move, waiting, checking, working, review or done
+(merged or retired today, archived workspaces included). In boss mode the boss's own workspace is never a worker: its
+other agent terminals (research and ops sessions) are rows of its BOSSES entry instead.
 Paths and project resolution: bin/bosskit.py.
 
 Worker mode (--worker): the same pane in a dispatched worker's own session. It finds the workspace's newest
 dispatch row across every project's ledger, its boss, its PR (the boss's fetch and cache), pushed commits, its
 events and the messages the boss sent it, and keeps the worktree's .boss-worker/ (notes.md, status.json) git-ignored.
 
-usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--cwd DIR] [--selftest]
+usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--terminal ID] [--cwd DIR] [--selftest]
        boss-deck-data.py --worker --workspace ID [--cwd DIR] [--status JSON]
   --fresh: skip the PR cache (the pane passes it right after the boss merges, comments or dispatches)
   --session-start: also mark this boss's new session (the base for "N new shared lessons"), and
                    rename this boss's own Paradev workspace to BOSS
   --workspace, --cwd: the session's workspace id and directory, which the mod passes so its process
                       resolves the same boss as the session's shell
+  --terminal: the session's own terminal id (else $SUPERSET_TERMINAL_ID), left out of this boss's sessions list
   --status: the worker pane's task progress, {tasks_done, tasks_total, current}, written to .boss-worker/status.json
 """
 import json
@@ -128,6 +130,29 @@ def ledger_tasks(path):
     return dict(sorted(tasks.items(), key=lambda kv: kv[1][2], reverse=True))
 
 
+def ledger_terms(path, ws_prefix):
+    """Terminal-id prefix -> task cell text, the newest row, for the rows of workspace *ws_prefix* that name a
+    terminal ("1a2b3c4d / 5e6f"): what a boss workspace's research and ops sessions are for. Ranked as
+    ledger_tasks does: by date, then by section order (the first table appends, each dated section prepends)."""
+    best = {}
+    try:
+        lines = open(path).read().splitlines()
+    except OSError:
+        return {}
+    prepends = False
+    for i, line in enumerate(lines):
+        if line.startswith("## "):
+            prepends = line.startswith("## Dispatches")
+        cols = [c.strip() for c in line.split("|")]
+        if len(cols) < 7 or not re.match(r"\d{4}-\d{2}-\d{2}", cols[1]):
+            continue
+        m = re.match(r"(?:NEW )?([0-9a-f]{8})\s*/\s*([0-9a-f]{4,})", cols[3])
+        key = (cols[1], prepends, -i if prepends else i)
+        if m and m.group(1) == ws_prefix and (m.group(2) not in best or key > best[m.group(2)][0]):
+            best[m.group(2)] = (key, cols[2])
+    return {k: v[1] for k, v in best.items()}
+
+
 def task_id(text):
     """A ledger task cell's id, its first token: "fix-42 (queued after fix-41)" or "fix-42: x" -> "fix-42"."""
     return re.split(r"[\s:]+", text.strip())[0] or "?"
@@ -202,8 +227,8 @@ def notes_tail(wt, n=NOTE_ROWS):
 
 
 def read_status(wt):
-    """The worker pane's task progress in <worktree>/.boss-worker/status.json, or None (also for no worktree: a path
-    relative to the cwd would read whichever worker's file the cwd holds)."""
+    """The worker pane's task progress in <worktree>/.boss-worker/status.json, or None (also with no worktree:
+    a relative path would read the current directory's)."""
     if not wt:
         return None
     try:
@@ -334,7 +359,8 @@ def join(workers, prs):
 def stage(state, ledger, pr, evs, today):
     """A workspace's lane, first match wins: move (its PR approved + green), checking (DONE not yet verified,
     or a ready PR gone red), working (agent busy or blocked, or idle without DONE), review (PR ready), done
-    (merged or retired today). Only events since the last dispatch ("sent") count; anything else is working."""
+    (merged or retired today), waiting (checked or ready, yet its PR is still a draft or it has none: the next
+    move is the user's). Only events since the last dispatch ("sent") count; anything else is working."""
     sent = max((e["at"] for e in evs if e["stage"].lower() == "sent"), default=0)
     at = lambda kinds: max((e["at"] for e in evs if e["at"] >= sent and e["stage"].lower() in kinds), default=0)
     ready = bool(pr) and not pr["draft"]
@@ -354,6 +380,8 @@ def stage(state, ledger, pr, evs, today):
         return "review"
     if at(END_EVENTS) >= today:
         return "done"
+    if done_at and not at(END_EVENTS) and at(CHECKED_EVENTS) >= done_at:
+        return "waiting"
     return "working"
 
 
@@ -471,8 +499,9 @@ def domain_state(pdir, domain):
     return [l.strip()[:120] for l in lines if l.strip() and not l.lstrip().startswith("#")][:STATE_LINES]
 
 
-def bosses(reg, project, me, pdir, now=None, workspace="", wt=""):
-    """This project's live bosses, one per workspace: this boss first, then the main boss, then domains by name."""
+def bosses(reg, project, me, pdir, now=None, workspace="", wt="", sessions=()):
+    """This project's live bosses, one per workspace: this boss first, then the main boss, then domains by name.
+    *sessions* (see boss_sessions) belong to this boss's entry."""
     now = now or time.time()
     best = {}
     for i, b in bosskit.live(reg, now, project).items():
@@ -482,8 +511,27 @@ def bosses(reg, project, me, pdir, now=None, workspace="", wt=""):
     out = [{"id": i, "workspace": b.get("workspace", ""), "domain": b.get("domain", ""), "me": k == "",
             "next": b.get("next", ""), "working": b.get("working", 0), "forYou": b.get("forYou", 0),
             "heartbeat": b.get("heartbeat", 0), "stale": now - b.get("heartbeat", 0) > BOSS_STALE_S,
-            "state": domain_state(pdir, b.get("domain", ""))} for k, (i, b) in best.items()]
+            "state": domain_state(pdir, b.get("domain", "")), "sessions": list(sessions) if k == "" else []}
+           for k, (i, b) in best.items()]
     return sorted(out, key=lambda b: (not b["me"], b["domain"] != "", b["domain"]))
+
+
+def boss_sessions(space, own_term, tasks, seen, now):
+    """The boss workspace's other agent terminals, for its BOSSES row: [{id, title, state, ageS, task}].
+    *space* is the workspace's snapshot entry, *own_term* the boss's own terminal id ('' when unknown), *tasks* the
+    ledger text per terminal prefix, *seen* {terminal id: first seen} (updated). The snapshot has no terminal age, so
+    it counts from the first refresh that saw the terminal."""
+    out = []
+    for t in (space or {}).get("terminals", []):
+        if not t.get("agent") or t["id"] == own_term:
+            continue
+        first = seen.setdefault(t["id"], int(now))
+        task = next((v for k, v in tasks.items() if t["id"].startswith(k)), "")
+        out.append({"id": t["id"], "title": str(t.get("title") or "")[:40], "state": t["agent"].get("state") or "?",
+                    "ageS": max(0, int(now) - first), "task": task[:80]})
+    for k in [k for k in seen if k not in {s["id"] for s in out}]:  # a closed terminal is forgotten
+        del seen[k]
+    return out
 
 
 # ---- worker mode: the pane in a dispatched worker's own session -------------------------------
@@ -634,6 +682,8 @@ def main():
     for prefix, (task, status, date, proof, boss, text) in list(tasks.items()):
         if boss and boss != ctx.bid:
             continue  # another boss's dispatch
+        if ctx.workspace and prefix == ctx.workspace[:8]:
+            continue  # this boss's own workspace (a research or ops session's row): sessions below, never a worker
         w = by_prefix.get(prefix)
         archived = w is None and prefix not in watched
         if archived and not any(e["at"] >= today and e["stage"].lower() in END_EVENTS for e in evs.get(prefix, [])):
@@ -664,6 +714,16 @@ def main():
     for w in workers:
         seen[w["ws"]] = {"name": w["name"], "branch": w["branch"], "prTag": w["prTag"], "tags": w["tags"]}
     bosskit.save_json(seen_path, seen)
+    sessions_path = os.path.join(ctx.cache, "sessions.json")
+    try:
+        first_seen = json.load(open(sessions_path))
+    except (OSError, ValueError):
+        first_seen = {}
+    sessions = boss_sessions(next((w for w in spaces if w.get("id") == ctx.workspace), None) if ctx.workspace else None,
+                             arg("--terminal") or os.environ.get("SUPERSET_TERMINAL_ID", ""),
+                             ledger_terms(os.path.join(ctx.pdir, cfg.get("ledger", "ledger.md")), ctx.workspace[:8]) if ctx.workspace else {},
+                             first_seen, time.time())
+    bosskit.save_json(sessions_path, first_seen)
     states = {w["ws"]: w["state"] for w in workers}
     for w in armed:
         idle = states.get(w["ws"][:8]) not in ("working", None)
@@ -690,7 +750,7 @@ def main():
         "at": int(time.time()), "kit": kit_head(), "me": {"id": ctx.bid, "project": ctx.name}, "next": now_line, "review": review,
         "attention": todo, "workers": workers, "watchers": armed, "prs": pr_rows, "board": board(cfg, bosskit.tracker_snapshot(ctx)),
         "others": others(bosskit.registry(ctx.home), ctx.bid, workspace=ctx.workspace, wt=ctx.worktree), "mail": mail(ctx.inbox),
-        "bosses": bosses(bosskit.registry(ctx.home), ctx.name, ctx.bid, ctx.pdir, workspace=ctx.workspace, wt=ctx.worktree),
+        "bosses": bosses(bosskit.registry(ctx.home), ctx.name, ctx.bid, ctx.pdir, workspace=ctx.workspace, wt=ctx.worktree, sessions=sessions),
         "lessonsNew": lessons_new(ctx.home, ctx.bdir, "--session-start" in sys.argv),
     }))
 
@@ -759,6 +819,20 @@ if __name__ == "__main__":
         write_status(wt, json.dumps({"tasks_done": 3, "tasks_total": 5, "current": "run tests"}), now=7)
         open(os.path.join(wt, ".boss-worker", "notes.md"), "w").write("# Notes\n\n- decided: cap at 5\n- open: retry 4xx?\n")
         assert read_status(wt) == {"done": 3, "total": 5, "current": "run tests", "at": 7} and notes_tail(wt, 1) == ["- open: retry 4xx?"]
+        led = os.path.join(home, "widgets", "ledger.md")
+        open(led, "w").write("| 2026-01-02 | research-1: map the api | 1a2b3c4d / 5e6f | mid | DISPATCHED |\n"
+                             "| 2026-01-01 | old-1: older | 1a2b3c4d / 5e6f | mid | DONE |\n"
+                             "| 2026-01-02 | fix-9: x | 1a2b3c4d | mid | DISPATCHED |\n")  # no terminal: not a session's row
+        assert ledger_terms(led, "1a2b3c4d") == {"5e6f": "research-1: map the api"} and ledger_terms(led, "9f9f9f9f") == {}
+        open(led, "w").write("| 2026-01-02 | first-1: a | 1a2b3c4d / 5e6f | mid | DONE |\n| 2026-01-02 | second-1: b | 1a2b3c4d / 5e6f | mid | DISPATCHED |\n"
+                             "## Dispatches 2026-01-02\n\n| 2026-01-02 | new-1: c | 1a2b3c4d / 5e6f | mid | DISPATCHED |\n| 2026-01-02 | old-1: d | 1a2b3c4d / 5e6f | mid | DONE |\n")
+        assert ledger_terms(led, "1a2b3c4d") == {"5e6f": "new-1: c"}, ledger_terms(led, "1a2b3c4d")
+        space = {"terminals": [{"id": "me00", "title": "boss", "agent": {"state": "working"}},
+                               {"id": "5e6f0000", "title": "api research", "agent": {"state": "idle"}}, {"id": "sh00", "title": "zsh"}]}
+        first = {"gone": 1}
+        got = boss_sessions(space, "me00", {"5e6f": "research-1: map the api"}, first, 1000)
+        assert got == [{"id": "5e6f0000", "title": "api research", "state": "idle", "ageS": 0, "task": "research-1: map the api"}], got
+        assert first == {"5e6f0000": 1000} and boss_sessions(space, "me00", {}, first, 1090)[0]["ageS"] == 90
         assert in_folder(["Checkout Flow"], "checkout flow") and not in_folder(["UI"], "checkout") and in_folder([], "")
         row = pr_row("acme/widgets", {"number": 3, "title": "t", "mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND"}, True, 3)
         assert row["behind"] == 3 and not row["conflicts"], row

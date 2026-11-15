@@ -16,7 +16,7 @@ const DECK: Deck = {
     PR57,
   ],
   bosses: [
-    { id: 'ws-me', workspace: 'ws-me', domain: '', me: true, next: '', working: 1, forYou: 0, heartbeat: 0, stale: false, state: [] },
+    { id: 'ws-me', workspace: 'ws-me', domain: '', me: true, next: '', working: 1, forYou: 0, heartbeat: 0, stale: false, state: [], sessions: [{ id: 'ab120000', title: 'api research', state: 'idle', ageS: 600, task: 'research-1: map the api' }] },
     { id: 'ws-co', workspace: 'ws-co', domain: 'checkout', me: false, next: 'merge #61', working: 1, forYou: 2, heartbeat: 0, stale: false, state: [] },
   ],
   others: [{ id: 'ws-a', project: 'gadgets', workspace: 'ws-a', working: 1, forYou: 0 }],
@@ -64,6 +64,10 @@ test('the pane passes its workspace, and draws its inbox, its bosses, one WORKER
   expect(open.slice(from, from + 4)).toEqual(['next', 'reviewer: review #57', 'pr', 'rate-limit attempts'])
   expect(open.filter(t => t.endsWith('↗'))).toEqual(['page ↗', 'demo ↗', 'open workspace ↗', 'open on GitHub ↗'])
   expect(texts).toContain('tracker: 2 mine · 1 P0/P1 · 1 in progress')
+  // this boss's own workspace is never a worker; its other agent sessions sit in its BOSSES accordion
+  await ui.press({ key: 'peek-b-ws-me' })
+  const sess = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
+  expect(sess).toContain('api research · idle · 10m · research-1: map the api')
 })
 
 test("each message the boss sends a worker is logged as that workspace's msg event; a key-only send is not", async ($, on) => {

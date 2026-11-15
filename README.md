@@ -59,6 +59,8 @@ flowchart LR
 | `bin/boss-watch-done.sh` | The watcher: one per dispatch, run in the background |
 | `bin/boss-status-ask` | Sends the standard six-question status check to a worker session before a cleanup (the status layover) |
 | `bin/boss-close` | Closes sessions by their pane, so no "Session ended" tab stays behind; `--dead` sweeps tabs whose session already ended |
+| `bin/boss-merge` | Squash-merges one PR only when it is safe: verified head, mergeable, review threads answered, checks green |
+| `bin/verify` | Runs the kit's own checks, one line each, plus a junk guard on committed files |
 | `bin/boss-event` | Logs a workspace's stage (sent, DONE, checked, ready, merged, retired) for the pane's stages and timeline |
 | `bin/boss-sync.py` | Keeps your open PRs conflict-free: merges each base into its branch in a throwaway worktree |
 | `bin/boss-tasks.py` | Read-only tracker sync: `none`, or any HTTP endpoint that returns `{"tasks": [...]}` |
@@ -273,7 +275,7 @@ After a batch of merges, or when you ask, the boss publishes a **review page**: 
 
 ## Boss mail
 
-Bosses message each other with `bin/boss-mail`. A message is a JSON file in the target boss's `inbox/`. Addressed to a project, it reaches every live boss of that project.
+Bosses message each other with `bin/boss-mail`. A message is a JSON file in the target boss's `inbox/`. Addressed to a project, it reaches every live boss of that project, else every registered one, else (a boss that never wrote a heartbeat) every `<project>/bosses/*/` directory, so mail is never lost; it fails only when the project has no `bosses/` folder.
 
 Two bosses, `widgets` and `gadgets`. The gadgets boss needs to know whether a widgets PR it depends on is safe:
 
@@ -322,12 +324,14 @@ Both files are append-only and numbered. An exact duplicate is refused; one that
 | `bin/boss-lesson add \| list \| promote` | Lessons, above |
 | `bin/boss-migrate [--kit DIR] [--boss ID] [--apply]` | Moves a v0.4-or-older kit's project data into `$BOSS_HOME` and leaves a symlink at each old path. Dry run unless `--apply`; never overwrites. `--boss` names the boss that owned the old `state/<name>/` |
 | `bin/boss-event <ws> <stage> [note]` | Appends `{at, ws, stage, note}` to this boss's `events.jsonl`. The boss logs `sent` on each dispatch, `checked`, `ready` and `retired`; the watcher logs `DONE`, `BLOCKED`, `PR READY` and `merged` when it fires |
+| `bin/boss-merge <pr> [--sha SHA]` | Run inside the repo. Refuses unless the PR head is the verified sha (`--sha`, else the sha in this boss's last `checked` event for the workspace on the PR's branch), mergeable is `MERGEABLE`, every review thread is resolved or has a reply from the PR author (unanswered ones are listed), and no check is failing or pending. Merges with `gh pr merge --squash --match-head-commit`; when the base branch policy refuses and you can bypass every ruleset on the base, retries with `--admin` and says so. Never `--auto`, never force. Then prints the merge commit, logs `merged "PR #N"`, and prints the worktree's leftover check (uncommitted, unpushed, ignored files beyond rebuildable output) and the archive command. It never archives |
+| `bin/verify [dir]` | The kit's checks in `dir` (default: the kit): unit tests, pane selftest, watcher test, `claude plugin test` and `validate`, the mod's type check, and a junk guard that fails on committed `*.profraw`, `.DS_Store`, `__pycache__` or `*.tmp`. One summary line each, non-zero exit on any failure. Copies the gitignored `mods/boss-deck/.claude-plugin/types/` from another worktree or the installed kit when missing (Claude Code writes it the first time it loads the mod) |
 | `bin/boss-watch-done.sh <ws> <term> [<branch>]` | The watcher above; `--sig < screen` prints the envelope it would fire on (`DONE|<id>|<summary start>`) (`bin/test-boss-watch.sh` checks it). Env: `BOSS_HOST` (default: first host); with `<branch>` it also fires `PR READY` when that branch's PR gets a DONE-envelope comment, leaves draft or merges (`--ready < pr-list.json` shows which). Needs `jq`, and `gh` for `<branch>` |
 | `bin/boss-sync.py --only=N,N [--push]` | Run inside the repo. For each listed PR (stacked ones after their base), merges `origin/<base>` into the branch in a throwaway worktree and reports `up to date`, `merged clean` or `REAL CONFLICT: files`. Dry run by default; `--push` pushes (plain push, never force). `--gen=FILES --regen="cmd"` auto-resolves conflicts only in generated files; `--if-moved` exits early when the base hasn't moved. **Use `--only` with your own PR numbers.** `--all` would push to teammates' branches |
 | `bin/boss-tasks.py [--quiet]` | Read-only tracker sync into this boss's `cache/tracker.json` (a migrated `bosses/<id>/tracker.json` is read when that is missing). Prints what changed, your open tasks, team P0/P1 and In Review |
 | `bin/boss-deck-data.py [--session-start] [--workspace ID] [--cwd DIR] [--selftest]`, `--worker --workspace ID [--cwd DIR] [--status JSON]` | Prints the JSON the pane draws, and writes this boss's heartbeat. `--worker` prints a worker session's own view instead (no heartbeat) and writes its `--status` to `.boss-worker/status.json`. `--session-start` (the pane's first refresh) also marks a new session and renames this boss's Paradev workspace to `BOSS`. `--workspace` and `--cwd` are what the pane passes so it resolves the same boss as the session. `--selftest` runs its checks |
 
-Tests: `python3 -m unittest discover -s tests` (stdlib only, temp `$BOSS_HOME`), `python3 bin/boss-deck-data.py --selftest`, and `claude plugin test mods/boss-deck`.
+Tests: `bin/verify` runs them all; one by one, `python3 -m unittest discover -s tests` (stdlib only, temp `$BOSS_HOME`), `python3 bin/boss-deck-data.py --selftest`, `bin/test-boss-watch.sh`, and `claude plugin test mods/boss-deck`.
 
 ## The boss-deck pane
 
@@ -337,12 +341,13 @@ A quiet pane: grey by default, color only for what needs you. Here with a worksp
 
 - **The top line** is this boss's last "Your move", read from its `next.txt`.
 - **INBOX** appears while something from outside this session is unread: today, boss mail. Each message is one line (its kind in yellow, then sender and subject), up to five, then `+N more`. While mail is unread, every prompt also carries one context line naming it, which the model reads and you don't see. It reads the inbox folder only, so it costs nothing.
-- **BOSSES** lists this project's live bosses, this one first: the main boss (`main`) and its domain bosses (by domain, see the template's section 15), `(this)` on the current one, then `N working · M for you`, and how long since its heartbeat once that is more than five minutes old. Each refresh's heartbeat carries the boss's domain and its next line. A domain boss's pane covers only its sidebar folder (the workspace tag in a `Folder: <tag>` line of `CLAUDE.local.md`, else the domain name): WORKERS, watchers, attention lines and its heartbeat counts keep that folder's workspaces and their PRs, with no PR-only rows. The main boss sees every folder. Press a boss for its next line, the first lines of its domain's `<name>-state.md`, when it was last seen, and **`open workspace ↗`**.
-- **WORKERS** has one row per dispatched workspace: its name, its PR joined by branch (or `—`), then stage · time in stage · note. Active rows come first, the idle ones after them, dim; the header counts both (`3 active · 4 idle`):
+- **BOSSES** lists this project's live bosses, this one first: the main boss (`main`) and its domain bosses (by domain, see the template's section 15), `(this)` on the current one, then `N working · M for you`, and how long since its heartbeat once that is more than five minutes old. Each refresh's heartbeat carries the boss's domain and its next line. A domain boss's pane covers only its sidebar folder (the workspace tag in a `Folder: <tag>` line of `CLAUDE.local.md`, else the domain name): WORKERS, watchers, attention lines and its heartbeat counts keep that folder's workspaces and their PRs, with no PR-only rows. The main boss sees every folder. Press a boss for its next line, the first lines of its domain's `<name>-state.md`, when it was last seen, and **`open workspace ↗`**. This boss's own workspace is never a worker: the research and ops sessions that run as extra agent terminals in it are listed in its expanded row as `sessions`, one line per terminal (its title, agent state, age, and the ledger row's task text when a row names that terminal as `<workspace> / <terminal>`); the terminal the boss itself runs in is left out. A terminal's age counts from the first refresh that saw it.
+- **WORKERS** has one row per dispatched workspace: its name, its PR joined by branch (or `—`), then stage · time in stage · note. Active rows come first, the idle ones after them, dim; the header counts both (`4 active · 4 idle`):
 
   | Stage | When | Row |
   |---|---|---|
   | your move | its PR is approved and green | `› web-login  #57  your move · 12m · say merge` |
+| done · waiting on you | the boss logged `checked` or `ready` after the DONE, the agent is idle, yet its PR stays a draft (some projects keep every PR draft) or it has none | `› docs-site  —  done · waiting on you · 9m · no PR` |
   | boss checking | a DONE envelope (screen or PR comment) the ledger has not verified, or a ready PR whose CI went red | `◐ cache-warmup  #61  boss checking · DONE 2m ago · verifying` |
   | working | the agent is working (green `●`) | `● api-retries  —  working · 6m · make test-http` |
   | blocked | the agent is blocked (red `■`) | `■ api-retries  —  blocked · 1m · needs a token` |
@@ -356,7 +361,7 @@ A quiet pane: grey by default, color only for what needs you. Here with a worksp
 - **A stale kit:** when the kit on disk (its git HEAD) is not the one the pane loaded, an attention line `› kit updated · run /reload-plugins` (yellow) shows until the plugins are reloaded. The same line joins the worker view's warning line. `bin/boss-kit-update` is what updates the kit.
 - **`review ↗ <date>`** at the top opens the latest review page (this boss's `review.txt`).
 - **The footer** shows `tracker: N mine · N P0/P1 · N in progress` when a tracker is synced (nothing otherwise), `N new shared lessons` added since this boss's last session, and when the pane last updated.
-- **Colors:** a working worker's dot is green, a blocked one's square red, your move's `›` yellow, done today's `✓` green. A PR-only row's status: green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. A boss's `for you` count and a stale boss's age are yellow.
+- **Colors:** a working worker's dot is green, a blocked one's square red, your move's and waiting-on-you's `›` yellow, done today's `✓` green. A PR-only row's status: green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. A boss's `for you` count and a stale boss's age are yellow.
 - **Refresh:** every 60 s, plus right after the boss dispatches, merges, comments or syncs; those refreshes skip the 5-minute PR cache, so a merged PR drops off at once. `/boss-deck` refreshes on demand. The pane writes no status line.
 - **Messages:** each `superset terminals send --text` the boss runs is logged as that workspace's `msg` event (first 200 characters; key-only `--keys` sends are not), for the worker's FROM BOSS.
 

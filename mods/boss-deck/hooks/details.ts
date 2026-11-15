@@ -15,12 +15,12 @@ export type Row = { mark: string; markColor?: string; dim: boolean; name: string
 
 const lastEvent = (w: Worker, ...stages: string[]) => [...(w.events ?? [])].reverse().find(e => stages.includes(e.stage.toLowerCase()))
 
-/** Row order under WORKERS: your move, boss checking, working, blocked (the active ones), then in review, idle, done today. */
+/** Row order under WORKERS: your move, done and waiting on you, boss checking, working, blocked (the active ones), then in review, idle, done today. */
 export function rank(w: Worker): number {
-  if (w.stage !== 'working') return { move: 0, checking: 1, review: 4, done: 6 }[w.stage]
-  return w.state === 'working' ? 2 : w.state === 'blocked' ? 3 : 5
+  if (w.stage !== 'working') return { move: 0, waiting: 1, checking: 2, review: 5, done: 7 }[w.stage]
+  return w.state === 'working' ? 3 : w.state === 'blocked' ? 4 : 6
 }
-export const isActive = (w: Worker) => rank(w) <= 3
+export const isActive = (w: Worker) => rank(w) <= 4
 
 type Part = { text: string; color?: string }
 
@@ -51,6 +51,8 @@ function stageRow(w: Worker, nowS: number): Row {
   switch (w.stage) {
     case 'move':
       return { ...base, mark: '›', markColor: 'warning', dim: false, parts: [{ text: 'your move' }, { text: age }, p && needsProof(p) ? { text: 'no proof', color: 'warning' } : { text: 'say merge' }] }
+    case 'waiting':
+      return { ...base, mark: '›', markColor: 'warning', dim: false, parts: [{ text: 'done · waiting on you' }, { text: age }, { text: p ? 'PR draft' : 'no PR' }] }
     case 'checking': {
       if (p && !p.draft && p.ci === 'red') return { ...base, mark: '◐', dim: false, parts: [{ text: 'boss checking' }, { text: age }, { text: 'CI red', color: 'error' }] }
       const done = lastEvent(w, 'done', 'pr ready')?.at || p?.doneAt || w.since
@@ -111,11 +113,15 @@ export function bossRow(b: Boss, nowS: number): Row {
   }
 }
 
-/** An expanded boss: its next line, its domain state, when it was last seen. */
+/** An expanded boss: its next line, its domain state, its other agent sessions, when it was last seen. */
 export function bossDetails(b: Boss, nowS: number): Detail[] {
   return [
     { label: 'next', value: b.next || 'nothing written' },
     ...b.state.map((v, i) => ({ label: i ? '' : 'state', value: v })),
+    ...(b.sessions ?? []).map((s, i) => ({
+      label: i ? '' : 'sessions',
+      value: [s.title || s.id.slice(0, 8), s.state, ago(s.ageS), s.task].filter(Boolean).join(' · '),
+    })),
     { label: 'seen', value: `${ago(Math.max(0, nowS - b.heartbeat))} ago`, color: b.stale ? 'warning' : undefined },
   ]
 }
@@ -126,6 +132,8 @@ export function nextStep(w: Worker): string {
   switch (w.stage) {
     case 'move':
       return 'you: say merge'
+    case 'waiting':
+      return 'you: decide the next step'
     case 'checking':
       return p && !p.draft && p.ci === 'red' ? 'boss: send the CI failure to the worker' : 'boss: verify, then mark the PR ready'
     case 'review':

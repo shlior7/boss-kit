@@ -115,7 +115,7 @@ const row = (mark, mc, n, name, tag, ps, dim, bold) =>
   line(seg(pad(mark, 2), mc || (dim ? 'd' : '')), seg(n + ': ', 'hk'), seg(pad(name.slice(0, 13), 15), (dim ? 'd' : '') + (bold ? ' b' : '')),
     seg(pad(tag, 10), dim ? 'd' : ''), parts(ps, W - 30, dim))
 // A BOSSES row has no hotkey: domain (or main) and "(this)", then its counts.
-const boss = (name, ps, dim) => line(seg('  '), seg(pad(name, 18), dim ? 'd' : ''), parts(ps, W - 20, dim))
+const boss = (name, ps, dim, bold) => line(seg('  '), seg(pad(name, 18), (dim ? 'd' : '') + (bold ? ' b' : '')), parts(ps, W - 20, dim))
 const detail = (label, value, c = 'd') => line(seg('    ' + pad(label, 9), 'd'), seg(value, c))
 
 const head = () =>
@@ -124,9 +124,13 @@ const head = () =>
 const inbox = () =>
   section('inbox', '1 unread · boss-mail inbox') +
   line(seg(pad('question', 10), 'wa'), seg('gadgets: is #42 safe to depend on?'))
-const bosses = () =>
+const bosses = (open) =>
   section('bosses', '2 bosses') +
-  boss('main (this)', [['2 working'], ['1 for you', 'wa']]) +
+  boss('main (this)', [['2 working'], ['1 for you', 'wa']], false, open) +
+  (open ? detail('next', 'Merge #57 when you say so; fix-42 is running.') +
+    detail('sessions', 'api research · idle · 41m · research-1') +
+    detail('', 'deploy check · working · 6m') +
+    detail('seen', '8s ago') + '\n' : '') +
   boss('checkout', [['1 working'], ['0 for you'], ['seen 12m ago', 'wa']], true)
 // The footer: tracker and hint flow left and wrap whole, the age stays right on the first line.
 const foot = (ago, tracker) => '\n' + (tracker
@@ -134,9 +138,10 @@ const foot = (ago, tracker) => '\n' + (tracker
   : justify('press a row for details', `${ago} ago`, 'd', 'd'))
 
 const active = (open) =>
-  section('workers', '3 active · 4 idle') +
+  section('workers', '4 active · 4 idle') +
   row('›', 'wa', 1, 'web-login', '#57', [['your move'], ['12m'], ['no proof', 'wa']]) +
-  row('◐', '', 2, 'cache-warmup', '#61', [['boss checking'], ['DONE 2m ago'], ['verifying']], false, open) +
+  row('›', 'wa', 2, 'docs-site', '—', [['done · waiting on you'], ['9m'], ['no PR']]) +
+  row('◐', '', 3, 'cache-warmup', '#61', [['boss checking'], ['DONE 2m ago'], ['verifying']], false, open) +
   (open ? detail('10:02', 'sent  fix-61, watcher armed') +
     detail('10:31', 'DONE  fix-61: cache warms before traffic') +
     detail('next', 'boss: verify, then mark the PR ready') +
@@ -154,12 +159,12 @@ const active = (open) =>
     detail('doing', 'Ran make test-http') +
     detail('context', '188k · 19%') +
     line(seg('    '), seg('page ↗', 'su'), seg('  '), seg('demo ↗', 'su'), seg('  '), seg('open workspace ↗', 'su'), seg('  '), seg('open on GitHub ↗', 'su')) + '\n' : '') +
-  row('●', 'ok', 3, 'api-retries', '—', [['working'], ['6m'], ['make test-http']])
+  row('●', 'ok', 4, 'api-retries', '—', [['working'], ['6m'], ['make test-http']])
 const idle = () =>
-  row('·', '', 4, 'search-ui', '#55', [['in review'], ['conflicts with main', 'er'], ['1d'], ['waiting on jane']], true) +
-  row('·', '', 5, 'docs-refresh', '—', [['idle', 'wa'], ['41m'], ['no DONE']], true) +
-  row('✓', 'ok', 6, 'login-form', '#52', [['done today'], ['10:41'], ['merged, retired']], true) +
-  row('·', '', 7, 'ws#7', '—', [['approved', 'ok'], ['3 behind main', 'wa'], ['3h']], true)
+  row('·', '', 5, 'search-ui', '#55', [['in review'], ['conflicts with main', 'er'], ['1d'], ['waiting on jane']], true) +
+  row('·', '', 6, 'docs-refresh', '—', [['idle', 'wa'], ['41m'], ['no DONE']], true) +
+  row('✓', 'ok', 7, 'login-form', '#52', [['done today'], ['10:41'], ['merged, retired']], true) +
+  row('·', '', 8, 'ws#7', '—', [['approved', 'ok'], ['3 behind main', 'wa'], ['3h']], true)
 
 const main =
   head() +
@@ -169,7 +174,7 @@ const main =
   inbox() + bosses() + active(false) + idle() +
   foot('12s', 'tracker: 6 mine · 2 P0/P1 · 1 in progress')
 
-const peek = head() + bosses() + active(true) + idle() + foot('4s')
+const peek = head() + bosses(true) + active(true) + idle() + foot('4s')
 
 // The worker view: a dispatched worker's own session. Label column 7 wide, like register.tsx's field().
 const field = (label, value, c = 'd') => line(seg(pad(label, 7), 'd'), seg(value, c))

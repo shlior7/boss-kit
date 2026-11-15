@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""boss-merge: squash-merge one PR, only when it is safe.
+
+  boss-merge <pr> [--sha <verified sha>]
+
+Refuses unless the PR is open and its head is the sha the boss verified (--sha, else the sha the boss's last `checked`
+event names for the workspace on the PR's branch), mergeable is MERGEABLE, every review thread is answered (resolved, or
+the PR author replied in it), and no check is failing or pending. Then `gh pr merge --squash --match-head-commit <sha>`;
+when the base branch policy refuses and you can bypass every ruleset on the base, it retries with --admin and says so.
+Never --auto, never force. Once MERGED it prints the merge commit, logs `merged "PR #N"` for the workspace, and prints the
+leftover check of its worktree (BOSS-template.md section 8) and the archive command. It never archives: that needs the
+user's OK. Run from the repo, or set GH_REPO.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosskit  # noqa: E402
+
+# ponytail: first 100 threads and 100 comments each; paginate if a PR ever has more
+THREADS = """query($owner: String!, $repo: String!, $n: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $n) {
+  reviewThreads(first: 100) { nodes { isResolved path line comments(first: 100) { nodes { author { login } body } } } } } } }"""
+BYPASS = ("always", "pull_requests_only")
+
+
+def gh(*args):
+    r = subprocess.run(["gh", *args], capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+
+
+def gh_json(*args, fatal=True):
+    rc, out, err = gh(*args)
+    try:
+        if rc == 0:
+            return json.loads(out)
+    except ValueError:
+        pass
+    if fatal:
+        sys.exit(f"boss-merge: gh {' '.join(args[:2])}: {(err or out).strip()[:300]}")
+    return None
+
+
+def pr_view(n):
+    return gh_json("pr", "view", n, "--json", "number,state,headRefOid,headRefName,baseRefName,mergeable,statusCheckRollup,author,mergeCommit")
+
+
+def unanswered(threads, author):
+    """Threads that are neither resolved nor replied to by the PR author, as 'path:line who: first comment'."""
+    out = []
+    for t in threads:
+        cs = (t.get("comments") or {}).get("nodes") or []
+        if t.get("isResolved") or any((c.get("author") or {}).get("login") == author for c in cs):
+            continue
+        first = cs[0] if cs else {}
+        body = " ".join((first.get("body") or "").split())[:80]
+        out.append(f"{t.get('path')}:{t.get('line') or '?'} {(first.get('author') or {}).get('login', '?')}: {body}")
+    return out
+
+
+def checks(rollup):
+    """(failing, pending) check names; pending is not green."""
+    fail, pend = [], []
+    for c in rollup or []:
+        name = c.get("name") or c.get("context") or "?"
+        state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+        if state in ("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"):
+            fail.append(name)
+        elif state not in ("SUCCESS", "SKIPPED", "NEUTRAL"):
+            pend.append(name)
+    return fail, pend
+
+
+def workspace(branch):
+    """The local Paradev workspace on *branch* ({id, worktreePath, ...}), or None."""
+    r = subprocess.run(["superset", "workspaces", "list", "--local", "--json"], capture_output=True, text=True)
+    try:
+        rows = json.loads(r.stdout)
+    except ValueError:
+        return None
+    rows = rows if isinstance(rows, list) else rows.get("workspaces", [])
+    return next((w for w in rows if w.get("branch") == branch and not w.get("archivedAt")), None)
+
+
+def checked_sha(ctx, ws):
+    """The sha the boss's last `checked` event for *ws* names, or ''."""
+    for e in reversed(bosskit.events(ctx.bdir)):
+        if e["ws"] == ws and e["stage"] == "checked":
+            m = re.search(r"\b[0-9a-f]{7,40}\b", e["note"])
+            return m.group(0) if m else ""
+    return ""
+
+
+def can_bypass(base):
+    """Whether the current user can bypass every ruleset on *base*. No rulesets (or no answer) is no."""
+    rules = gh_json("api", f"repos/{{owner}}/{{repo}}/rules/branches/{base}", fatal=False) or []
+    ids = {r.get("ruleset_id") for r in rules if isinstance(r, dict) and r.get("ruleset_id")}
+    return bool(ids) and all((gh_json("api", f"repos/{{owner}}/{{repo}}/rulesets/{i}", fatal=False) or {}).get("current_user_can_bypass")
+                             in BYPASS for i in ids)
+
+
+def main(argv):
+    args, sha = list(argv), ""
+    if "--sha" in args:
+        i = args.index("--sha")
+        sha = args[i + 1] if i + 1 < len(args) else ""
+        del args[i:i + 2]
+    if len(args) != 1 or not args[0].lstrip("#").isdigit():
+        sys.exit(__doc__)
+    n = args[0].lstrip("#")
+    pr = pr_view(n)
+    head, branch, base = pr["headRefOid"], pr["headRefName"], pr["baseRefName"]
+    ws = workspace(branch)
+    try:
+        ctx = bosskit.load()
+    except SystemExit:
+        ctx = None
+    if not sha and ws and ctx:
+        sha = checked_sha(ctx, ws["id"])
+
+    why = []
+    if pr["state"] != "OPEN":
+        why.append(f"PR #{n} is {pr['state']}")
+    if not sha:
+        why.append("no verified sha: pass --sha, or log `boss-event <ws> checked \"<sha> ...\"` after verifying")
+    elif not re.fullmatch(r"[0-9a-f]{7,40}", sha) or not head.startswith(sha):
+        why.append(f"head {head[:12]} is not the verified {sha[:12]}: verify the new head first")
+    if pr["mergeable"] != "MERGEABLE":
+        why.append(f"mergeable is {pr['mergeable']}" + (" (GitHub is still computing it: retry)" if pr["mergeable"] == "UNKNOWN" else ""))
+    threads = gh_json("api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}", "-F", f"n={n}", "-f", f"query={THREADS}")
+    nodes = threads["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+    why += [f"unanswered thread: {t}" for t in unanswered(nodes, (pr.get("author") or {}).get("login"))]
+    fail, pend = checks(pr.get("statusCheckRollup"))
+    why += [f"failing check: {c}" for c in fail] + [f"pending check: {c}" for c in pend]
+    if why:
+        print("\n".join(f"refused: {w}" for w in why))
+        sys.exit(1)
+
+    cmd = ("pr", "merge", n, "--squash", "--match-head-commit", head)
+    rc, out, err = gh(*cmd)
+    if rc and "base branch policy" in err + out:
+        if not can_bypass(base):
+            sys.exit(f"boss-merge: the base branch policy refused the merge and you cannot bypass the rulesets on {base}:\n{(err or out).strip()}")
+        print(f"The base branch policy refused the merge; you can bypass the rulesets on {base}: retrying with --admin.")
+        rc, out, err = gh(*cmd, "--admin")
+    if rc:
+        sys.exit(f"boss-merge: gh pr merge failed:\n{(err or out).strip()}")
+    pr = pr_view(n)
+    if pr["state"] != "MERGED":
+        sys.exit(f"boss-merge: gh pr merge returned, but PR #{n} is {pr['state']}")
+    print(f"merged PR #{n}: {(pr.get('mergeCommit') or {}).get('oid', '?')}")
+
+    if not ws:
+        print(f"no local workspace on {branch}: log `boss-event <ws> merged \"PR #{n}\"` and check its leftovers yourself")
+        return
+    if ctx:
+        bosskit.add_event(ctx, ws["id"], "merged", f"PR #{n}")
+    else:
+        print(f"no boss project here: log `boss-event {ws['id']} merged \"PR #{n}\"` yourself")
+    left = bosskit.leftovers(ws.get("worktreePath") or "", branch)
+    print("leftovers: none" if not left else "leftovers (don't archive until handled):\n" + "\n".join(f"  {l}" for l in left))
+    print(f"archive, once the user says yes: superset workspaces archive {ws['id']} --local")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

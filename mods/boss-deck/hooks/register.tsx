@@ -36,7 +36,9 @@ let loadedKit: string | undefined
 async function refresh($: EngineInterface, sessionStart = false, skipCache = false) {
   // The session's own workspace and directory, so the script resolves the boss the session's shell does.
   const ws = await $.env.get('SUPERSET_WORKSPACE_ID')
-  const argv = [...DATA_CMD, '--cwd', await $.session.cwd(), ...(ws ? ['--workspace', ws] : []), ...(sessionStart ? ['--session-start'] : []), ...(skipCache ? ['--fresh'] : [])]
+  // Its own terminal, so the boss's sessions list leaves it out.
+  const term = await $.env.get('SUPERSET_TERMINAL_ID')
+  const argv = [...DATA_CMD, ...(term ? ['--terminal', term] : []), '--cwd', await $.session.cwd(), ...(ws ? ['--workspace', ws] : []), ...(sessionStart ? ['--session-start'] : []), ...(skipCache ? ['--fresh'] : [])]
   const { exitCode, stdout, stderr } = await $.process.run(argv, { timeoutMs: 90_000 })
   const at = Math.floor((await $.clock.now()) / 1000)
   const fresh: Deck =
