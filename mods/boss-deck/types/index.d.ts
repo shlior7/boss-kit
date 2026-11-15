@@ -60,6 +60,10 @@ export type Pr = {
   doneAt?: number
   /** the workspace prefix this PR's branch belongs to; a PR without one is its own row under WORKERS */
   ws?: string
+  /** commits its base has that its head lacks (GitHub's compare); 0 when level or unknown */
+  behind?: number
+  /** GitHub says it cannot merge cleanly: mergeable CONFLICTING, or mergeStateStatus DIRTY */
+  conflicts?: boolean
 }
 export type Attention = { level: 'act' | 'check'; text: string }
 /** One expanded row's details: label, value, and an optional theme color. */
@@ -88,6 +92,8 @@ export type Boss = {
 export type MailItem = { id: string; kind: string; from: string; subject: string }
 export type Deck = {
   at: number
+  /** the installed kit's short HEAD, "" when it is not a git checkout */
+  kit?: string
   me?: { id: string; project: string }
   others?: OtherBoss[]
   bosses?: Boss[]
@@ -133,7 +139,7 @@ export type WorkerView = {
   /** newest first */
   msgs: BossMsg[]
 }
-export type WorkerDeck = { at: number; worker: WorkerView | null; error?: string }
+export type WorkerDeck = { at: number; worker: WorkerView | null; kit?: string; error?: string }
 /** One item of the session's own task list (TodoWrite or the Task tools). */
 export type Task = { id: string; subject: string; status: 'pending' | 'in_progress' | 'completed'; active?: string }
 /** What the worker pane reads from its own session: whether a turn runs, when the last one began, the task list,

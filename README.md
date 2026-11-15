@@ -53,6 +53,7 @@ flowchart LR
 | `bin/bosskit.py` | Core: paths, project resolution, boss id, registry, lessons loader (`show`, `instructions`) |
 | `bin/boss-init` | Scaffolds a project in the data root |
 | `bin/boss-mail` | Messages between bosses |
+| `bin/boss-kit-update` | Updates the installed kit (`git pull --ff-only`) and mails every live boss to run `/reload-plugins`; types into no terminal |
 | `bin/boss-lesson` | Records and promotes lessons |
 | `bin/boss-migrate` | Moves an older kit's project data into the data root |
 | `bin/boss-watch-done.sh` | The watcher: one per dispatch, run in the background |
@@ -111,6 +112,8 @@ The pane is a plugin in this repo's marketplace. The `/boss` skill is a folder y
 ```bash
 mkdir -p ~/.claude/skills && ln -s ~/.claude/boss-kit/skills/boss ~/.claude/skills/boss
 ```
+
+To update later, run `~/.claude/boss-kit/bin/boss-kit-update`: it pulls the kit and mails every live boss to run `/reload-plugins`. A pane that sees the kit on disk move past the version it loaded shows `kit updated · run /reload-plugins` until it is reloaded.
 
 If you cloned the kit somewhere else, `export BOSS_KIT_HOME=/path/to/boss-kit`. For data somewhere else, `export BOSS_HOME=/path`. Every script, the skill and the pane read both.
 
@@ -315,6 +318,7 @@ Both files are append-only and numbered. An exact duplicate is refused; one that
 | `bin/boss-init <name> [--repo o/r] [--base main] [--me login] [--worktree DIR]` | Copies `projects/_template` to `$BOSS_HOME/<name>`, seeds the shared lessons, and writes `DIR/.boss` |
 | `bin/bosskit.py show \| instructions` | The resolved paths as JSON, or the full boss instructions (what `/boss` loads) |
 | `bin/boss-mail send \| inbox \| read \| reply \| done` | Boss mail, above |
+| `bin/boss-kit-update` | `git pull --ff-only` in the kit (`$BOSS_KIT`, else `$BOSS_KIT_HOME`, else `~/.claude/boss-kit`), prints `old..new` and the one-line log, then drops one `fyi` mail (`kit updated old..new: run /reload-plugins`) in the inbox of every live boss in `bosses.json`. It refuses a kit with uncommitted changes to tracked files or one that cannot fast-forward. It writes inbox files only: no keys or text go to any terminal, so nothing lands in a boss's input box. Each boss runs `/reload-plugins` between turns, after its user's OK |
 | `bin/boss-lesson add \| list \| promote` | Lessons, above |
 | `bin/boss-migrate [--kit DIR] [--boss ID] [--apply]` | Moves a v0.4-or-older kit's project data into `$BOSS_HOME` and leaves a symlink at each old path. Dry run unless `--apply`; never overwrites. `--boss` names the boss that owned the old `state/<name>/` |
 | `bin/boss-event <ws> <stage> [note]` | Appends `{at, ws, stage, note}` to this boss's `events.jsonl`. The boss logs `sent` on each dispatch, `checked`, `ready` and `retired`; the watcher logs `DONE`, `BLOCKED`, `PR READY` and `merged` when it fires |
@@ -348,6 +352,8 @@ A quiet pane: grey by default, color only for what needs you. Here with a worksp
 
   Time in stage comes from the stage log, `events.jsonl` (`bin/boss-event`, and the watcher when it fires), else the PR's last update, else the ledger date. A tracked PR no workspace owns (another author, an extra repo) is an idle row too: its tag as the name, `—`, its status (`· ws#7  —  approved · 3h`). PRs idle for 10+ days fold into one line.
 - **Press a row** (or its key, `1`–`9`, once the pane has focus) to expand it. A workspace shows its timed stage history (`10:02  sent  watcher armed`, `10:31  DONE  PR #42 draft`) and the `next` step and who takes it; then, when it has a PR, the PR's title, CI (pass / fail / pending with the failing names), mergeability, reviews, size, branch → base and head; then its worker's own report: `tasks 3 of 5 · now <in-progress task>` (from `<worktree>/.boss-worker/status.json`, which the worker's pane writes) and the last two lines of its `.boss-worker/notes.md`; then what it's doing now, context use (yellow at 60% or more) and a missing watcher. Last comes one link row: its proof (`page ↗`, `demo ↗`, `artifact ↗`, from the ledger's Proof column and the PR body and comments: Superset pages, claude.ai artifacts, video files, GitHub attachments and Loom), **`open workspace ↗`** (`superset workspaces open`) and **`open on GitHub ↗`**. A PR-only row shows the PR part. Press again to fold it.
+- **Drift:** a workspace's PR that has fallen behind its base shows `3 behind main` (yellow) in its row, right after the stage; one GitHub says conflicts shows `conflicts with main` (red, with `, N behind` when both). The PR-only rows carry the same note, and an expanded PR gets a `drift` line from GitHub's live read. The behind count is GitHub's compare of the PR's head with its base, taken in the PR fetch and cached with it (first 20 PRs per fetch).
+- **A stale kit:** when the kit on disk (its git HEAD) is not the one the pane loaded, an attention line `› kit updated · run /reload-plugins` (yellow) shows until the plugins are reloaded. The same line joins the worker view's warning line. `bin/boss-kit-update` is what updates the kit.
 - **`review ↗ <date>`** at the top opens the latest review page (this boss's `review.txt`).
 - **The footer** shows `tracker: N mine · N P0/P1 · N in progress` when a tracker is synced (nothing otherwise), `N new shared lessons` added since this boss's last session, and when the pane last updated.
 - **Colors:** a working worker's dot is green, a blocked one's square red, your move's `›` yellow, done today's `✓` green. A PR-only row's status: green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. A boss's `for you` count and a stale boss's age are yellow.
@@ -365,7 +371,7 @@ In a dispatched worker's own session the same pane shows that worker's status. I
 - **DELIVERED:** pushed commits on `origin/<branch>` and this workspace's events from the boss's `events.jsonl` (sent, DONE, PR READY, checked, ready, merged), newest first, at most 5.
 - **NOTES:** the last lines of the worktree's `.boss-worker/notes.md`, where the worker keeps its decisions and open questions; the boss's expanded row shows the last two.
 - **FROM BOSS** `N new`: what the boss sent this workspace, newest first, at most 3; new means since this session's last turn began.
-- **Warning line**, when it applies: context at 60% or more, the branch behind `origin/<base>`, CI red, the PR has no DONE comment after the agent went idle.
+- **Warning line**, when it applies: context at 60% or more, the branch behind `origin/<base>`, CI red, the PR has no DONE comment after the agent went idle, `kit updated · run /reload-plugins` once the kit on disk is newer than the one this pane loaded.
 - **Links:** proof (`page ↗`, `demo ↗`), `PR ↗`, `boss ↗` (opens the boss's workspace), then context % and the refresh age.
 - **Files:** the worker's pane writes its task progress to `<worktree>/.boss-worker/status.json` on each refresh and turn end, and keeps `.boss-worker/` in the worktree's `.git/info/exclude`, so neither file is committed.
 

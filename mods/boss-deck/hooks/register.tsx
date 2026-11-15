@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Boss, Deck, Detail, Live, Pr, ProofLink, Worker, WorkerDeck } from '../types'
-import { ago, bossDetails, bossRow, footer, isActive, isBoss, mailContext, prDetails, prRow, rank, workerDetails, workerRow } from './details'
+import { KIT_STALE, ago, bossDetails, bossRow, footer, isActive, isBoss, kitStale, mailContext, prDetails, prRow, rank, workerDetails, workerRow } from './details'
 import type { PrView, Row } from './details'
 import { activity, newMsgs, progress, prParts, sentMessages, stateParts, taskList, workerWarnings } from './worker'
 
@@ -21,13 +21,15 @@ const STALE_PR_DAYS = 10
 // Unread messages listed in the inbox before it folds the rest into "+N more".
 const INBOX_ROWS = 5
 // Change a tag when its value's fields change: it declines what an earlier version stored.
-const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-9' })
+const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-10' })
 const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-4' })
-const mine = atom({ plugin: 'boss-deck', key: 'mine' } as const, null, { shape: 'mine-1' })
+const mine = atom({ plugin: 'boss-deck', key: 'mine' } as const, null, { shape: 'mine-2' })
 const live = atom({ plugin: 'boss-deck', key: 'live' } as const, null, { shape: 'live-1' })
 // Which pane this session draws: the boss's, a dispatched worker's own, or none. session.start sets it again on a reload.
 let role: 'boss' | 'worker' | undefined
 let workerShown = false
+// The kit's HEAD when this module loaded (the first one a refresh reports); the pane warns once the disk moves past it.
+let loadedKit: string | undefined
 
 // Quiet by design: grey text, color only where it means something: stage marks and what needs attention.
 
@@ -41,6 +43,7 @@ async function refresh($: EngineInterface, sessionStart = false, skipCache = fal
     exitCode === 0
       ? JSON.parse(stdout)
       : { at, next: '', attention: [], workers: [], watchers: [], prs: [], board: {}, error: stderr.slice(0, 200) }
+  loadedKit ??= fresh.kit || undefined
   await update($, deck, () => fresh)
 }
 
@@ -61,6 +64,7 @@ async function workerRefresh($: EngineInterface, patch: Partial<Live> = {}) {
   const argv = [...DATA_CMD, '--worker', '--workspace', ws, '--cwd', await $.session.cwd(), '--status', status]
   const { exitCode, stdout, stderr } = await $.process.run(argv, { timeoutMs: 90_000 })
   const got: WorkerDeck | null = exitCode === 0 ? JSON.parse(stdout) : null
+  loadedKit ??= got?.kit || undefined
   await update($, mine, cur => got ?? (cur ? { ...cur, error: stderr.slice(0, 200) } : null))
   if (got?.worker && !workerShown) {
     workerShown = true
@@ -133,6 +137,7 @@ export const register: Register = on => {
       if (!ws) return next(e)
       role = 'worker'
       workerShown = false
+      loadedKit = undefined
       await $.command.register({ name: 'boss-deck', description: 'Open this worker\'s pane and refresh it now' })
       void workerRefresh($)
       $.clock.every(REFRESH_MS, () => void workerRefresh($))
@@ -140,6 +145,7 @@ export const register: Register = on => {
     }
 
     role = 'boss'
+    loadedKit = undefined
     await $.command.register({ name: 'boss-deck', description: 'Open the boss pane and refresh it now' })
     void $.ui.open({ id: PANE, title: TITLE })
     void refresh($, true)
@@ -267,7 +273,7 @@ export const register: Register = on => {
       const l = await read($, live)
       const tasks = l?.tasks ?? []
       const fresh = newMsgs(v, l)
-      const warn = workerWarnings(v, l)
+      const warn = workerWarnings(v, l, kitStale(loadedKit, mw?.kit))
       const field = (k: string, child: unknown) => (
         <Box flexDirection="row">
           {cell(7, text(k, true))}
@@ -389,6 +395,12 @@ export const register: Register = on => {
         <Text bold wrap="wrap">
           {d.next || 'Nothing needs you.'}
         </Text>
+        {kitStale(loadedKit, d.kit) && (
+          <Box flexDirection="row">
+            {cell(2, text('›', false, 'warning'))}
+            {rest(text(KIT_STALE, false, 'warning'))}
+          </Box>
+        )}
         {d.attention.map(a => (
           <Box flexDirection="row">
             {cell(2, text(a.level === 'act' ? '›' : '·', a.level !== 'act', a.level === 'act' ? 'warning' : undefined))}

@@ -1,7 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 
 import type { Live, Pr, Task, WorkerView } from '../types'
-import { who } from './details'
+import { KIT_STALE, who } from './details'
 
 type Part = { text: string; color?: string }
 
@@ -86,8 +86,9 @@ export function stateParts(v: WorkerView, l: Live | null, ago: (s: number) => st
   ]
 }
 
-/** The warning line's parts, when any applies: context, a branch behind its base, red CI, idle without a DONE comment. */
-export function workerWarnings(v: WorkerView, l: Live | null): string[] {
+/** The warning line's parts, when any applies: context, a branch behind its base, red CI, idle without a DONE comment,
+ * a kit updated on disk since this pane loaded. */
+export function workerWarnings(v: WorkerView, l: Live | null, kitStale = false): string[] {
   const p = v.pr
   const done = !!p?.doneAt && p.doneAt >= v.sentAt
   return [
@@ -95,6 +96,7 @@ export function workerWarnings(v: WorkerView, l: Live | null): string[] {
     v.behind > 0 ? `${v.behind} behind origin/${v.base}` : '',
     p?.ci === 'red' ? 'CI red' : '',
     p && l && !l.busy && l.turnAt > 0 && !done ? 'idle, no DONE comment on the PR' : '',
+    kitStale ? KIT_STALE : '',
   ].filter(Boolean)
 }
 

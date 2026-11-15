@@ -92,7 +92,7 @@
 
 <script>
 // Pane width in columns. Rows are [text, class] segments, laid out like register.tsx's cells.
-const W = 56
+const W = 64
 const pad = (s, n) => s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length)
 const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
 const seg = (t, c = '') => `<span class="${c}">${esc(t)}</span>`
@@ -146,6 +146,7 @@ const active = (open) =>
     detail('pr', 'warm the cache before traffic') +
     detail('ci', '14 pass', 'ok') +
     detail('merge', 'mergeable · clean') +
+    detail('drift', '3 behind main', 'wa') +
     detail('review', 'none yet') +
     detail('size', '+48 −6 in 3 files') +
     detail('branch', 'fix/cache-warmup → main') +
@@ -155,13 +156,14 @@ const active = (open) =>
     line(seg('    '), seg('page ↗', 'su'), seg('  '), seg('demo ↗', 'su'), seg('  '), seg('open workspace ↗', 'su'), seg('  '), seg('open on GitHub ↗', 'su')) + '\n' : '') +
   row('●', 'ok', 3, 'api-retries', '—', [['working'], ['6m'], ['make test-http']])
 const idle = () =>
-  row('·', '', 4, 'search-ui', '#55', [['in review'], ['1d'], ['waiting on jane']], true) +
+  row('·', '', 4, 'search-ui', '#55', [['in review'], ['conflicts with main', 'er'], ['1d'], ['waiting on jane']], true) +
   row('·', '', 5, 'docs-refresh', '—', [['idle', 'wa'], ['41m'], ['no DONE']], true) +
   row('✓', 'ok', 6, 'login-form', '#52', [['done today'], ['10:41'], ['merged, retired']], true) +
-  row('·', '', 7, 'ws#7', '—', [['approved', 'ok'], ['3h']], true)
+  row('·', '', 7, 'ws#7', '—', [['approved', 'ok'], ['3 behind main', 'wa'], ['3h']], true)
 
 const main =
   head() +
+  line(seg('› ', 'wa'), seg('kit updated · run /reload-plugins', 'wa')) +
   line(seg('› ', 'wa'), seg('#57 approved + green: ready to merge (no proof)', 'wa')) +
   line(seg('· ', 'd'), seg('docs-refresh: idle, docs-9 has no watcher', 'd')) +
   inbox() + bosses() + active(false) + idle() +
@@ -195,7 +197,7 @@ const worker =
   section('from boss', '1 new') +
   field('10:41', 'also cover the 429 case: retry after its header', '') +
   field('10:27', 'base it on main, not on #57', 'd') +
-  '\n' + line(seg('! 3 behind origin/main', 'wa')) + '\n' +
+  '\n' + line(seg('! 3 behind origin/main · kit updated · run /reload-plugins', 'wa')) + '\n' +
   justify('page ↗  PR ↗  boss ↗', 'ctx 31% · 8s ago', 'su', 'd')
 
 const paneTitle = '<div class="pane-title"><span>Boss</span></div>'

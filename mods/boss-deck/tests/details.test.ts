@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { ago, bossDetails, bossRow, footer, isActive, isBoss, mailContext, needsProof, nextStep, prDetails, prRow, rank, workerDetails, workerRow } from '../hooks/details'
+import { KIT_STALE, ago, bossDetails, bossRow, drift, footer, isActive, isBoss, kitStale, mailContext, needsProof, nextStep, prDetails, prRow, rank, workerDetails, workerRow } from '../hooks/details'
 import type { Boss, Pr, StageEvent, Worker } from '../types'
 
 const worker: Worker = { ws: '1a2b3c4d', id: 'x', term: 'y', name: 'api', branch: 'feat/a', task: 'restack-42', ledger: 'DISPATCHED', date: '2026-01-02', state: 'working', watched: true, proof: [], stage: 'working', since: 0 }
@@ -159,4 +159,41 @@ test('only the workspace the marker names is the boss; a bare marker is any sess
   expect(isBoss('notes\n# Boss workspace\n', 'ws-b')).toBe(true)
   expect(isBoss('# Boss workspaces are listed below\n', 'ws-b')).toBe(false)
   expect(isBoss('', 'ws-a')).toBe(false)
+})
+
+test('a PR behind its base or in conflict with it is flagged, and a level one is not', () => {
+  expect(drift(pr())).toBeNull()
+  expect(drift(pr({ behind: 3 }))).toEqual({ text: '3 behind main', color: 'warning' })
+  expect(drift(pr({ conflicts: true }))).toEqual({ text: 'conflicts with main', color: 'error' })
+  expect(drift(pr({ conflicts: true, behind: 2, base: 'develop' }))).toEqual({ text: 'conflicts with develop, 2 behind', color: 'error' })
+  // a fresher read overrides the cached flag
+  expect(drift(pr({ conflicts: true }), false)).toBeNull()
+})
+
+test('the drift note sits after the stage in a workspace row and after the status in a PR row', () => {
+  const now = 10_000
+  const row = (o: Partial<Worker>) => workerRow({ ...worker, ...o }, now).parts.filter(p => p.text).map(p => p.text).join(' · ')
+  expect(row({ stage: 'review', since: now - 3600, pr: pr({ behind: 3, reviewers: ['JaneDoe42'] }) })).toBe('in review · 3 behind main · 60m · waiting on jane')
+  expect(row({ stage: 'review', since: now - 3600, pr: pr({ conflicts: true }) })).toContain('in review · conflicts with main · 60m')
+  expect(row({ stage: 'review', since: now - 3600, pr: pr() })).toBe('in review · 60m · waiting on review')
+  expect(workerRow({ ...worker, stage: 'review', pr: pr({ conflicts: true }) }, now).parts[1]).toEqual({ text: 'conflicts with main', color: 'error' })
+  // a PR already merged and retired shows no drift
+  expect(row({ stage: 'done', pr: pr({ behind: 9 }), events: [ev('10:41', 1, 'merged')] })).not.toContain('behind')
+  expect(prRow(pr({ behind: 3 }), 0).parts.map(p => p.text)).toEqual(['open', '3 behind main', ''])
+})
+
+test("an expanded PR carries a drift line from GitHub's live read", () => {
+  const rows = (p: Pr, v: Parameters<typeof prDetails>[1]) => prDetails(p, v, 0).filter(r => r.label === 'drift')
+  expect(rows(pr({ behind: 3 }), { mergeable: 'MERGEABLE', mergeStateStatus: 'BEHIND' })).toEqual([{ label: 'drift', value: '3 behind main', color: 'warning' }])
+  expect(rows(pr(), { mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' })).toEqual([{ label: 'drift', value: 'conflicts with main', color: 'error' }])
+  expect(rows(pr(), { mergeable: 'UNKNOWN', mergeStateStatus: 'DIRTY' })[0]?.color).toBe('error')
+  expect(rows(pr({ conflicts: true }), { mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' })).toEqual([])
+})
+
+test('the kit is stale only when the one on disk differs from the one the pane loaded', () => {
+  expect(KIT_STALE).toBe('kit updated · run /reload-plugins')
+  expect(kitStale('a1b2c3d', 'e4f5a6b')).toBe(true)
+  expect(kitStale('a1b2c3d', 'a1b2c3d')).toBe(false)
+  expect(kitStale(undefined, 'a1b2c3d')).toBe(false)
+  expect(kitStale('a1b2c3d', '')).toBe(false)
 })

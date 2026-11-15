@@ -22,8 +22,29 @@ export function rank(w: Worker): number {
 }
 export const isActive = (w: Worker) => rank(w) <= 3
 
-/** A workspace's row: its stage, how long it has been there, and a note. */
+type Part = { text: string; color?: string }
+
+/** A PR's drift from its base as a short note: "conflicts with main" (error), else "3 behind main" (warning); none when
+ * level. `conflicts` overrides the cached flag with a fresher read. */
+export function drift(p: Pr, conflicts = p.conflicts): Part | null {
+  const behind = p.behind ?? 0
+  if (conflicts) return { text: `conflicts with ${p.base}${behind ? `, ${behind} behind` : ''}`, color: 'error' }
+  return behind > 0 ? { text: `${behind} behind ${p.base}`, color: 'warning' } : null
+}
+
+/** The attention line when the kit on disk is not the one this pane loaded. */
+export const KIT_STALE = 'kit updated · run /reload-plugins'
+export const kitStale = (loaded?: string, onDisk?: string) => !!loaded && !!onDisk && loaded !== onDisk
+
+/** A workspace's row: its stage, how long it has been there, and a note; its PR's drift follows the stage, where a
+ * narrow pane's truncation reaches it last. */
 export function workerRow(w: Worker, nowS: number): Row {
+  const r = stageRow(w, nowS)
+  const note = w.pr && w.stage !== 'done' ? drift(w.pr) : null
+  return note ? { ...r, parts: [r.parts[0] as Part, note, ...r.parts.slice(1)] } : r
+}
+
+function stageRow(w: Worker, nowS: number): Row {
   const age = w.since ? ago(Math.max(0, nowS - w.since)) : ''
   const p = w.pr
   const base = { name: w.name, tag: w.prTag || '—' }
@@ -75,7 +96,7 @@ export const prStatus = (p: Pr) =>
 /** A tracked PR no workspace owns (another author, an extra repo): its tag as the name, "—" for the workspace, its status. */
 export function prRow(p: Pr, nowS: number): Row {
   const updated = p.updated ? ago(Math.max(0, nowS - Math.floor(Date.parse(p.updated) / 1000))) : ''
-  return { mark: '·', dim: true, name: prTag(p), tag: '—', parts: [{ text: prStatus(p), color: prColor(p) }, { text: updated }] }
+  return { mark: '·', dim: true, name: prTag(p), tag: '—', parts: [{ text: prStatus(p), color: prColor(p) }, ...(drift(p) ? [drift(p) as Part] : []), { text: updated }] }
 }
 
 /** A BOSSES row: its domain ("main" for the project's main boss), "(this)" on this session's, its counts, and its age once stale. */
@@ -188,10 +209,12 @@ export function prDetails(p: Pr, v: PrView, nowS: number): Detail[] {
   const asked = (v.reviewRequests ?? []).map(r => `${who(r.login || r.name || '')} asked`)
   const merge = `${(v.mergeable ?? '').toLowerCase()} · ${(v.mergeStateStatus ?? '').toLowerCase()}`
   const updated = v.updatedAt ? ago(nowS - Math.floor(Date.parse(v.updatedAt) / 1000)) : '?'
+  const behind = drift(p, v.mergeable === 'CONFLICTING' || v.mergeStateStatus === 'DIRTY')
   return [
     { label: 'pr', value: shortTitle(p.title) },
     { label: 'ci', value: ci || 'no checks', color: failed.some(f => !/approval/i.test(f)) ? 'error' : pending ? 'warning' : 'success' },
     { label: 'merge', value: merge, color: v.mergeable === 'CONFLICTING' ? 'warning' : undefined },
+    ...(behind ? [{ label: 'drift', value: behind.text, color: behind.color }] : []),
     { label: 'review', value: [...reviews, ...asked].join(' · ') || 'none yet' },
     { label: 'size', value: `+${v.additions ?? 0} −${v.deletions ?? 0} in ${v.changedFiles ?? 0} files` },
     { label: 'branch', value: `${p.head} → ${p.base}` },

@@ -202,7 +202,10 @@ def notes_tail(wt, n=NOTE_ROWS):
 
 
 def read_status(wt):
-    """The worker pane's task progress in <worktree>/.boss-worker/status.json, or None."""
+    """The worker pane's task progress in <worktree>/.boss-worker/status.json, or None (also for no worktree: a path
+    relative to the cwd would read whichever worker's file the cwd holds)."""
+    if not wt:
+        return None
     try:
         s = json.load(open(os.path.join(wt, ".boss-worker", "status.json")))
         return {"done": int(s["tasks_done"]), "total": int(s["tasks_total"]), "current": str(s.get("current") or "")[:80],
@@ -752,7 +755,7 @@ if __name__ == "__main__":
         got = delivered([{"sha": "8c41d2e07", "at": 200, "subject": "add backoff"}], evs)
         assert [(r["kind"], r["text"]) for r in got] == [("DONE", "fix-42"), ("commit", "8c41d2e add backoff"), ("sent", "go")], got
         wt = tempfile.mkdtemp()
-        assert notes_tail(wt) == [] and read_status(wt) is None
+        assert notes_tail(wt) == [] and read_status(wt) is None and read_status("") is None
         write_status(wt, json.dumps({"tasks_done": 3, "tasks_total": 5, "current": "run tests"}), now=7)
         open(os.path.join(wt, ".boss-worker", "notes.md"), "w").write("# Notes\n\n- decided: cap at 5\n- open: retry 4xx?\n")
         assert read_status(wt) == {"done": 3, "total": 5, "current": "run tests", "at": 7} and notes_tail(wt, 1) == ["- open: retry 4xx?"]

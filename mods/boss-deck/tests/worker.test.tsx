@@ -51,6 +51,7 @@ const lv = (o: Partial<Live> = {}): Live => ({ busy: true, turnAt: 0, tasks: [],
 
 test('warnings: context, behind its base, red CI, idle with no DONE comment', () => {
   expect(workerWarnings(view(), lv())).toEqual([])
+  expect(workerWarnings(view(), lv(), true)).toEqual(['kit updated · run /reload-plugins'])
   expect(workerWarnings(view({ behind: 2, pr: pr({ ci: 'red' }) }), lv({ ctx: 64 }))).toEqual(['context 64% · clear soon', '2 behind origin/main', 'CI red'])
   expect(workerWarnings(view(), lv({ busy: false, turnAt: 5 }))).toEqual(['idle, no DONE comment on the PR'])
   expect(workerWarnings(view({ pr: pr({ doneAt: 200 }) }), lv({ busy: false, turnAt: 5 }))).toEqual([])
@@ -147,4 +148,17 @@ test('a dispatched worker gets its own view, top to bottom', async ($, on) => {
   expect(texts).toContain('! 2 behind origin/main')  // no turn seen yet: no idle warning; context % comes from the host
   expect(texts.filter(t => t.endsWith('↗'))).toEqual(['page ↗', 'PR ↗', 'boss ↗'])
   expect(texts.some(t => /^\d+s ago$/.test(t))).toBe(true)
+})
+
+test('a worker pane warns once the kit on disk moves past the one it loaded', async ($, on) => {
+  const deck = { ...WORKER, kit: 'a1b2c3d' }
+  session(on, deck, [], [])
+  await $.session.start({ cwd: '/w/worker', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const warnings = async () => (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '').filter(t => t.startsWith('!'))
+  expect(await warnings()).toEqual(['! 2 behind origin/main'])
+  deck.kit = 'e4f5a6b'
+  await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
+  expect(await warnings()).toEqual(['! 2 behind origin/main · kit updated · run /reload-plugins'])
 })

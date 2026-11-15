@@ -293,6 +293,31 @@ class Deck(Home):
                       open(os.path.join(ctx.inbox, f"m{i}.json"), "w"))
         self.assertEqual(deck.mail(ctx.inbox)["count"], 3)
 
+    def test_pr_rows_carry_drift_from_the_pr_fetch_and_the_compare(self):
+        deck = load_script("boss-deck-data.py")
+        pr = {"number": 7, "title": "t", "headRefOid": "abc123", "baseRefName": "main", "mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND"}
+        listed = json.dumps([pr, {**pr, "number": 8, "headRefOid": "def456", "mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY"}])
+        calls = []
+
+        def fake_run(argv, timeout=40):
+            calls.append(argv)
+            return listed if argv[:3] == ["gh", "pr", "list"] else ("3\n" if "abc123" in argv[2] else "garbage")
+
+        with mock.patch.object(deck, "run", fake_run):
+            rows = deck.prs({"repo": "acme/widgets", "me": "octocat"}, self.tmp, fresh=True)
+        self.assertEqual([(r["num"], r["behind"], r["conflicts"]) for r in rows], [(7, 3, False), (8, 0, True)])
+        self.assertIn("repos/acme/widgets/compare/main...abc123", calls[1][2])
+        self.assertIn("mergeStateStatus", deck.PR_FIELDS)
+
+    def test_kit_head_is_the_short_sha_of_the_kit_checkout_or_empty(self):
+        deck = load_script("boss-deck-data.py")
+        git(self.wt, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "x")
+        with mock.patch.object(bosskit, "KIT", self.wt):
+            head = deck.kit_head()
+        self.assertEqual(head, subprocess.run(["git", "-C", self.wt, "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip())
+        with mock.patch.object(bosskit, "KIT", self.tmp):  # not a git checkout
+            self.assertEqual(deck.kit_head(), "")
+
     def test_board_reads_the_tracker_snapshot_or_the_migrated_one(self):
         deck = load_script("boss-deck-data.py")
         os.environ["BOSS_PROJECT"] = "widgets"
