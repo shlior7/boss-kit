@@ -678,6 +678,21 @@ class BossSessions(Home):
     BOSS = "bbbbbbbb-0000-4000-8000-000000000009"
     WORKER = "aaaaaaaa-0000-4000-8000-000000000001"
 
+    def test_same_day_dispatches_of_one_terminal_take_the_newest_row(self):
+        deck = load_script("boss-deck-data.py")
+        led = os.path.join(self.tmp, "ledger.md")
+        row = lambda task, status: f"| 2026-01-02 | {task} | bbbbbbbb / ab12 | mid | {status} |\n"
+        head = "| Date | Task | Workspace | Model | Status |\n|---|---|---|---|---|\n"
+        # the first table appends: the later row is the newer one
+        open(led, "w").write(head + row("old-1: first", "DONE") + row("new-1: second", "DISPATCHED"))
+        self.assertEqual(deck.ledger_terms(led, "bbbbbbbb"), {"ab12": "new-1: second"})
+        # a "## Dispatches" section prepends: the earlier row is the newer one
+        open(led, "w").write("## Dispatches 2026-01-02\n\n" + head + row("new-1: second", "DISPATCHED") + row("old-1: first", "DONE"))
+        self.assertEqual(deck.ledger_terms(led, "bbbbbbbb"), {"ab12": "new-1: second"})
+        # a later date still wins over either order
+        open(led, "w").write(head + row("old-1: first", "DONE").replace("01-02", "01-03") + row("x-1: earlier day", "DONE"))
+        self.assertEqual(deck.ledger_terms(led, "bbbbbbbb"), {"ab12": "old-1: first"})
+
     def test_own_workspace_is_sessions_not_a_worker(self):
         os.environ["BOSS_PROJECT"] = "widgets"
         json.dump({"repo": "acme/widgets", "me": "octocat", "superset_host": "h"}, open(os.path.join(self.home, "widgets", "config.json"), "w"))

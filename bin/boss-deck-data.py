@@ -130,20 +130,25 @@ def ledger_tasks(path):
 
 
 def ledger_terms(path, ws_prefix):
-    """Terminal-id prefix -> task cell text, the newest row by date, for the rows of workspace *ws_prefix* that name
-    a terminal ("1a2b3c4d / 5e6f"): what a boss workspace's research and ops sessions are for."""
+    """Terminal-id prefix -> task cell text, the newest row, for the rows of workspace *ws_prefix* that name a
+    terminal ("1a2b3c4d / 5e6f"): what a boss workspace's research and ops sessions are for. Ranked as
+    ledger_tasks does: by date, then by section order (the first table appends, each dated section prepends)."""
     best = {}
     try:
         lines = open(path).read().splitlines()
     except OSError:
         return {}
-    for line in lines:
+    prepends = False
+    for i, line in enumerate(lines):
+        if line.startswith("## "):
+            prepends = line.startswith("## Dispatches")
         cols = [c.strip() for c in line.split("|")]
         if len(cols) < 7 or not re.match(r"\d{4}-\d{2}-\d{2}", cols[1]):
             continue
         m = re.match(r"(?:NEW )?([0-9a-f]{8})\s*/\s*([0-9a-f]{4,})", cols[3])
-        if m and m.group(1) == ws_prefix and (m.group(2) not in best or cols[1] > best[m.group(2)][0]):
-            best[m.group(2)] = (cols[1], cols[2])
+        key = (cols[1], prepends, -i if prepends else i)
+        if m and m.group(1) == ws_prefix and (m.group(2) not in best or key > best[m.group(2)][0]):
+            best[m.group(2)] = (key, cols[2])
     return {k: v[1] for k, v in best.items()}
 
 
@@ -803,6 +808,9 @@ if __name__ == "__main__":
                              "| 2026-01-01 | old-1: older | 1a2b3c4d / 5e6f | mid | DONE |\n"
                              "| 2026-01-02 | fix-9: x | 1a2b3c4d | mid | DISPATCHED |\n")  # no terminal: not a session's row
         assert ledger_terms(led, "1a2b3c4d") == {"5e6f": "research-1: map the api"} and ledger_terms(led, "9f9f9f9f") == {}
+        open(led, "w").write("| 2026-01-02 | first-1: a | 1a2b3c4d / 5e6f | mid | DONE |\n| 2026-01-02 | second-1: b | 1a2b3c4d / 5e6f | mid | DISPATCHED |\n"
+                             "## Dispatches 2026-01-02\n\n| 2026-01-02 | new-1: c | 1a2b3c4d / 5e6f | mid | DISPATCHED |\n| 2026-01-02 | old-1: d | 1a2b3c4d / 5e6f | mid | DONE |\n")
+        assert ledger_terms(led, "1a2b3c4d") == {"5e6f": "new-1: c"}, ledger_terms(led, "1a2b3c4d")
         space = {"terminals": [{"id": "me00", "title": "boss", "agent": {"state": "working"}},
                                {"id": "5e6f0000", "title": "api research", "agent": {"state": "idle"}}, {"id": "sh00", "title": "zsh"}]}
         first = {"gone": 1}
