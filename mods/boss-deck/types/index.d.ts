@@ -100,6 +100,8 @@ export type Boss = {
   pages?: Page[]
 }
 export type MailItem = { id: string; kind: string; from: string; subject: string }
+/** A pane button, from config's deck_buttons or deck_worker_buttons: a click submits its prompt to the boss's session. */
+export type DeckButton = { label: string; prompt: string }
 export type Deck = {
   at: number
   /** the installed kit's short HEAD, "" when it is not a git checkout */
@@ -118,6 +120,9 @@ export type Deck = {
   watchers: Watcher[]
   prs: Pr[]
   board: Board
+  /** the boss row's buttons; workerButtons go in each worker's accordion, {name} {id} {pr} {branch} filled */
+  buttons?: DeckButton[]
+  workerButtons?: DeckButton[]
   error?: string
 }
 

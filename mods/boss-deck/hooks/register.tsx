@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Boss, Deck, Detail, Live, Pr, ProofLink, Worker, WorkerDeck } from '../types'
-import { KIT_STALE, ago, bossDetails, bossRow, footer, isActive, isBoss, kitStale, mailContext, pageLinks, prDetails, prRow, rank, workerDetails, workerRow } from './details'
+import type { Boss, Deck, DeckButton, Detail, Live, Pr, ProofLink, Worker, WorkerDeck } from '../types'
+import { KIT_STALE, ago, bossDetails, buttons, bossRow, footer, isActive, isBoss, kitStale, mailContext, pageLinks, prDetails, prRow, rank, workerDetails, workerRow } from './details'
 import type { PrView, Row } from './details'
 import { activity, newMsgs, progress, prParts, stateParts, taskList, workerWarnings } from './worker'
 
@@ -20,6 +20,8 @@ const REFRESH_MS = 60_000
 const MSG_ROWS = 3
 // A PR untouched this long folds into one 'stale' line.
 const STALE_PR_DAYS = 10
+// A toast's line in a terminal: longer wraps in the toast box.
+const TOAST_COLS = 38
 // Unread messages listed in the inbox before it folds the rest into "+N more".
 const INBOX_ROWS = 5
 // Change a tag when its value's fields change: it declines what an earlier version stored.
@@ -104,6 +106,14 @@ async function openUrl($: EngineInterface, url: string) {
 async function openWorkspace($: EngineInterface, id: string) {
   const me = await self($)
   await $.process.run([...HOST_CMD, me.kind ?? '', me.id ?? '', 'open', id], { cwd: await $.session.cwd(), timeoutMs: 20_000 })
+}
+
+/** A pane button's click: its prompt goes to this session as if the user typed it, and a toast shows what went.
+ * It only asks: whatever the prompt leads to, the boss's own rules gate it (template section 3). */
+async function send($: EngineInterface, prompt: string) {
+  const line = `sent: ${prompt.replace(/\s+/g, ' ').trim()}`
+  $.ui.toast(line.length > TOAST_COLS ? `${line.slice(0, TOAST_COLS - 1)}…` : line)
+  await $.prompt.submit({ text: prompt, asUser: true })
 }
 
 /** Unread mail now: the inbox dir only, so a prompt costs one listing. */
@@ -257,9 +267,21 @@ export const register: Register = on => {
         <Text color="suggestion">{label}</Text>
       </Button>
     )
+    const ask = (k: string, b: DeckButton) => (
+      <Button plain key={k} onPress={() => void send($, b.prompt)}>
+        <Text color="suggestion">{b.label}</Text>
+      </Button>
+    )
+    const askRow = (k: string, bs: DeckButton[]) =>
+      bs.length > 0 && (
+        <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+          {bs.map(b => ask(`ask-${k}${b.label}`, b))}
+        </Box>
+      )
     type Open = { key: string; label: string; press: () => void }
     // The expanded row's ways out (proof, the workspace, GitHub) share one line, wrapping only when the pane is too narrow.
-    const details = (rows: Detail[], links: ProofLink[], opens: Open[]) => (
+    // A worker's prompt buttons (asks) sit on their own line above them.
+    const details = (rows: Detail[], links: ProofLink[], opens: Open[], asks: unknown) => (
       <Box flexDirection="column" paddingLeft={4} marginBottom={1}>
         {rows.map(r => (
           <Box flexDirection="row">
@@ -267,6 +289,7 @@ export const register: Register = on => {
             {rest(text(r.value, !r.color, r.color))}
           </Box>
         ))}
+        {asks as string}
         {(links.length > 0 || opens.length > 0) && (
           <Box flexDirection="row" columnGap={2} flexWrap="wrap">
             {links.map((l, i) => linkButton(`proof-${l.url}-${i}`, `${l.label} ↗`, l.url))}
@@ -377,9 +400,9 @@ export const register: Register = on => {
     // Active workspaces first, then the idle ones, then the PR-only rows. Row order is hotkey order.
     const workers = [...d.workers].sort((a, b) => rank(a) - rank(b))
     const active = workers.filter(isActive).length
-    type Item = { key: string; row: Row; load: () => Promise<{ rows: Detail[]; links?: ProofLink[] }>; opens: Open[] }
+    type Item = { key: string; row: Row; load: () => Promise<{ rows: Detail[]; links?: ProofLink[] }>; opens: Open[]; asks?: DeckButton[] }
     const items: Item[] = [
-      ...workers.map(w => ({ key: `w-${w.ws}`, row: workerRow(w, now), load: () => workerPeek($, w), opens: [...openWs(w.id), ...openGh(w.pr?.url)] })),
+      ...workers.map(w => ({ key: `w-${w.ws}`, row: workerRow(w, now), load: () => workerPeek($, w), opens: [...openWs(w.id), ...openGh(w.pr?.url)], asks: buttons(d.workerButtons, w) })),
       ...loose
         .filter(p => !isStale(p))
         .map(p => ({ key: `p-${p.repo}-${p.num}`, row: prRow(p, now), load: async () => ({ rows: await prView($, p), links: p.proof }), opens: openGh(p.url) })),
@@ -412,7 +435,7 @@ export const register: Register = on => {
               </Button>,
             )}
           </Box>
-          {open && shown && details(shown.rows, shown.links ?? [], it.opens)}
+          {open && shown && details(shown.rows, shown.links ?? [], it.opens, askRow(`${it.key}-`, it.asks ?? []))}
         </Box>
       )
     }
@@ -425,6 +448,7 @@ export const register: Register = on => {
           {d.next || 'Nothing needs you.'}
         </Text>
         {d.pagesTo && text(`pages → ${d.pagesTo}`, true)}
+        {askRow('', buttons(d.buttons))}
         {kitStale(loadedKit, d.kit) && (
           <Box flexDirection="row">
             {cell(2, text('›', false, 'warning'))}

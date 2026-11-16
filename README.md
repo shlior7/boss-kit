@@ -164,6 +164,8 @@ bin/bosskit.py config set --level boss host=<plugin> models.strong=fable --apply
 | `proof_urls` | none | regexes for another page provider's URLs: the pane counts them as `page` proof, beside the host's own `proof_links` |
 | `boss_name` | `BOSS` | what the boss renames its own workspace or session to at session start; `""` leaves the name alone |
 | `ledger` | `ledger.md` | the ledger file in the project folder |
+| `deck_buttons` | Status, Sweep PRs, Check workers, Review page, Cleanup, Mail, Lessons | the boss pane's button row, `[{label, prompt}]`: a click submits the prompt to the boss's own session, as typed. A prompt only asks; section 3 still gates |
+| `deck_worker_buttons` | Status, Verify, Nudge | the same, in each worker's accordion; `{name}`, `{id}`, `{pr}` and `{branch}` are filled per worker |
 
 ## Onboarding
 
