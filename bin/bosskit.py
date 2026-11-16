@@ -20,6 +20,10 @@ usage: bosskit.py show            the resolved paths, as JSON
        bosskit.py config set --level user|project|boss KEY=VALUE... [--apply]
                                   shows the resolved config after the change; writes only with --apply
        bosskit.py detect          the environment, as JSON: host CLIs, gh, git, $BOSS_HOME (for onboarding)
+       bosskit.py onboard questions [--text]   the onboarding form (skills/boss/questions.json) with current values, packed
+                                  into AskUserQuestion calls; --text for people (bin/boss-init --questions)
+       bosskit.py onboard apply FILE [--project NAME] [--level user|project|boss] [--apply]
+                                  the form's answers as config, BOSS.md ## Expectations and Domain lines; writes only with --apply
 """
 import hashlib
 import json
@@ -56,7 +60,29 @@ DEFAULTS = {
     # or {"provider": "<name>", "publish": "<command with <dir>>"}: every page goes there instead
     "pages": "auto",
     "boss_name": "BOSS",        # what the boss names its own workspace or session at session start; "" leaves it
+    # What goes on GitHub; `instructions` states it in plain words (github_text). comments: the PR comments the boss and
+    # its workers may post, any of COMMENT_KINDS ([] posts none); draft: workers open draft PRs; body: what the PR body
+    # carries (tracker, proof); ready: who marks a verified PR ready (boss | never); merge: boss-merge's method
+    # (squash | merge | rebase); style: the status comment (short | detailed).
+    "github": {"comments": ["status", "proof", "demo", "review_replies"], "draft": True, "body": ["tracker", "proof"],
+               "ready": "boss", "merge": "squash", "style": "short"},
+    "proof": "demo",            # UI proof: demo (a recorded demo, mandatory when UI-heavy) | screenshots (screenshots on a page do)
+    "cleanup": "ask",           # finished workspaces: ask before archiving each | auto (a standing OK, section 8)
+    "report": {"style": "action-first", "verbosity": "short"},  # section 9: action-first | voice; short | normal | detailed
 }
+# The PR comments config's github.comments may allow: kind -> (who posts it, what it is).
+COMMENT_KINDS = {
+    "status": ("worker", "one short plain-English done or blocked note: what changed and the checks run, its last line the "
+                         "hidden marker `<!-- BOSS_WORKER_DONE task: <id> -->`"),
+    "proof": ("worker", "the proof links (pages, demo) in that note"),
+    "demo": ("worker", "the demo video, attached to the PR"),
+    "marker": ("worker", "only the hidden marker line, as an otherwise empty comment: GitHub shows nothing, the watcher "
+                         "and the PR sweep read it"),
+    "review_replies": ("worker", "replies on the PR's review threads"),
+    "verify": ("boss", "a short note of what you verified, when you mark the PR ready (or, with ready never, once verified)"),
+    "merged": ("boss", "a short note after you merge: the merge sha and any follow-up"),
+}
+QUESTIONS = os.path.join(KIT, "skills", "boss", "questions.json")  # the onboarding form: the skill and boss-init read it
 
 
 def home():
@@ -249,25 +275,233 @@ def parse_sets(pairs):
     return out
 
 
-def set_config(layers, level, change, apply=False, now=None):
-    """The resolved config with *change* merged into *level*'s file, as text; with apply, writes that file
-    (merged into what is there, an existing file copied to <file>.bak-<time> first)."""
-    path = next((p for l, p, _ in layers if l == level), None)
-    if not path:
-        sys.exit(f"bosskit: no {level} layer here (boss needs a resolved boss, project a resolved project)")
-    new = [(l, p, deep_merge(d, change) if l == level else d) for l, p, d in layers]
+def write_layers(layers, changes, apply=False, now=None):
+    """The resolved config with each {level: change} merged into that level's file, as text; with apply, writes each
+    changed file (merged into what is there, an existing file copied to <file>.bak-<time> first)."""
+    for level in changes:
+        if not next((p for l, p, _ in layers if l == level), None):
+            sys.exit(f"bosskit: no {level} layer here (boss needs a resolved boss, project a resolved project)")
+    new = [(l, p, deep_merge(d, changes[l]) if l in changes else d) for l, p, d in layers]
     if merged(new).get("host"):
         host_kind(merged(new))  # the proposed host must be installed: exits naming the installed ones
-    body = next(d for l, _, d in new if l == level)
-    text = show_config(new) + f"\n\n{'wrote' if apply else 'would write'} {path}:\n" + json.dumps(body, indent=1)
-    if apply:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        if os.path.exists(path):
-            shutil.copy2(path, f"{path}.bak-{int(now or time.time())}")
-        save_json(path, body)
-    else:
-        text += "\n\n(dry run: nothing written; add --apply to write)"
+    text = show_config(new)
+    for level, path, body in new:
+        if level not in changes:
+            continue
+        text += f"\n\n{'wrote' if apply else 'would write'} {path}:\n" + json.dumps(body, indent=1)
+        if apply:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if os.path.exists(path):
+                shutil.copy2(path, f"{path}.bak-{int(now or time.time())}")
+            save_json(path, body)
     return text
+
+
+def set_config(layers, level, change, apply=False, now=None):
+    """write_layers for one level."""
+    return write_layers(layers, {level: change}, apply, now) + ("" if apply else "\n\n(dry run: nothing written; add --apply to write)")
+
+
+# ---- onboarding: the form in skills/boss/questions.json, its answers as config and BOSS.md changes --------------------
+
+def _dig(d, key):
+    for k in key.split("."):
+        d = d.get(k) if isinstance(d, dict) else None
+    return d
+
+
+def _nest(key, value):
+    for k in reversed(key.split(".")):
+        value = {k: value}
+    return value
+
+
+def form():
+    return json.load(open(QUESTIONS))
+
+
+def _keys(q):
+    return q["key"] if isinstance(q.get("key"), list) else [q["key"]] if q.get("key") else []
+
+
+def _current(q, cfg, wt):
+    """A question's value now: its config key's (a multiSelect only the part its options cover), or the worktree's domain."""
+    if q["id"] == "domain":
+        return boss_domain(wt)
+    if q["id"] == "folder":
+        return boss_folder(wt)
+    keys = _keys(q)
+    if not keys:
+        return None
+    cur = _dig(cfg, keys[0])
+    if q.get("multiSelect"):
+        vals = [o["value"] for o in q["options"]]
+        return [v for v in cur or [] if v in vals]
+    return cur
+
+
+def _derived(q, det, cfg):
+    """What the environment answers for a question with derive: an existing project's own value, else detect's."""
+    if det.get("project"):
+        return det["project"] if q["id"] == "name" else (_dig(cfg, q["key"]) if q.get("key") else None) or _dig(det, q["derive"])
+    if q["id"] == "name":
+        name = (_dig(det, "git.repo") or "").split("/")[-1]
+        return "" if any(p["name"] == name for p in det["boss_home"]["projects"]) else name  # a clash is asked
+    return _dig(det, q["derive"])
+
+
+def _label(o, cur):
+    return o["label"] + (" (current)" if cur else "")
+
+
+def onboard_questions(cfg, det, wt):
+    """The form as the skill asks it: AskUserQuestion calls of at most 4 questions (each current value first and marked),
+    the free-text questions, and what detect answered."""
+    f = form()
+    ask, plain, derived = [], [], {}
+    for q in f["questions"]:
+        if q.get("derive"):
+            v = _derived(q, det, cfg)
+            if v not in (None, ""):
+                derived[q["id"]] = v
+                continue
+        cur = _current(q, cfg, wt)
+        if q.get("free"):
+            plain.append({"id": q["id"], "question": q["question"], "current": cur})
+            continue
+        opts = q.get("options") or [{"label": n, "value": n, "description": h.get("description", "")} for n, h in det["hosts"].items()]
+        if q.get("multiSelect"):
+            out = [{"label": _label(o, o["value"] in cur), "description": o["description"]} for o in opts]
+        else:
+            match = [o for o in opts if o["value"] == cur or (o["value"] == "$default" and cur == _dig(DEFAULTS, _keys(q)[0]))]
+            rest = [o for o in opts if o not in match]
+            first = [{**match[0], "label": _label(match[0], True)}] if match else \
+                [] if cur in (None, "") else [{"label": f"{json.dumps(cur)[:40]} (current)", "description": "the value set now"}]
+            out = [{"label": o["label"], "description": o["description"]} for o in first + rest][:4]
+        ask.append({"id": q["id"], "question": q["question"], "header": q["header"], "multiSelect": bool(q.get("multiSelect")), "options": out})
+    return {"calls": [ask[i:i + 4] for i in range(0, len(ask), 4)], "plain": plain, "derived": derived, "followups": f["followups"],
+            "expectations": f["expectations"], "fixed": f["fixed"], "closing": f["closing"]}
+
+
+def _value(q, a, parse=True):
+    """One answer as its config value: an option's label or value, else Other text (JSON when it parses and *parse*)."""
+    if isinstance(a, str):
+        a = re.sub(r"\s*\((current|Recommended)\)$", "", a).strip()
+        o = next((o for o in q.get("options") or [] if o["label"].lower() == a.lower()), None)
+        if o or not parse:
+            return o["value"] if o else a
+        try:
+            return json.loads(a)
+        except ValueError:
+            return a
+    return a
+
+
+def _values(q, a):
+    """A multiSelect answer as a list: [] for none ('none', '', [])."""
+    if isinstance(a, str):
+        a = [] if a.strip().lower() in ("", "none") else [s for s in re.split(r"\s*,\s*", a.strip())]
+    return [_value(q, x) for x in a or [] if not (isinstance(x, str) and x.strip().lower() == "none")]
+
+
+def onboard_changes(answers, layers, level=None, wt=None):
+    """The answers file as ({level: config change}, extras): extras holds name, domain, folder and expectations.
+    A question left out keeps its value; only values that differ from the resolved config are written."""
+    f, cfg = form(), merged(layers)
+    qs = f["questions"] + f["followups"]
+    extras, want = {}, {}
+    for q in qs:
+        if q["id"] not in answers:
+            continue
+        a = answers[q["id"]]
+        if q["id"] in ("name", "domain", "folder"):
+            extras[q["id"]] = _value(q, a, parse=False)
+            continue
+        for key in _keys(q):
+            if q.get("multiSelect"):
+                want.setdefault(key, {})[q["id"]] = _values(q, a)
+            else:
+                v = _value(q, a)
+                want[key] = (q, _dig(DEFAULTS, key) if v == "$default" else v)
+    if "expectations" in answers:
+        e = answers["expectations"]
+        x = f["expectations"]
+        extras["expectations"] = "\n".join(f"- {_value(x, a, False)}" for a in e) if isinstance(e, list) else _value(x, e, False)
+    if extras.get("domain") == "$ask":
+        sys.exit("bosskit: answer domain with the domain boss's name")
+    changes = {}
+    for key, v in want.items():
+        if isinstance(v, dict):  # multiSelect questions sharing a key: answered parts, plus the current part of the rest
+            parts = [q for q in qs if q.get("multiSelect") and key in _keys(q)]
+            v = (parts[0], [x for q in parts for x in (v[q["id"]] if q["id"] in v else _current(q, cfg, wt))])
+            v = (v[0], list(dict.fromkeys(v[1])))
+        q, val = v
+        if val is None or val == _dig(cfg, key):
+            continue
+        lvl = level or q["level"]
+        if key == "host" and not level and _dig(next((d for l, _, d in layers if l == "project"), {}), "host") not in (None, "", val):
+            lvl = "boss"  # the project's other bosses keep theirs
+        changes[lvl] = deep_merge(changes.get(lvl, {}), _nest(key, val))
+    return changes, extras
+
+
+def set_section(text, heading, body):
+    """*text* with the markdown section *heading* holding *body*: replaced when there, else appended."""
+    block = f"{heading}\n\n{body.strip()}\n"
+    m = re.search(rf"^{re.escape(heading)}[ \t]*\n.*?(?=^## |\Z)", text, re.M | re.S)
+    if m:
+        return text[:m.start()] + block + ("\n" if text[m.end():] else "") + text[m.end():]
+    return text.rstrip("\n") + "\n\n" + block
+
+
+def onboard_apply(answers, name=None, level=None, apply=False, cwd=None, now=None):
+    """The resolved config, BOSS.md and CLAUDE.local.md after the answers, as text; with apply, writes them."""
+    h, wt = home(), worktree(cwd)
+    name = name or answers.get("name") or project_name(cwd, h)
+    if os.path.isfile(layer_path(h, "project", name)):
+        layers = load(cwd, name, make=apply, resolve_host=False).layers
+    else:  # a new project: boss-init writes its folder first
+        layers = config_layers(h, name, boss_id(cwd, h))
+    changes, extras = onboard_changes(answers, layers, level, wt)
+    text = write_layers(layers, changes, apply, now)
+    if "expectations" in extras:
+        path = os.path.join(h, name, "BOSS.md")
+        text += f"\n\n{'wrote' if apply else 'would write'} {path}, ## Expectations:\n{extras['expectations']}"
+        if apply:
+            old = _read(path)
+            if old:
+                shutil.copy2(path, f"{path}.bak-{int(now or time.time())}")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").write(set_section(old, form()["expectations"]["heading"], extras["expectations"]))
+    if extras.get("domain"):
+        local, have = os.path.join(wt, "CLAUDE.local.md"), boss_domain(wt)
+        lines = f"Domain: {extras['domain']}\n" + (f"Folder: {extras['folder']}\n" if extras.get("folder") not in (None, "", extras["domain"]) else "")
+        if have and have != extras["domain"]:
+            text += f"\n\n{local} already says Domain: {have}; not changed (edit it yourself to make this boss {extras['domain']})"
+        elif not have:
+            text += f"\n\n{'added to' if apply else 'would add to'} {local}:\n{lines}"
+            if apply:
+                old = _read(local)
+                open(local, "w").write(old + ("\n" if old and not old.endswith("\n") else "") + lines)
+    return text + ("" if apply else "\n\n(dry run: nothing written; add --apply to write)")
+
+
+def questions_text(q_out):
+    """The form as plain text, for bin/boss-init --questions: each question's id, options and current value."""
+    f = form()
+    out = ["The /boss onboarding form. Answer in a JSON file, {\"<id>\": <answer>, ...}: an option's label or value, a list for a",
+           "check-any question ([] or \"none\" for none), or your own text. Leave an id out to keep its current value. Then:",
+           "  boss-init <name> --answers FILE    (a new project)",
+           "  bosskit.py onboard apply FILE [--level user|project|boss] [--apply]    (an existing one)", ""]
+    for line in f["fixed"]:
+        out.append(f"Fixed: {line}")
+    for k, v in q_out["derived"].items():
+        out.append(f"Derived: {k} = {json.dumps(v)}")
+    for q in f["questions"] + f["followups"] + [f["expectations"]]:
+        where = ", ".join(_keys(q)) or ("BOSS.md " + q["heading"] if q.get("heading") else q["id"])
+        out.append(f"\n{q['id']}  [{where}{', any of' if q.get('multiSelect') else ''}]  {q['question']}")
+        out += [f"    {json.dumps(o['value']):<16} {o['label']}: {o['description']}".rstrip(": ") for o in q.get("options") or []]
+    return "\n".join(out + ["", f["closing"]]) + "\n"
 
 
 def boss_marker(wt):
@@ -455,7 +689,7 @@ def host_prompt(ctx):
     """The resolved host plugin's commands: the only host text a boss ever loads. When config's `pages` names a provider,
     its Pages line says where pages go instead."""
     import bosshost
-    text = bosshost.get(ctx.cfg, ctx.host).prompt()
+    text = HOST_PR_LINE.sub(lambda _: "GitHub: " + worker_github_line(ctx.cfg), bosshost.get(ctx.cfg, ctx.host).prompt())
     p = ctx.cfg.get("pages")
     if not isinstance(p, dict) or not p.get("provider"):
         return text
@@ -463,6 +697,100 @@ def host_prompt(ctx):
             "never the host's pages or a claude.ai artifact.")
     out, n = re.subn(r"^- Pages:.*$", lambda _: line, text, flags=re.M)
     return out if n else text.rstrip("\n") + "\n" + line + "\n"
+
+
+# A host prompt's own PR-comment sentence for the dispatch text; the GitHub block's worker line replaces it.
+HOST_PR_LINE = re.compile(r"On the PR, post one short plain-English status comment.*?never the envelope\.")
+
+
+def comment_kinds(cfg):
+    g = cfg.get("github") or {}
+    return [k for k in COMMENT_KINDS if k in (g.get("comments") or [])]
+
+
+def worker_github_line(cfg):
+    """The GitHub sentence every dispatched prompt carries: exactly the posts config's github allows a worker."""
+    g, on = cfg.get("github") or {}, comment_kinds(cfg)
+    body = [w for w in ("tracker", "proof") if w in (g.get("body") or [])]
+    out = ["Push and open a draft PR as soon as your first commit exists." if g.get("draft", True) else
+           "Push and open a PR (not a draft) as soon as your first commit exists.", "Never mark it ready yourself."]
+    out.append("Fill in the PR body in plain English: what changed and why" +
+               "".join(f", the {'tracker link' if w == 'tracker' else 'proof links'}" for w in body) + ".")
+    marker = "`<!-- BOSS_WORKER_DONE task: <id> -->` (`<!-- BOSS_WORKER_BLOCKED task: <id> -->` when blocked)"
+    if "status" in on:
+        what = "what changed, the checks you ran" + (", the proof links" if "proof" in on else "") + \
+               (", a short table of checks and the files changed" if g.get("style") == "detailed" else "")
+        out.append(f"When done or blocked, post ONE short plain-English status comment on the PR ({what}) ending with the line {marker}; never the envelope.")
+    elif "marker" in on:
+        out.append(f"When done or blocked, post one PR comment holding only the line {marker} and no other text; never the envelope.")
+    else:
+        out.append("Post no status comment on the PR.")
+    out.append("Attach the demo video to the PR." if "demo" in on else "Never post the demo on the PR: its path or URL goes in the envelope.")
+    out.append("You may reply on the PR's review threads." if "review_replies" in on else
+               "Never reply on review threads: fix the code and tell the boss which threads need an answer.")
+    return " ".join(out + ["Post nothing else on GitHub."])
+
+
+def done_paths(host):
+    """How this host tells the boss a worker is done without GitHub: its own watcher, the worker's message."""
+    import bosshost
+    return (["the host's own watcher (the host commands say how it reads the envelope)"] if host.watch_script() else []) + \
+           (["the envelope message the worker sends you"] if type(host).messages is not bosshost.Host.messages else [])
+
+
+def github_text(cfg, host):
+    """The boss's GitHub and settings block, in plain words: what the boss and its workers may post, who marks ready, how
+    it merges, and what done detection is left when no marker goes on the PR."""
+    g, on = cfg.get("github") or {}, comment_kinds(cfg)
+    junk = sorted(set(g.get("comments") or []) - set(COMMENT_KINDS))
+    out = ["## Settings in effect (from config: `bosskit.py config show`)",
+           "These override every other line about the same thing in these instructions and the host commands.",
+           "### GitHub (`github`)",
+           "Post exactly what is allowed here, you and your workers alike, and nothing else on GitHub."]
+    if on:
+        out.append("- PR comments allowed: " + ", ".join(on) + ".")
+        out += [f"  - `{k}` ({COMMENT_KINDS[k][0]}): {COMMENT_KINDS[k][1]}" for k in on]
+        off = [k for k in COMMENT_KINDS if k not in on]
+        out += ["- Not allowed: " + ", ".join(off) + "."] if off else []
+    else:
+        out.append("- PR comments allowed: none. Neither you nor any worker posts a PR comment, a review reply or a demo on GitHub.")
+    if junk:
+        out.append(f"- Ignored, not a comment kind: {', '.join(junk)} (the kinds: {', '.join(COMMENT_KINDS)}).")
+    if "proof" in on and "status" not in on:
+        out.append("- `proof` needs `status`: with no status comment, proof links go in the envelope and the PR body only.")
+    paths = done_paths(host)
+    if "status" in on or "marker" in on:
+        out.append(f"- Done detection: the envelope ({' or '.join(paths) or 'the host commands say how'}), and on GitHub the hidden "
+                   f"marker in the {'status comment' if 'status' in on else 'marker-only comment'}, which the watcher and the PR sweep read.")
+    elif paths:
+        out.append(f"- Done detection: no marker goes on GitHub, so the watcher and the PR sweep see a PR only when it leaves draft or "
+                   f"merges. Done comes from {' and '.join(paths)}. The envelope stays mandatory on every dispatch.")
+    else:
+        out.append("- Done detection, warning: this host gives the watcher no screen or message path, so a PR marker is its only done "
+                   "signal, and none is allowed. A finished worker shows only as the idle fire: on each one, read the worker and its PR "
+                   "before re-arming. To get the signal back without a visible note, ask the user to allow `marker` (an otherwise empty "
+                   "comment holding only the hidden line).")
+    body = [w for w in ("tracker", "proof") if w in (g.get("body") or [])]
+    out.append("- PR body: " + (" and ".join(f"the {'tracker link' if w == 'tracker' else 'proof links'}" for w in body) + ", besides what changed."
+                                if body else "what changed only: no tracker link, no proof links."))
+    out.append("- Draft PRs: workers open a draft PR as soon as the first commit exists." if g.get("draft", True) else
+               "- Draft PRs: off. Workers open a ready PR, so leaving draft is no done signal (the watcher ignores it).")
+    out.append("- Ready: you mark a verified PR ready (`gh pr ready N`, section 7)." if g.get("ready", "boss") == "boss" else
+               "- Ready: never. Nobody marks a PR ready: once verified, tell the user it is ready for review and leave it draft.")
+    out.append(f"- Merge: `bin/boss-merge` merges with --{g.get('merge') or 'squash'}. Never without the user's OK in this "
+               "conversation (section 3); no setting changes that.")
+    out.append(f'- Every dispatched prompt carries this line, in place of any PR-comment line in the host commands: "GitHub: {worker_github_line(cfg)}"')
+    out.append("### Other settings")
+    out.append("- UI proof (`proof`): " + ("screenshots of each step on a page are enough, even for UI-heavy work; a demo is optional."
+                                         if cfg.get("proof") == "screenshots" else "a recorded demo, mandatory for UI-heavy work (section 5, rule 6)."))
+    out.append("- Cleanup (`cleanup`): " + ("a standing OK: archive a finished workspace once its leftover check is clean, and report it. "
+                                           "Still ask for research workspaces, ones the user typed into, or ones with leftovers."
+                                           if cfg.get("cleanup") == "auto" else "ask before archiving each finished workspace (section 8)."))
+    r = cfg.get("report") or {}
+    out.append(f"- Reports (`report`): {'voice: plain sentences, no tables or symbols' if r.get('style') == 'voice' else 'action-first (section 9)'}, "
+               f"{r.get('verbosity') or 'short'}" + {"normal": ": a few lines per item where it helps.",
+                                                     "detailed": ": reasons and evidence for each item, still action-first."}.get(r.get("verbosity"), ": the fewest lines that work."))
+    return "\n".join(out) + "\n"
 
 
 def org_files(h):
@@ -491,9 +819,11 @@ def for_host(host, text, what):
 
 
 def instructions(ctx):
+    import bosshost
     lessons = lambda path, what: for_host(ctx.host, _read(path), what)
     parts = [("BOSS-template.md", _read(os.path.join(KIT, "BOSS-template.md"))),
              (f"host plugin {ctx.host} (host commands)", host_prompt(ctx)),
+             ("settings in effect (config)", github_text(ctx.cfg, bosshost.get(ctx.cfg, ctx.host))),
              ("org.md (org layer)", for_host(ctx.host, _read(os.path.join(ctx.home, "org.md")), "the org facts")),
              (f"{ctx.name}/BOSS.md", for_host(ctx.host, _read(os.path.join(ctx.pdir, "BOSS.md")), "the project facts")),
              (f"{ctx.name}/lessons.md (project lessons)", lessons(os.path.join(ctx.pdir, "lessons.md"), "project lessons")),
@@ -501,8 +831,8 @@ def instructions(ctx):
     domain = boss_domain(ctx.worktree)
     if domain:
         ddir = os.path.join(ctx.pdir, "domains")
-        parts.insert(4, (f"{ctx.name}/domains/{domain}.md (domain charter)", _read(os.path.join(ddir, f"{domain}.md"))))
-        parts.insert(5, (f"{ctx.name}/domains/{domain}-state.md (domain state, you keep it current)", _read(os.path.join(ddir, f"{domain}-state.md"))))
+        parts.insert(5, (f"{ctx.name}/domains/{domain}.md (domain charter)", _read(os.path.join(ddir, f"{domain}.md"))))
+        parts.insert(6, (f"{ctx.name}/domains/{domain}-state.md (domain state, you keep it current)", _read(os.path.join(ddir, f"{domain}-state.md"))))
     org = org_files(ctx.home)
     head = (f"# Boss session: project {ctx.name}, boss {ctx.bid}, host {ctx.host}" + (f", domain {domain}" if domain else "")
             + (f", org layer: {' + '.join(map(os.path.basename, org))}" if org else "") + "\n")
@@ -561,6 +891,25 @@ def detect(cwd=None):
     }
 
 
+def onboard_cmd(args):
+    """bosskit.py onboard questions [--text] | apply FILE [--project NAME] [--level L] [--apply]"""
+    sub = args[0] if args else ""
+    if sub == "questions":
+        try:
+            cfg = load(make=False, resolve_host=False).cfg
+        except SystemExit:  # no project yet: the shared layers
+            cfg = merged(base_layers(home()))
+        q = onboard_questions(cfg, detect(), worktree())
+        return questions_text(q) if "--text" in args else json.dumps(q, indent=1)
+    if sub == "apply" and len(args) > 1:
+        level = args[args.index("--level") + 1] if "--level" in args[:-1] else None
+        if level not in (None, *LEVELS):
+            sys.exit(f"bosskit: onboard apply --level {'|'.join(LEVELS)}")
+        name = args[args.index("--project") + 1] if "--project" in args[:-1] else None
+        return onboard_apply(_json_file(args[1]), name, level, "--apply" in args)
+    sys.exit(onboard_cmd.__doc__)
+
+
 def config_cmd(args):
     """bosskit.py config show [--json] | set --level L KEY=VALUE... [--apply]"""
     sub = args[0] if args else "show"
@@ -587,6 +936,9 @@ def main():
         return
     if cmd == "detect":
         print(json.dumps(detect(), indent=1))
+        return
+    if cmd == "onboard":
+        print(onboard_cmd(sys.argv[2:]))
         return
     ctx = load()
     if cmd == "show":

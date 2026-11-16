@@ -36,9 +36,10 @@ sig(){ LC_ALL=C awk '/^ {21,}(│|╭|╰)/ { l[NR] = ""; next }   # the boss'\'
     sub(/^[ \t]*task:[ \t]*/, "", r); sub(/[^A-Za-z0-9._-].*$/, "", r)
     su = ""; if (match(b, /summary:? +/)) { su = substr(b, RSTART + RLENGTH, 30); gsub(/[ \t]+/, " ", su); sub(/ $/, "", su) }
     print k "|" r "|" su; exit } }'; }
-# PR numbers that count as done: merged, open non-draft, or carrying a comment whose line starts a DONE envelope or holds
-# its hidden marker (<!-- BOSS_WORKER_DONE task: x -->, the human-readable status comment's last line)
-pick(){ jq -r '.[] | select(.state == "MERGED" or (.state == "OPEN" and (.isDraft == false
+# PR numbers that count as done: merged, open non-draft (unless BOSS_PR_DRAFT=0: workers open ready PRs, config github.draft),
+# or carrying a comment whose line starts a DONE envelope or holds its hidden marker (<!-- BOSS_WORKER_DONE task: x -->, the
+# human-readable status comment's last line)
+pick(){ jq -r '.[] | select(.state == "MERGED" or (.state == "OPEN" and ((.isDraft == false and $ENV.BOSS_PR_DRAFT != "0")
     or any((.comments // [])[]; .body | test("(^|\n)[ \t>`]*(<!--[ \t]*)?(BOSS|SUPERSET)_WORKER_DONE\\s+task:[ \t]*[A-Za-z0-9._-]"))))) | .number'; }
 [ "$1" = --sig ] && { sig; exit; }
 [ "$1" = --ready ] && { pick; exit; }
