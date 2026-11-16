@@ -435,7 +435,7 @@ def onboard_changes(answers, layers, level=None, wt=None):
             continue
         a = answers[q["id"]]
         if q["id"] in ("name", "domain", "folder"):
-            extras[q["id"]] = _value(q, a, parse=False)
+            extras.setdefault(q["id"], _value(q, a, parse=False))  # the question with options first: "Main boss" is ""
             continue
         for key in _keys(q):
             if q.get("multiSelect"):

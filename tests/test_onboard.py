@@ -201,6 +201,10 @@ class Answers(Home):
         ch, _ = bosskit.onboard_changes({"merge": "Rebase", "wake": "Yes", "models_strong": "opus", "deck": "Off"}, ctx.layers)
         self.assertEqual(ch, {"project": {"github": {"merge": "rebase"}}, "boss": {"wake": True},
                               "user": {"deck_buttons": [], "deck_worker_buttons": []}})  # opus is already the value
+        _, ex = bosskit.onboard_changes({"domain": "Main boss (current)"}, ctx.layers)
+        self.assertEqual(ex["domain"], "")  # the main boss writes no Domain line
+        self.assertNotIn("Domain:", bosskit.onboard_apply({"domain": "Main boss"}, cwd=self.wt))
+        self.assertEqual(bosskit.onboard_changes({"domain": "billing"}, ctx.layers)[1]["domain"], "billing")
         ch, _ = bosskit.onboard_changes({"merge": "rebase", "effort": "high"}, ctx.layers, level="boss")
         self.assertEqual(ch, {"boss": {"github": {"merge": "rebase"}, "effort": "high"}})
 
