@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { KIT_STALE, ago, bossDetails, bossRow, drift, footer, isActive, isBoss, kitStale, mailContext, needsProof, nextStep, prDetails, prRow, rank, workerDetails, workerRow } from '../hooks/details'
+import { KIT_STALE, ago, bossDetails, bossRow, drift, footer, isActive, isBoss, kitStale, mailContext, needsProof, nextStep, pageLinks, prDetails, prRow, rank, workerDetails, workerRow } from '../hooks/details'
 import type { Boss, Pr, StageEvent, Worker } from '../types'
 
 const worker: Worker = { ws: '1a2b3c4d', id: 'x', term: 'y', name: 'api', branch: 'feat/a', task: 'restack-42', ledger: 'DISPATCHED', date: '2026-01-02', state: 'working', watched: true, proof: [], stage: 'working', since: 0 }
@@ -206,4 +206,11 @@ test('the kit is stale only when the one on disk differs from the one the pane l
   expect(kitStale('a1b2c3d', 'a1b2c3d')).toBe(false)
   expect(kitStale(undefined, 'a1b2c3d')).toBe(false)
   expect(kitStale('a1b2c3d', '')).toBe(false)
+})
+
+test('pages as links: the pages file by title first, then proof links, each URL once', () => {
+  const pages = [{ url: 'https://example.com/a', title: 'after run', at: 2 }]
+  const proof = [{ label: 'page', url: 'https://example.com/a' }, { label: 'demo', url: 'https://example.com/run.mp4' }]
+  expect(pageLinks(pages, proof, [{ label: 'page', url: 'https://example.com/run.mp4' }])).toEqual([{ label: 'after run', url: 'https://example.com/a' }, { label: 'demo', url: 'https://example.com/run.mp4' }])
+  expect(pageLinks(undefined)).toEqual([])
 })

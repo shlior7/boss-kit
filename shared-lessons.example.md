@@ -76,3 +76,10 @@ Why: the user wants cleanup offered, not left for them to notice, and to stay th
 ## 17. Parallel e2e needs one machine-wide gate, not a serial queue (2026-11-12, quack)
 Four worktrees each ran a full suite, and some started raw Playwright stacks outside the capped runner. The machine ran out of memory and Claude Code reaped every watcher. Serializing by hand fixed it but slowed every PR. The lasting fix is that every stack goes through one runner, which admits a new stack only while free memory allows, so several suites can run at once safely.
 Why: the user wants tests in parallel to save time, and to "always look to self improve".
+
+## 18. PR comments are for people; the envelope stays with the boss (2026-11-16)
+
+A PR full of machine envelopes is noise for every human reviewer. The worker posts one short plain-English status comment
+(what changed, checks, proof) whose last line is the hidden marker `<!-- BOSS_WORKER_DONE task: <id> -->`; the envelope goes
+to the boss only. Every PR reader (the watcher's PR check, the pane's DONE time) must count a comment that holds only that
+marker, and never the template's `<id>`. Test each reader with a marker-only comment.

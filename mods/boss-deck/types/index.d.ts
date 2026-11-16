@@ -1,5 +1,7 @@
 /** A proof link: a published page, an artifact or a demo video. */
 export type ProofLink = { label: string; url: string }
+/** A page a worker or boss published: one line of its pages.jsonl (at in epoch s). */
+export type Page = { url: string; title: string; at: number }
 /** One line of a workspace's stage log (events.jsonl), with its local time. */
 export type StageEvent = { at: number; ws: string; stage: string; note: string; hm: string }
 /** Whose move a workspace is on. 'waiting': checked or ready, yet its PR stays draft (or it has none): the user's call. */
@@ -34,6 +36,8 @@ export type Worker = {
   tasks?: TaskProgress | null
   /** the last lines of <worktree>/.boss-worker/notes.md: its worker's decisions and open questions */
   notes?: string[]
+  /** the pages its worker published, newest first (<worktree>/.boss-worker/pages.jsonl) */
+  pages?: Page[]
 }
 export type TaskProgress = { done: number; total: number; current: string; at: number }
 export type Watcher = { ws: string; term: string; ageS: number; stale: boolean }
@@ -92,6 +96,8 @@ export type Boss = {
   state: string[]
   /** this session's boss only: its workspace's other agent terminals */
   sessions?: BossSession[]
+  /** the pages it published, newest first (its boss folder's pages.jsonl) */
+  pages?: Page[]
 }
 export type MailItem = { id: string; kind: string; from: string; subject: string }
 export type Deck = {
@@ -105,6 +111,8 @@ export type Deck = {
   lessonsNew?: number
   next: string
   review?: { url: string; date: string } | null
+  /** config's page provider, when `pages` names one */
+  pagesTo?: string
   attention: Attention[]
   workers: Worker[]
   watchers: Watcher[]
@@ -142,6 +150,10 @@ export type WorkerView = {
   notes: string[]
   /** newest first */
   msgs: BossMsg[]
+  /** the pages this worker published, newest first (.boss-worker/pages.jsonl) */
+  pages?: Page[]
+  /** config's page provider, when `pages` names one */
+  pagesTo?: string
 }
 export type WorkerDeck = { at: number; worker: WorkerView | null; kit?: string; error?: string }
 /** One item of the session's own task list (TodoWrite or the Task tools). */

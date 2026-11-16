@@ -77,6 +77,7 @@ The kit is code. Your data lives outside it, in **`$BOSS_HOME`** (default `~/.cl
 
 ```
 $BOSS_HOME/
+  org.md  org.json             optional: what holds for every project on this machine (org layer, below)
   config.json                  optional: your settings for every project (user layer)
   bosses.json                  registry: boss id → project, workspace, worktree, host, heartbeat
   lessons.md                   shared lessons, for every boss
@@ -84,7 +85,7 @@ $BOSS_HOME/
     BOSS.md  config.json  ledger.md  lessons.md  prompts/
     bosses/<boss-id>/          one folder per boss
       config.json              optional: this boss's own settings (boss layer)
-      next.txt  review.txt  notes.md  events.jsonl  cache/  inbox/  inbox/done/
+      next.txt  review.txt  notes.md  pages.jsonl  events.jsonl  cache/  inbox/  inbox/done/
 ```
 
 > **Your project facts, prompts, ledger and lessons stay local in `$BOSS_HOME`.** They name your repos, PRs, people and infrastructure, and are never pushed anywhere. The kit's own `projects/` holds only `_template`.
@@ -122,13 +123,24 @@ hosts/<name>/
 
 The bundled plugins each document themselves in `hosts/<name>/README.md`.
 
-## Config layers
+## Layers
 
-Settings resolve in four layers, later wins; dicts merge key by key, lists and scalars are replaced:
+A boss is assembled from layers, each more specific than the one before. The **org layer** holds what is true for every
+project on one machine (your company's page host, its CI quirks, its review rules), so no project repeats it and none of it
+lands in the kit. It is two optional files, `$BOSS_HOME/org.md` and `$BOSS_HOME/org.json`; with neither, nothing changes.
+Start from [`examples/org.example.md`](examples/org.example.md) and [`examples/org.example.json`](examples/org.example.json).
+
+**Instructions** (`bin/bosskit.py instructions`, what `/boss` loads), in order: `BOSS-template.md`, the host plugin's
+commands, `org.md`, the project's `BOSS.md` (a domain boss's charter and state after it), the project's lessons, the shared
+lessons. A later file overrides an earlier one where they disagree. The header line names the org files that loaded
+(`, org layer: org.md + org.json`), and so does `bin/bosskit.py show` (`"org"`).
+
+**Config** resolves in five layers, later wins; dicts merge key by key, lists and scalars are replaced:
 
 | Layer | File | For |
 |---|---|---|
 | kit | `DEFAULTS` in `bin/bosskit.py` | every key, with its default |
+| org | `$BOSS_HOME/org.json` (only when present) | every project on this machine: say, `pages` and `proof_urls` |
 | user | `$BOSS_HOME/config.json` | you, across projects (say, `models`) |
 | project | `$BOSS_HOME/<project>/config.json` | the project: `repo`, `me`, `base_branch`, tracker, host |
 | boss | `$BOSS_HOME/<project>/bosses/<boss-id>/config.json` | one boss: say, a boss on another host than the project's other bosses |
@@ -148,7 +160,8 @@ bin/bosskit.py config set --level boss host=<plugin> models.strong=fable --apply
 | `effort` | `""` | default effort for a dispatch (`low` … `xhigh`), `""` = the agent's own |
 | `tracker` | `{"type": "none"}` | see `bin/boss-tasks.py` |
 | `wake` | `false` | mail to this boss also messages its session |
-| `pages` | `auto` | proof and review pages: `auto` (the host's pages, else a claude.ai artifact), `host`, `artifact` |
+| `pages` | `auto` | proof and review pages: `auto` (the host's pages, else a claude.ai artifact), `host`, `artifact`; or `{"provider": "<name>", "publish": "<command with <dir>>"}` to send every page there instead (the host commands' Pages line then says so, and the pane's header shows `pages → <name>`) |
+| `proof_urls` | none | regexes for another page provider's URLs: the pane counts them as `page` proof, beside the host's own `proof_links` |
 | `boss_name` | `BOSS` | what the boss renames its own workspace or session to at session start; `""` leaves the name alone |
 | `ledger` | `ledger.md` | the ledger file in the project folder |
 
@@ -296,10 +309,12 @@ A prompt names the task id, the objective, the files it may touch, how to verify
 Task id: fix-42 (PR #42 acme/widgets, branch fix/retry-backoff, this workspace).
 Goal: the retry loop honours Retry-After. Add a regression test that fails when reverted.
 Merge origin/main first (merge, never rebase or force). Run `make test`. Plain push.
-Proof: a page with the test run, before and after, and the revert-proves-red output; link it in a PR comment.
+Proof: a page with the test run, before and after, and the revert-proves-red output.
 Files you may touch: src/http/** and tests/http/** only. Do not broaden scope.
 
-Keep the PR draft. End your final message with exactly this envelope, each field on its own line, starting at column 0, and post the same envelope as a PR comment:
+Keep the PR draft. On the PR, post one short plain-English comment (what changed, checks, proof links) ending with the line
+<!-- BOSS_WORKER_DONE task: fix-42 -->
+End your final message with exactly this envelope, each field on its own line, starting at column 0 (never on the PR):
 BOSS_WORKER_DONE
 task: fix-42
 summary: <one line>
@@ -336,7 +351,7 @@ Every DONE carries a `proof:` field:
 | Backend | a page: tests run, before/after, the revert-proves-red output |
 | Read-only or docs | `proof: none: <why>` |
 
-Workers also post the links in a PR comment. The boss opens each one before believing it, and records them in the ledger's Proof column.
+Workers also post the links in their PR status comment: plain English for people, ending with the hidden line `<!-- BOSS_WORKER_DONE task: <id> -->` that the watcher and the pane read (the envelope itself never goes on the PR). The boss opens each one before believing it, and records them in the ledger's Proof column. Every worker also appends one line per page it publishes to `.boss-worker/pages.jsonl` (`{"url", "title", "at"}`, git-ignored with the rest of `.boss-worker/`), and the boss does the same for its own pages in its boss folder's `pages.jsonl`; both panes list them.
 
 After a batch of merges, or when you ask, the boss publishes a **review page**: the stack, what merged, what each PR proved (linked), open risks, and next actions. It uses the host's pages when its prompt offers them, else a claude.ai artifact (config `pages`), and writes the URL to its `review.txt` for the pane.
 
@@ -408,9 +423,9 @@ A quiet pane: grey by default, color only for what needs you. Here with a worksp
 
 <img src="docs/boss-deck-peek.png" width="480" alt="boss-deck pane with its BOSSES and WORKERS sections and the cache-warmup workspace expanded: its timed stage history, next step, its PR #61 (title, CI, merge state, reviews, size, branch, head), activity, context and links">
 
-- **The top line** is this boss's last "Your move", read from its `next.txt`.
+- **The top line** is this boss's last "Your move", read from its `next.txt`. Under it, one quiet `pages → <provider>` line when config's `pages` names a provider.
 - **INBOX** appears while something from outside this session is unread: today, boss mail. Each message is one line (its kind in yellow, then sender and subject), up to five, then `+N more`. While mail is unread, every prompt also carries one context line naming it, which the model reads and you don't see. It reads the inbox folder only, so it costs nothing.
-- **BOSSES** lists this project's live bosses, this one first: the main boss (`main`) and its domain bosses (by domain, see the template's section 15), `(this)` on the current one, then `N working · M for you`, and how long since its heartbeat once that is more than five minutes old. Each refresh's heartbeat carries the boss's domain and its next line. A domain boss's pane covers only its sidebar folder (the workspace tag in a `Folder: <tag>` line of `CLAUDE.local.md`, else the domain name): WORKERS, watchers, attention lines and its heartbeat counts keep that folder's workspaces and their PRs, with no PR-only rows. The main boss sees every folder. Press a boss for its next line, the first lines of its domain's `<name>-state.md`, when it was last seen, and **`open workspace ↗`**. This boss's own workspace is never a worker: the research and ops sessions that run as extra agent terminals in it are listed in its expanded row as `sessions`, one line per terminal (its title, agent state, age, and the ledger row's task text when a row names that terminal as `<workspace> / <terminal>`); the terminal the boss itself runs in is left out. A terminal's age counts from the first refresh that saw it.
+- **BOSSES** lists this project's live bosses, this one first: the main boss (`main`) and its domain bosses (by domain, see the template's section 15), `(this)` on the current one, then `N working · M for you`, and how long since its heartbeat once that is more than five minutes old. Each refresh's heartbeat carries the boss's domain and its next line. A domain boss's pane covers only its sidebar folder (the workspace tag in a `Folder: <tag>` line of `CLAUDE.local.md`, else the domain name): WORKERS, watchers, attention lines and its heartbeat counts keep that folder's workspaces and their PRs, with no PR-only rows. The main boss sees every folder. Press a boss for its next line, the first lines of its domain's `<name>-state.md`, when it was last seen, the pages it published (its `pages.jsonl`, by title) and **`open workspace ↗`**. This boss's own workspace is never a worker: the research and ops sessions that run as extra agent terminals in it are listed in its expanded row as `sessions`, one line per terminal (its title, agent state, age, and the ledger row's task text when a row names that terminal as `<workspace> / <terminal>`); the terminal the boss itself runs in is left out. A terminal's age counts from the first refresh that saw it.
 - **WORKERS** has one row per dispatched workspace: its name, its PR joined by branch (or `—`), then stage · time in stage · note. Active rows come first, the idle ones after them, dim; the header counts both (`4 active · 4 idle`):
 
   | Stage | When | Row |
@@ -425,7 +440,7 @@ A quiet pane: grey by default, color only for what needs you. Here with a worksp
   | done today | merged or retired today, archived workspaces included (at most 5) | `✓ login-form  #52  done today · 10:41 · merged, retired` |
 
   Time in stage comes from the stage log, `events.jsonl` (`bin/boss-event`, and the watcher when it fires), else the PR's last update, else the ledger date. A tracked PR no workspace owns (another author, an extra repo) is an idle row too: its tag as the name, `—`, its status (`· ws#7  —  approved · 3h`). PRs idle for 10+ days fold into one line.
-- **Press a row** (or its key, `1`–`9`, once the pane has focus) to expand it. A workspace shows its timed stage history (`10:02  sent  watcher armed`, `10:31  DONE  PR #42 draft`) and the `next` step and who takes it; then, when it has a PR, the PR's title, CI (pass / fail / pending with the failing names), mergeability, reviews, size, branch → base and head; then its worker's own report: `tasks 3 of 5 · now <in-progress task>` (from `<worktree>/.boss-worker/status.json`, which the worker's pane writes) and the last two lines of its `.boss-worker/notes.md`; then what it's doing now, context use (yellow at 60% or more) and a missing watcher. Last comes one link row: its proof (`page ↗`, `demo ↗`, `artifact ↗`, from the ledger's Proof column and the PR body and comments: the host's pages (its `proof_links`), claude.ai artifacts, video files, GitHub attachments and Loom), **`open workspace ↗`** (`boss-host open`) and **`open on GitHub ↗`**. A PR-only row shows the PR part. Press again to fold it.
+- **Press a row** (or its key, `1`–`9`, once the pane has focus) to expand it. A workspace shows its timed stage history (`10:02  sent  watcher armed`, `10:31  DONE  PR #42 draft`) and the `next` step and who takes it; then, when it has a PR, the PR's title, CI (pass / fail / pending with the failing names), mergeability, reviews, size, branch → base and head; then its worker's own report: `tasks 3 of 5 · now <in-progress task>` (from `<worktree>/.boss-worker/status.json`, which the worker's pane writes) and the last two lines of its `.boss-worker/notes.md`; then what it's doing now, context use (yellow at 60% or more) and a missing watcher. Last comes one link row: its pages (each by title, from its `.boss-worker/pages.jsonl`), then any other proof (`page ↗`, `demo ↗`, `artifact ↗`, each URL once, from the ledger's Proof column and the PR body and comments: the host's pages (its `proof_links`), claude.ai artifacts, video files, GitHub attachments and Loom), **`open workspace ↗`** (`boss-host open`) and **`open on GitHub ↗`**. A PR-only row shows the PR part. Press again to fold it.
 - **Drift:** a workspace's PR that has fallen behind its base shows `3 behind main` (yellow) in its row, right after the stage; one GitHub says conflicts shows `conflicts with main` (red, with `, N behind` when both). The PR-only rows carry the same note, and an expanded PR gets a `drift` line from GitHub's live read. The behind count is GitHub's compare of the PR's head with its base, taken in the PR fetch and cached with it (first 20 PRs per fetch).
 - **A stale kit:** when the kit on disk (its git HEAD) is not the one the pane loaded, an attention line `› kit updated · run /reload-plugins` (yellow) shows until the plugins are reloaded. The same line joins the worker view's warning line. `bin/boss-kit-update` is what updates the kit.
 - **`review ↗ <date>`** at the top opens the latest review page (this boss's `review.txt`).
@@ -443,6 +458,7 @@ In a dispatched worker's own session the same pane shows that worker's status. I
 - **Header:** `WORKER  <workspace> · <task>`, and `boss: <project>` on the right. Then **goal** (the ledger row's task), **pr** (its PR found by the current branch: number, draft or ready, CI, mergeability, review; the boss's PR fetch and cache) and **state** (working or idle, the stage log's latest stage and its age, and `now:` the session's latest tool call or a line of its latest reply).
 - **TASKS** `N of M done`: the session's own task list, read live from its TodoWrite / TaskCreate / TaskUpdate calls: `✓` done, `●` in progress, `○` pending (dim).
 - **DELIVERED:** pushed commits on `origin/<branch>` and this workspace's events from the boss's `events.jsonl` (sent, DONE, PR READY, checked, ready, merged), newest first, at most 5.
+- **PAGES:** the pages this worker published (`.boss-worker/pages.jsonl`), newest first: age, then the title as a link. The header shows `pages → <provider>` under it when config names one.
 - **NOTES:** the last lines of the worktree's `.boss-worker/notes.md`, where the worker keeps its decisions and open questions; the boss's expanded row shows the last two.
 - **FROM BOSS** `N new`: what the boss sent this workspace, newest first, at most 3; new means since this session's last turn began.
 - **Warning line**, when it applies: context at 60% or more, the branch behind `origin/<base>`, CI red, the PR has no DONE comment after the agent went idle, `kit updated · run /reload-plugins` once the kit on disk is newer than the one this pane loaded.
