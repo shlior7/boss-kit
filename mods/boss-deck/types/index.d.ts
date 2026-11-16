@@ -28,7 +28,7 @@ export type Worker = {
   prTag?: string
   /** its newest stage events, oldest first */
   events?: StageEvent[]
-  /** its Paradev tags (sidebar folders) */
+  /** its tags (sidebar folders on its host) */
   tags?: string[]
   /** its task progress, from <worktree>/.boss-worker/status.json, which its worker pane writes */
   tasks?: TaskProgress | null

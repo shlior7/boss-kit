@@ -1,98 +1,40 @@
 #!/usr/bin/env python3
-"""boss-close: close terminals the way the app's close button does, so no "Session ended" tab is left behind.
+"""boss-close: close a worker's terminals the way its host's own close does (bin/boss-host close, close-dead).
 
-  boss-close [--dry-run] <workspace> <terminal> [<terminal> ...]   close these sessions (pane + terminal)
-  boss-close [--dry-run] --dead <workspace> [<workspace> ...]      close every pane whose terminal has ended
-  boss-close [--dry-run] --dead --all                              same, for every local workspace
+  boss-close [--dry-run] <worker> <terminal> [<terminal> ...]   close these sessions
+  boss-close [--dry-run] --dead <worker> [<worker> ...]         close the leftovers of ended sessions in these workers
+  boss-close [--dry-run] --dead --all                           same, for every worker on the host
 
-`superset terminals close` only ends the session: its tab stays in the app as "Session ended". The pane is
-what the user sees, so close the PANE (`superset panes close --pane P`), which also ends its terminal. A
-terminal with no pane (started headless) falls back to `terminals close`. Use FULL workspace UUIDs; terminal
-ids may be a unique prefix. Only close sessions your ledger names as yours and that answered the status
-check (bin/boss-status-ask) as done; --dead only touches panes whose terminal already ended.
+Only close sessions your ledger names as yours and that answered the status check (bin/boss-status-ask) as done.
+A host with nothing to close says so (exit 3): archive the worker instead.
 """
-import json
-import subprocess
+import os
 import sys
 
-
-def sh(args):
-    r = subprocess.run(["superset", *args], capture_output=True, text=True)
-    if r.returncode != 0:
-        raise RuntimeError(f"superset {' '.join(args[:2])}: {(r.stderr or r.stdout).strip()[:200]}")
-    return r.stdout
-
-
-def live_terminals(ws):
-    out = json.loads(sh(["terminals", "list", "--local", "--workspace", ws, "--json"]))
-    return {s["terminalId"] for s in out.get("sessions", []) if not s.get("exited")}
-
-
-def panes(ws):
-    """[(paneId, terminalId)] across the main area and the right sidebar."""
-    d = json.loads(sh(["panes", "list", "--workspace", ws, "--json"]))
-    tabs = list(d.get("tabs", [])) + list((d.get("sidebar") or {}).get("tabs", []))
-    return [(p["id"], p.get("terminalId")) for t in tabs for p in t.get("panes", []) if p.get("kind") == "terminal"]
-
-
-def dead_panes(pane_list, live):
-    """Terminal panes whose terminal is no longer a live session (pure, unit-tested)."""
-    return [pid for pid, tid in pane_list if tid and tid not in live]
-
-
-def resolve(prefix, ids):
-    hits = sorted({i for i in ids if i.startswith(prefix)})
-    if len(hits) != 1:
-        raise SystemExit(f"boss-close: terminal {prefix!r} matches {len(hits)} sessions")
-    return hits[0]
-
-
-def close_pane(ws, pid, dry):
-    print(("would close " if dry else "closed ") + pid)
-    if not dry:
-        sh(["panes", "close", "--workspace", ws, "--pane", pid, "--json"])
-
-
-def all_workspaces():
-    d = json.loads(sh(["workspaces", "list", "--local", "--json"]))
-    return [w["id"] for w in (d if isinstance(d, list) else d.get("workspaces", []))]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosshost  # noqa: E402
+import bosskit  # noqa: E402
 
 
 def main(argv):
     dry = "--dry-run" in argv
     argv = [a for a in argv if a != "--dry-run"]
-    if not argv or argv[0] in ("-h", "--help"):
+    if not argv or argv[0] in ("-h", "--help") or (argv[0] != "--dead" and len(argv) < 2) or argv == ["--dead"]:
         print(__doc__)
-        return 0 if argv else 2
-    if argv[0] == "--dead":
-        targets = all_workspaces() if argv[1:] == ["--all"] else argv[1:]
-        if not targets:
-            print(__doc__)
-            return 2
-        n = 0
-        for ws in targets:
-            try:
-                for pid in dead_panes(panes(ws), live_terminals(ws)):
-                    close_pane(ws, pid, dry)
-                    n += 1
-            except RuntimeError as e:  # a workspace without a desktop pane layout: skip it, say so
-                print(f"skip {ws[:8]}: {e}")
-        print(f"{'would close' if dry else 'closed'} {n} dead pane(s)")
-        return 0
-    if len(argv) < 2:
-        print(__doc__)
-        return 2
-    ws, wanted = argv[0], argv[1:]
-    listed = json.loads(sh(["terminals", "list", "--local", "--workspace", ws, "--json"])).get("sessions", [])
-    by_terminal = {tid: pid for pid, tid in panes(ws) if tid}
-    for prefix in wanted:
-        tid = resolve(prefix, [s["terminalId"] for s in listed] + list(by_terminal))
-        if tid in by_terminal:
-            close_pane(ws, by_terminal[tid], dry)
+        return 0 if argv[:1] in (["-h"], ["--help"]) else 2
+    try:
+        cfg = bosskit.load().cfg
+    except SystemExit:
+        cfg = {}
+    host = bosshost.get(cfg)
+    try:
+        if argv[0] == "--dead":
+            print("\n".join(host.close_dead(None if argv[1:] == ["--all"] else argv[1:], dry)))
         else:
-            print(("would close terminal " if dry else "closed terminal ") + tid)
-            if not dry:
-                sh(["terminals", "close", "--local", "--workspace", ws, "--terminal", tid])
+            print("\n".join(host.close(argv[0], argv[1:], dry)))
+    except bosshost.Unsupported as e:
+        print(f"boss-close: {e}")
+        return 3
     return 0
 
 

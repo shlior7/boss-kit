@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On, SessionMessage } from 'claude-code'
 
 import { workerDetails } from '../hooks/details'
-import { activity, newMsgs, progress, prParts, sentMessages, taskList, workerWarnings } from '../hooks/worker'
+import { activity, newMsgs, progress, prParts, taskList, workerWarnings } from '../hooks/worker'
 import type { Live, Pr, Worker, WorkerDeck, WorkerView } from '../types'
 
 const use = (tool: string, input: Record<string, unknown>, result?: unknown) => ({ tool_use_id: `${tool}-${Math.random()}`, tool, input, result })
@@ -30,15 +30,6 @@ test('now is the latest tool call, else one line of the latest assistant text', 
   expect(activity([said('Reading the queue', [use('Bash', { command: 'make test-http\nmore' })]), { role: 'user', text: 'ok', toolUses: [] }])).toBe('Bash(make test-http)')
   expect(activity([said('', [use('Read', { file_path: 'a.py' })]), said('\n  Backoff caps at five retries.\nmore')])).toBe('Backoff caps at five retries.')
   expect(activity([])).toBe('')
-})
-
-test('a sent message is logged with its workspace; a key-only send is not', () => {
-  const cmd = `superset terminals send --workspace 1a2b3c4d-full --terminal t1 --keys ctrl+u --local && superset terminals send --workspace 1a2b3c4d-full --terminal t1 --text "also cover the \\"429\\" case" --local`
-  expect(sentMessages(cmd)).toEqual([{ ws: '1a2b3c4d-full', text: 'also cover the "429" case' }])
-  expect(sentMessages(`superset terminals send --workspace w2 --text 'x'`)).toEqual([{ ws: 'w2', text: 'x' }])
-  expect(sentMessages('superset terminals send --workspace w2 --keys enter')).toEqual([])
-  expect(sentMessages('superset terminals read --workspace w2')).toEqual([])
-  expect(sentMessages(`superset terminals send --workspace w2 --text "${'a'.repeat(300)}"`)[0]?.text.length).toBe(200)
 })
 
 const pr = (o: Partial<Pr> = {}): Pr => ({ repo: 'acme/widgets', primary: true, num: 61, title: '', draft: true, review: '', merge: 'MERGEABLE', ci: 'green', reviewers: [], url: 'https://example.com/pr/61', base: 'main', head: 'fix/retry', updated: '', proof: [], ...o })
@@ -85,9 +76,8 @@ const WORKER: WorkerDeck = {
   }),
 }
 
-function session(on: On, deck: WorkerDeck | object, opened: string[], runs: string[][]) {
-  mock.env(on, { SUPERSET_WORKSPACE_ID: '1a2b3c4d-full' })
-  mock.clock(on)
+function session(on: On, deck: WorkerDeck | object, opened: string[], runs: string[][], sess: object = { kind: 'hosta', id: '1a2b3c4d-full', terminal: '' }, failedLookups = 0) {
+  const clock = mock.clock(on)
   on('fs.read', async () => {
     throw new Error('no CLAUDE.local.md')
   })
@@ -104,10 +94,29 @@ function session(on: On, deck: WorkerDeck | object, opened: string[], runs: stri
     return { value: { isPlaced: true as const } }
   })
   on('process.run', async (_$, e) => {
+    if (e.argv.includes('boss-host-session')) {
+      runs.push(['boss-host-session'])
+      if (failedLookups-- > 0) return { value: { exitCode: 1, stdout: '', stderr: 'Traceback', isStdoutTruncated: false, isStderrTruncated: false } }
+      return { value: { exitCode: 0, stdout: JSON.stringify(sess), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     runs.push([...e.argv])
     return { value: { exitCode: 0, stdout: JSON.stringify(deck), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
+  return clock
 }
+
+test('a failed host lookup is not outside a host: the pane asks again a minute later and starts then', async ($, on) => {
+  const opened: string[] = []
+  const runs: string[][] = []
+  const clock = session(on, WORKER, opened, runs, undefined, 1)
+  await $.session.start({ cwd: '/w/worker', surface: 'terminal', isInteractive: true })
+  expect(runs).toEqual([['boss-host-session']])
+  expect(opened).toEqual([])
+  await clock.advance(60_000)
+  expect(runs.filter(r => r[0] === 'boss-host-session').length).toBe(2)
+  expect(runs.some(r => r.includes('--worker'))).toBe(true)
+  expect(opened).toEqual(['Worker'])
+})
 
 test('no dispatch row for this workspace: no pane', async ($, on) => {
   const opened: string[] = []
@@ -118,6 +127,17 @@ test('no dispatch row for this workspace: no pane', async ($, on) => {
   expect(runs.some(r => r.includes('--worker'))).toBe(true)
   expect(opened).toEqual([])
   expect(said).toEqual({ text: 'No boss ledger has a dispatch row for this workspace.' })
+})
+
+test('a session on any host plugin is a worker too: its id and host go to the data script', async ($, on) => {
+  const opened: string[] = []
+  const runs: string[][] = []
+  session(on, WORKER, opened, runs, { kind: 'hostb', id: 'aaaa1111', terminal: 'agent-1' })
+  await $.session.start({ cwd: '/w/worker', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
+  const run = runs.find(r => r.includes('--worker')) ?? []
+  expect(run.slice(-9, -4)).toEqual(['--host-kind', 'hostb', '--worker', '--workspace', 'aaaa1111'])
+  expect(opened[0]).toBe('Worker')
 })
 
 test('a dispatched worker gets its own view, top to bottom', async ($, on) => {

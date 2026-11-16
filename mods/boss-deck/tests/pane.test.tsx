@@ -23,19 +23,23 @@ const DECK: Deck = {
   mail: { count: 1, dir: '/nonexistent', items: [{ id: 'm1', kind: 'question', from: 'gadgets', subject: 'is #42 safe?' }] },
 }
 
+const SESSION = { kind: 'hosta', id: 'ws-me', terminal: '' }
+const out = (v: unknown) => ({ value: { exitCode: 0, stdout: JSON.stringify(v), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+
 test('the pane passes its workspace, and draws its inbox, its bosses, one WORKERS section and the board', async ($, on) => {
   const runs: string[][] = []
-  mock.env(on, { SUPERSET_WORKSPACE_ID: 'ws-me' })
   mock.clock(on)
   on('session.cwd', async () => ({ value: '/w/boss' }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('process.run', async (_$, e) => {
+    if (e.argv.includes('boss-host-session')) return out(SESSION)
     runs.push([...e.argv])
     return { value: { exitCode: 0, stdout: JSON.stringify(DECK), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   // The engine stamps origin and presentation.
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
   expect(runs[0]?.slice(-4)).toEqual(['--cwd', '/w/boss', '--workspace', 'ws-me'])
+  expect(runs[0]?.slice(-6, -4)).toEqual(['--host-kind', 'hosta'])
 
   const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
@@ -70,9 +74,8 @@ test('the pane passes its workspace, and draws its inbox, its bosses, one WORKER
   expect(sess).toContain('api research · idle · 10m · research-1: map the api')
 })
 
-test("each message the boss sends a worker is logged as that workspace's msg event; a key-only send is not", async ($, on) => {
+test('the pane refreshes at once after the boss messages or dispatches through boss-host, skipping the PR cache', async ($, on) => {
   const runs: string[][] = []
-  mock.env(on, { SUPERSET_WORKSPACE_ID: 'ws-me' })
   mock.clock(on)
   on('fs.read', async () => ({ value: '# Boss workspace ws-me\n' }))
   on('session.cwd', async () => ({ value: '/w/boss' }))
@@ -80,30 +83,31 @@ test("each message the boss sends a worker is logged as that workspace's msg eve
   on('command.register', async (_$, e) => ({ value: { command: e.name } }) as never)
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('process.run', async (_$, e) => {
+    if (e.argv.includes('boss-host-session')) return out(SESSION)
     runs.push([...e.argv])
-    return { value: { exitCode: 0, stdout: JSON.stringify(DECK), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return out(DECK)
   })
   on('tool.call', async () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: '' }) as never)
   await $.session.start({ cwd: '/w/boss', surface: 'terminal', isInteractive: true })
-  await $.tool.call({ tool: 'Bash', command: 'superset terminals send --workspace 1a2b3c4d-full --terminal t --keys ctrl+u --local' })
-  await $.tool.call({ tool: 'Bash', command: 'superset terminals send --workspace 1a2b3c4d-full --terminal t --text "also cover 429" --local' })
-  const logged = runs.filter(r => r.includes('msg'))
-  expect(logged.map(r => r.slice(-4))).toEqual([['ws-me', '1a2b3c4d-full', 'msg', 'also cover 429']])
+  const before = runs.filter(r => r.includes('--fresh')).length
+  await $.tool.call({ tool: 'Bash', command: 'boss-host send 1a2b3c4d-full --text "also cover 429"' })
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
   // The send's own refresh runs unawaited; one awaited refresh lets it settle before the test ends.
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
+  expect(runs.filter(r => r.includes('--fresh')).length).toBe(before + 1)
 })
 
 test('the boss pane shows an attention line once the kit on disk moves past the one it loaded, and the PR drift note on a row', async ($, on) => {
   let kit = 'a1b2c3d'
   const behind = { ...PR57, behind: 3 }
-  mock.env(on, { SUPERSET_WORKSPACE_ID: 'ws-me' })
   mock.clock(on)
   on('fs.read', async () => ({ value: '# Boss workspace ws-me\n' }))
   on('session.cwd', async () => ({ value: '/w/boss' }))
   on('session.start', async () => ({ cwd: '/w/boss' }))
   on('command.register', async (_$, e) => ({ value: { command: e.name } }) as never)
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
-  on('process.run', async () => {
+  on('process.run', async (_$, e) => {
+    if (e.argv.includes('boss-host-session')) return out(SESSION)
     const deck: Deck = { ...DECK, kit, workers: [DECK.workers[0]!, { ...DECK.workers[1]!, pr: behind }], prs: [DECK.prs[0]!, DECK.prs[1]!, behind] }
     return { value: { exitCode: 0, stdout: JSON.stringify(deck), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })

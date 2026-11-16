@@ -8,8 +8,11 @@ Finds, in the old kit (default: this kit):
   state/<name>/         (v0.3-v0.4 runtime state)   -> $BOSS_HOME/<name>/bosses/<boss>/
   <name>/ with BOSS.md  (legacy: a folder at the kit root) -> $BOSS_HOME/<name>/
 Each source is replaced by a symlink to its new place, so bosses still running on the old paths keep
-working. Nothing that already exists in $BOSS_HOME is overwritten. Dry run unless --apply.
---boss names the boss that owned the old state (default: $SUPERSET_WORKSPACE_ID, else "migrated").
+working. Nothing that already exists in $BOSS_HOME is overwritten.
+It also adds the host plugin's prompt import (@.../hosts/<host>/prompt.md) right after the template line of each
+boss's CLAUDE.local.md that imports BOSS-template.md but no host prompt: the registered bosses' worktrees and this one.
+Dry run unless --apply.
+--boss names the boss that owned the old state (default: this session's host id, else "migrated").
 """
 import argparse
 import os
@@ -42,17 +45,47 @@ def plan(kit, home, boss):
     return ops
 
 
+def host_imports(home, cwd=None):
+    """[(CLAUDE.local.md path, its text with the host prompt import)] for the boss worktrees that lack it."""
+    wts = {}
+    for bid, b in sorted(bosskit.registry(home).items()):
+        if b.get("worktree") and b.get("project"):
+            wts.setdefault(b["worktree"], (b["project"], bid, b.get("hostKind")))
+    try:
+        wts.setdefault(bosskit.worktree(cwd), (bosskit.project_name(cwd, home), None, None))
+    except SystemExit:  # this worktree is no project's
+        pass
+    out = []
+    for wt, (project, bid, kind) in sorted(wts.items()):
+        path = os.path.join(wt, "CLAUDE.local.md")
+        text = bosskit._read(path)
+        try:
+            cfg = bosskit.config_for(home, project, bid)
+            host = cfg.get("host") or kind or bosskit.host_kind(cfg)
+        except SystemExit as e:
+            print(f"skip  {path}  (no host: {e})")
+            continue
+        new = bosskit.with_host_import(text, host)
+        if new != text:
+            out.append((path, new))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(prog="boss-migrate")
     ap.add_argument("--kit", default=bosskit.KIT)
-    ap.add_argument("--boss", default=os.environ.get("SUPERSET_WORKSPACE_ID") or "migrated")
+    ap.add_argument("--boss", default=bosskit.self_id() or "migrated")
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args()
     kit, home = os.path.abspath(args.kit), bosskit.home()
-    ops = plan(kit, home, args.boss)
+    ops, fixes = plan(kit, home, args.boss), host_imports(home)
+    for path, text in fixes:
+        print(f"{'add' if args.apply else 'would add'}  the host prompt import to {path}")
+        if args.apply:
+            with open(path, "w") as f:
+                f.write(text)
     if not ops:
         print(f"boss-migrate: nothing to move in {kit}")
-        return
     for src, dst in ops:
         if os.path.exists(dst):
             print(f"skip  {src}  ({dst} already exists)")
@@ -62,7 +95,7 @@ def main():
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.move(src, dst)
             os.symlink(dst, src)
-    if not args.apply:
+    if (ops or fixes) and not args.apply:
         print("dry run: nothing changed. Re-run with --apply.")
 
 

@@ -1,0 +1,10 @@
+{
+  "name": "other",
+  "description": "second test host: queues messages; envelopes arrive as messages from $FIX/messages.json",
+  "priority": 50,
+  "keywords": ["otherhost"],
+  "session_env": ["OTHER_SESSION"],
+  "terminal_env": [],
+  "cli": [],
+  "queues": true
+}

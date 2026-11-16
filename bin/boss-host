@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""boss-host: everything the boss does to workers, on whichever host plugin this boss uses (bin/bosshost.py).
+
+  boss-host plugins                          installed host plugins, the one in use marked
+  boss-host kind | self                      the host in use | this session's id on it
+  boss-host session                          JSON {kind, id, terminal}: this session on its host, {} outside any (the pane asks)
+  boss-host workers [ID...] | show ID        workers as JSON (state, branch, worktree, folder)
+  boss-host create --repo R --branch B (--prompt-file F | --prompt T) [--model M] [--effort E] [--name N] [--folder F] [--task T]
+                                             start a worker; prints its id and logs `sent` (--task, else the prompt's first line)
+  boss-host send ID (--text T | --file F) [--terminal T]   message a worker; logs it as the worker's `msg` event
+  boss-host rename ID NAME | move ID FOLDER | open ID | archive ID | archive-cmd ID | screen ID TERMINAL
+  boss-host close [--dry-run] ID TERMINAL... | close-dead [--dry-run] [ID...]
+  boss-host watch ID [BRANCH] [--terminal T] the watcher (run with run_in_background). A plugin with its own watcher runs
+                                             that; otherwise this one: every 20 s, for up to 3 h, it exits (waking the boss) on a
+                                             new envelope message from the worker, PR READY on BRANCH, a blocked agent, 9 idle
+                                             polls (3 min) without an envelope, a gone worker, or 9 polls in a row the host
+                                             does not answer (a failed read is never a gone worker), and logs the stage.
+  boss-host sig < text                       the envelope a text holds, as the watcher reads it (DONE|<task>|<summary start>)
+A host that cannot do something says so and names what to do instead (exit 3).
+Env for watch: BOSS_WATCH_POLL_S (20), BOSS_WATCH_POLLS (540).
+"""
+import json
+import os
+import re
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosshost  # noqa: E402
+import bosskit  # noqa: E402
+
+IDLE_POLLS = 9
+PLACEHOLDER = re.compile(r"(task|summary|files|checks|proof|handoff|reason|needs):? *(<[a-z]|\.\.\.)")
+
+
+def envelope_re(host):
+    return re.compile(r"(?:^|\n)[ \t>`⏺]*(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_(DONE|BLOCKED)\s+task:[ \t]*([A-Za-z0-9._-]+)")
+
+
+def done_comment_re(host):
+    """A PR comment that starts a DONE envelope."""
+    return re.compile(r"(^|\n)[ \t>`]*(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
+
+
+def sig(host, text):
+    """'DONE|<task>|<first 30 chars of summary>' for the last real envelope in *text*, else ''."""
+    for m in reversed(list(envelope_re(host).finditer(text or ""))):
+        block = "\n".join(text[m.start():].strip("\n").splitlines()[:7])
+        if PLACEHOLDER.search(block):
+            continue
+        su = re.search(r"summary:? +(.{0,30})", re.sub(r"\s+", " ", block))
+        return f"{m.group(1)}|{m.group(2)}|" + (su.group(1).strip() if su else "")
+    return ""
+
+
+def ready(host, prs):
+    """PR numbers that count as done: merged, open non-draft, or carrying a comment that starts a DONE envelope."""
+    rx = done_comment_re(host)
+    return {p["number"] for p in prs if p.get("state") == "MERGED" or (p.get("state") == "OPEN" and (
+        not p.get("isDraft") or any(rx.search(c.get("body") or "") for c in p.get("comments") or [])))}
+
+
+def pr_list(branch):
+    out = bosshost.run(["gh", "pr", "list", "--head", branch, "--state", "all", "--json", "number,isDraft,state,comments"])
+    return bosshost._json(out, None) if out else None
+
+
+def register_watcher(ctx, wid, term, branch):
+    """A file per armed watcher (this process), which the pane reads: cache/watchers/<pid>.json."""
+    d = os.path.join(ctx.cache, "watchers")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, f"{os.getpid()}.json")
+    bosskit.save_json(path, {"pid": os.getpid(), "ws": wid, "term": term or "", "branch": branch or "", "at": int(time.time())})
+    return path
+
+
+def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print):
+    boss = host.self_id()
+    ev = lambda stage, note: bosskit.add_event(ctx, wid, stage, note)
+    since = host.dispatched_at(boss, wid) if boss else 0
+    msgs = host.messages(boss, wid) if boss else None
+    seen = {i for i, _, at in (msgs or []) if not since or at < since}
+    prs = pr_list(branch) if branch else None
+    pr_base = ready(host, prs) if prs is not None else None
+    idle = unread = 0
+    for i in range(1, polls + 1):
+        time.sleep(poll_s)
+        for mid, text, _ in (host.messages(boss, wid) or []) if msgs is not None else []:
+            if mid in seen:
+                continue
+            seen.add(mid)
+            s = sig(host, text)
+            if s:
+                kind, task, summary = s.split("|", 2)
+                ev(kind, f"{task}: {summary}")
+                out(f"ENVELOPE {s}")
+                out("\n".join(text.splitlines()[:60]))
+                return 0
+        if branch and i % 3 == 0:
+            prs = pr_list(branch)
+            if prs is not None:
+                now = ready(host, prs)
+                if pr_base is None:
+                    pr_base = now  # the first successful read is the baseline
+                elif now - pr_base:
+                    n = min(now - pr_base)
+                    merged = any(p["number"] == n and p.get("state") == "MERGED" for p in prs)
+                    ev("merged" if merged else "PR READY", f"PR #{n}")
+                    out(f"PR READY #{n}")
+                    return 0
+        w = host.worker(wid)
+        if w is None:  # the host did not answer: not gone
+            unread += 1
+            if unread >= IDLE_POLLS:
+                out(f"WORKER UNREADABLE (the host did not answer {unread} polls in a row: boss-host show {wid})")
+                return 0
+            continue
+        unread = 0
+        if not w:
+            out("WORKER GONE (archived or ended)")
+            return 0
+        state = next((t["agent"].get("state") for t in w.get("terminals", []) if t.get("agent")), "idle")
+        if state == "blocked":
+            ev("BLOCKED", "waiting on input")
+            out("AGENT BLOCKED ON INPUT (a permission prompt or a question: boss-host open " + wid + ")")
+            return 0
+        idle = idle + 1 if state == "idle" else 0
+        if idle >= IDLE_POLLS:
+            out("AGENT IDLE WITHOUT ENVELOPE (check the worker and its PR)")
+            return 0
+    out("TIMEOUT")
+    return 0
+
+
+def flag(args, name, default=None):
+    if name in args[:-1]:
+        i = args.index(name)
+        v = args[i + 1]
+        del args[i:i + 2]
+        return v
+    return default
+
+
+def ctx_or_none():
+    try:
+        return bosskit.load()
+    except SystemExit:
+        return None
+
+
+def main(argv):
+    args = list(argv)
+    cmd = args.pop(0) if args else ""
+    if cmd in ("", "-h", "--help"):
+        print(__doc__)
+        return 0 if cmd else 2
+    if cmd == "session":
+        ids = bosshost.session_ids()
+        print(json.dumps({"kind": ids[0][0], "id": ids[0][1], "terminal": ids[0][2]} if ids else {}))
+        return 0
+    ctx = ctx_or_none()
+    host = bosshost.get(ctx.cfg if ctx else {}, ctx.host if ctx else None)
+    dry = "--dry-run" in args
+    args = [a for a in args if a != "--dry-run"]
+    try:
+        if cmd == "plugins":
+            for n, m in bosshost.plugins().items():
+                print(f"{'*' if n == host.name else ' '} {n:<12} {m.get('description', '')}  ({m['dir']})")
+        elif cmd == "kind":
+            print(host.name)
+        elif cmd == "self":
+            print(host.self_id())
+        elif cmd == "workers":
+            print(json.dumps(host.workers(args or None), indent=1))
+        elif cmd == "show" and len(args) == 1:
+            print(json.dumps(host.worker(args[0]), indent=1))
+        elif cmd == "create":
+            repo, branch = flag(args, "--repo"), flag(args, "--branch")
+            pf, prompt = flag(args, "--prompt-file"), flag(args, "--prompt")
+            prompt = bosskit._read(pf) if pf else prompt
+            if not (repo and branch and prompt):
+                sys.exit("boss-host create: needs --repo, --branch and --prompt-file (or --prompt)")
+            task = flag(args, "--task") or prompt.strip().splitlines()[0][:120]
+            wid = host.create(repo, branch, prompt, flag(args, "--model", ""), flag(args, "--effort", ""), flag(args, "--name", ""), flag(args, "--folder", ""))
+            if ctx:
+                bosskit.add_event(ctx, wid, "sent", task)
+            print(wid)
+        elif cmd == "send" and args:
+            wid = args.pop(0)
+            f, text, term = flag(args, "--file"), flag(args, "--text"), flag(args, "--terminal")
+            text = bosskit._read(f) if f else text
+            if not text:
+                sys.exit("boss-host send: needs --text or --file")
+            host.send(wid, text, term)
+            if ctx:
+                bosskit.add_event(ctx, wid, "msg", re.sub(r"\s+", " ", text).strip()[:200])
+        elif cmd == "rename" and len(args) == 2:
+            host.rename(*args)
+        elif cmd == "move" and len(args) == 2:
+            host.move(*args)
+        elif cmd == "open" and len(args) == 1:
+            host.open(args[0])
+        elif cmd == "archive" and len(args) == 1:
+            host.archive(args[0])
+            print(f"archived {args[0]}")
+        elif cmd == "archive-cmd" and len(args) == 1:
+            print(host.archive_cmd(args[0]))
+        elif cmd == "screen" and len(args) == 2:
+            print(host.screen(*args) or "")
+        elif cmd == "close" and len(args) >= 2:
+            print("\n".join(host.close(args[0], args[1:], dry)))
+        elif cmd == "close-dead":
+            print("\n".join(host.close_dead(args or None, dry)))
+        elif cmd == "sig":
+            print(sig(host, sys.stdin.read()))
+        elif cmd == "watch" and args:
+            if not ctx:
+                sys.exit("boss-host watch: no boss project here")
+            term = flag(args, "--terminal", "")
+            wid, branch = args[0], (args[1] if len(args) > 1 else "")
+            script = host.watch_script()
+            if script:  # the plugin's own watcher, in this process, so the pane's watcher file stays true
+                if not term:
+                    term = next((t["id"] for t in (host.worker(wid) or {}).get("terminals", []) if t.get("agent")), "")
+                register_watcher(ctx, wid, term, branch)
+                os.environ["BOSS_BIN"] = os.path.dirname(os.path.abspath(__file__))
+                os.environ.update({k: v for k, v in host.watch_env().items() if v})
+                os.execv(script, [script, wid, term, *([branch] if branch else [])])
+            path = register_watcher(ctx, wid, term, branch)
+            try:
+                return watch(ctx, host, wid, branch, float(os.environ.get("BOSS_WATCH_POLL_S", 20)), int(os.environ.get("BOSS_WATCH_POLLS", 540)))
+            finally:
+                os.remove(path)
+        else:
+            print(__doc__)
+            return 2
+    except bosshost.Unsupported as e:
+        print(f"boss-host: {e}", file=sys.stderr)
+        return 3
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

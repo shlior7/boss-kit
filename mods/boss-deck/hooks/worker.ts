@@ -51,16 +51,6 @@ export function activity(msgs: readonly SessionMessage[]): string {
   return ''
 }
 
-/** The messages a Bash command sends with `superset terminals send --text`: a key-only send (--keys) is no message. */
-export function sentMessages(command: string): { ws: string; text: string }[] {
-  return command.split(/\bsuperset\s+terminals\s+send\b/).slice(1).flatMap(seg => {
-    const ws = /--workspace[=\s]+["']?([\w-]+)/.exec(seg)?.[1]
-    const t = /--text[=\s]+(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+))/.exec(seg)
-    const text = (t?.[1]?.replace(/\\(.)/g, '$1') ?? t?.[2] ?? t?.[3] ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
-    return ws && text ? [{ ws, text }] : []
-  })
-}
-
 const CI_MARK = { green: ['✓', 'success'], red: ['✗', 'error'], pending: ['…', undefined] } as const
 /** A worker's PR as one row: number, draft or ready, CI, mergeability, review. */
 export function prParts(p: Pr): Part[] {

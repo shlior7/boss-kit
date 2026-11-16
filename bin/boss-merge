@@ -18,6 +18,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosshost  # noqa: E402
 import bosskit  # noqa: E402
 
 # ponytail: first 100 threads and 100 comments each; paginate if a PR ever has more
@@ -73,15 +74,9 @@ def checks(rollup):
     return fail, pend
 
 
-def workspace(branch):
-    """The local Paradev workspace on *branch* ({id, worktreePath, ...}), or None."""
-    r = subprocess.run(["superset", "workspaces", "list", "--local", "--json"], capture_output=True, text=True)
-    try:
-        rows = json.loads(r.stdout)
-    except ValueError:
-        return None
-    rows = rows if isinstance(rows, list) else rows.get("workspaces", [])
-    return next((w for w in rows if w.get("branch") == branch and not w.get("archivedAt")), None)
+def workspace(host, branch):
+    """The host's workspace or session on *branch* ({id, worktree}), or None."""
+    return host.by_branch(branch)
 
 
 def checked_sha(ctx, ws):
@@ -112,11 +107,12 @@ def main(argv):
     n = args[0].lstrip("#")
     pr = pr_view(n)
     head, branch, base = pr["headRefOid"], pr["headRefName"], pr["baseRefName"]
-    ws = workspace(branch)
     try:
         ctx = bosskit.load()
     except SystemExit:
         ctx = None
+    host = bosshost.get(ctx.cfg if ctx else None)
+    ws = workspace(host, branch)
     if not sha and ws and ctx:
         sha = checked_sha(ctx, ws["id"])
 
@@ -159,9 +155,9 @@ def main(argv):
         bosskit.add_event(ctx, ws["id"], "merged", f"PR #{n}")
     else:
         print(f"no boss project here: log `boss-event {ws['id']} merged \"PR #{n}\"` yourself")
-    left = bosskit.leftovers(ws.get("worktreePath") or "", branch)
+    left = bosskit.leftovers(ws.get("worktree") or "", branch)
     print("leftovers: none" if not left else "leftovers (don't archive until handled):\n" + "\n".join(f"  {l}" for l in left))
-    print(f"archive, once the user says yes: superset workspaces archive {ws['id']} --local")
+    print(f"archive, once the user says yes: {host.archive_cmd(ws['id'])}")
 
 
 if __name__ == "__main__":
