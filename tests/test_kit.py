@@ -923,6 +923,7 @@ class Hosts(Home):
         self.assertEqual(ws["aaaa1111"]["terminals"][0]["agent"]["state"], "working")
         self.assertEqual((ws["aaaa1111"]["tags"], ws["aaaa1111"]["worktree"]), (["UI"], "/wt/aaaa1111"))
         self.assertEqual(ws["bbbb2222"]["terminals"][0]["agent"]["state"], "blocked")  # waiting on someone
+        self.assertEqual(self.host.Coderplex.state("review"), "idle")  # its turn ended: done or waiting for a reader
         self.assertEqual(ws["cccc3333"]["terminals"], [])  # a shell session has no agent
         self.assertIn("coderplex-ctl sessions send aaaa1111 --text hi there", self.logged())
         self.assertNotIn("--ttl", h.archive_cmd("aaaa1111"))
@@ -996,11 +997,16 @@ class WatchMsg(Home):
         self.assertEqual(self.w.sig("I will post the BOSS_WORKER_DONE envelope for task fix-1 later"), "")
 
     def test_an_envelope_message_fires_and_logs_done(self):
-        old = [("m1", "BOSS_WORKER_DONE\ntask: fix-0\nsummary: an old one")]
-        got = self.run_watch([old, old, old + [("m2", "on it")], old + [("m2", "on it"), ("m3", "BOSS_WORKER_DONE\ntask: fix-1\nsummary: did it")]],
+        old = [("m1", "BOSS_WORKER_DONE\ntask: fix-0\nsummary: an old one", 0)]
+        got = self.run_watch([old, old, old + [("m2", "on it", 0)], old + [("m2", "on it", 0), ("m3", "BOSS_WORKER_DONE\ntask: fix-1\nsummary: did it", 0)]],
                              ["working", "working", "working"])
         self.assertEqual(got, "ENVELOPE DONE|fix-1|did it")
         self.assertEqual(self.stages(), [("aaaa1111", "DONE", "fix-1: did it")])
+
+    def test_an_envelope_sent_before_the_watcher_was_armed_still_fires(self):
+        bosskit.add_event(self.ctx, "aaaa1111", "sent", "fix-1", now=1000)
+        msgs = [("m0", "BOSS_WORKER_DONE\ntask: fix-0\nsummary: last dispatch", 900), ("m1", "BOSS_WORKER_DONE\ntask: fix-1\nsummary: quick", 1010)]
+        self.assertEqual(self.run_watch([msgs, msgs], ["idle"]), "ENVELOPE DONE|fix-1|quick")
 
     def test_blocked_idle_and_gone(self):
         self.assertTrue(self.run_watch([[]] * 3, ["working", "blocked"]).startswith("AGENT BLOCKED"))
@@ -1025,7 +1031,7 @@ class WatchMsg(Home):
             {"messageId": "m2", "from": {"session": "cccc2222"}, "to": {"session": "b0550000"}, "body": {"text": "another worker"}},
             {"messageId": "m3", "from": {"session": "aaaa1111"}, "to": {"session": "b0550000"}, "body": {"file": body}}]})})
         with mock.patch.dict(os.environ, {"PATH": f"{stubs}:/usr/bin:/bin"}):
-            self.assertEqual(self.w.inbound("b0550000", "aaaa1111"), [("m3", "BOSS_WORKER_DONE\ntask: fix-1\nsummary: ok")])
+            self.assertEqual(self.w.inbound("b0550000", "aaaa1111"), [("m3", "BOSS_WORKER_DONE\ntask: fix-1\nsummary: ok", 0)])
 
 
 class StatusAsk(unittest.TestCase):

@@ -126,9 +126,10 @@ class Coderplex:
 
     @staticmethod
     def state(phase):
-        """agentPhase as an agent state: working, idle (no phase), anything else is waiting on someone: blocked."""
-        # ponytail: only "working" and null were seen; a permission prompt's phase is assumed to be neither
-        return "working" if phase == "working" else "idle" if phase in (None, "", "idle", "ready", "done") else "blocked"
+        """agentPhase as an agent state: working; idle (no phase, or "review": its turn ended and it waits for a reader);
+        anything else is waiting on someone: blocked."""
+        # ponytail: seen working, review and null (daemon 0.522.0); a permission prompt's phase is assumed to be none of them
+        return "working" if phase == "working" else "idle" if phase in (None, "", "idle", "review", "ready", "done") else "blocked"
 
     def _worker(self, s):
         """A session as a worker: its one agent is its one terminal (none for a shell session)."""

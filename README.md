@@ -104,7 +104,7 @@ The host is what runs the workers. A boss uses one, set by `host` in its config 
 | CLI | Paradev (Superset) CLI 2.x, `superset` | `coderplex-ctl` |
 | A worker is | a workspace (worktree + terminals) | a session (worktree + agent) |
 | This session's id | `$SUPERSET_WORKSPACE_ID` | `$CODERPLEX_SESSION_ID` |
-| Dispatch | `superset agents create` / `terminals send` (clear the input with `ctrl+u` first) | `coderplex-ctl sessions create --repo --branch --prompt` / `sessions send` (queues until idle, wakes a stopped agent) |
+| Dispatch | `superset agents create` / `terminals send` (clear the input with `ctrl+u` first) | `coderplex-ctl sessions create --target local --repo --branch --prompt` / `sessions send` (queues until idle, wakes a stopped agent) |
 | Envelope reaches the boss | on the worker's screen, read by `bin/boss-watch-done.sh` | as a message: the worker runs `coderplex-ctl sessions send <boss> --file -`, which arrives as a new prompt in the boss's pane; `bin/boss-watch-msg` is the safety net (PR READY, blocked, idle, gone) and logs the stage |
 | Folders | workspace tags | sidebar sections (`sessions move --section`) |
 | Pages | Superset pages | none: claude.ai artifacts |
@@ -290,7 +290,7 @@ superset agents create --workspace <ws> --agent claude --model opus --prompt "$(
 On coderplex, a new worker, or a message to one:
 
 ```bash
-coderplex-ctl sessions create --repo widgets --branch fix/retry-backoff --model opus --prompt "$(cat ~/.claude/boss/widgets/prompts/fix-42.txt)" --json
+coderplex-ctl sessions create --target local --repo widgets --branch fix/retry-backoff --model opus --prompt "$(cat ~/.claude/boss/widgets/prompts/fix-42.txt)" --json
 coderplex-ctl sessions send <session> --file ~/.claude/boss/widgets/prompts/fix-42-followup.txt
 ```
 
