@@ -166,18 +166,38 @@ bin/bosskit.py config set --level boss host=<plugin> models.strong=fable --apply
 | `ledger` | `ledger.md` | the ledger file in the project folder |
 | `deck_buttons` | Status, Sweep PRs, Check workers, Review page, Cleanup, Mail, Lessons | the boss pane's button row, `[{label, prompt}]`: a click submits the prompt to the boss's own session, as typed. A prompt only asks; section 3 still gates |
 | `deck_worker_buttons` | Status, Verify, Nudge, Cleanup | the same, in each worker's accordion; `{name}`, `{id}`, `{pr}` and `{branch}` are filled per worker |
+| `github.comments` | `["status", "proof", "demo", "review_replies"]` | the PR comments the boss and its workers may post, opt-in per kind; `[]` posts none. Kinds: `status` (the worker's short plain-English done or blocked note, ending with the hidden marker), `proof` (the proof links in that note), `demo` (the demo video on the PR), `marker` (only the hidden marker, as an otherwise empty comment), `review_replies` (workers reply on review threads), `verify` (the boss's note of what it verified when it marks ready), `merged` (the boss's note after a merge) |
+| `github.draft` | `true` | workers open a draft PR at their first commit; `false`: a ready PR, and leaving draft stops counting as a done signal |
+| `github.body` | `["tracker", "proof"]` | what the PR body carries besides what changed |
+| `github.ready` | `boss` | who marks a verified PR ready: `boss`, or `never` (the boss tells you instead) |
+| `github.merge` | `squash` | `bin/boss-merge`'s method: `squash`, `merge` or `rebase`. Merging itself always waits for your OK |
+| `github.style` | `short` | the status comment: `short`, or `detailed` (adds a checks table and the files changed) |
+| `proof` | `demo` | UI proof: `demo` (a recorded demo, mandatory for UI-heavy work), or `screenshots` (a page of screenshots is enough) |
+| `cleanup` | `ask` | finished workspaces: `ask` before archiving each, or `auto` (a standing OK; it still asks for research workspaces and leftovers) |
+| `report` | `{"style": "action-first", "verbosity": "short"}` | how the boss reports: `action-first` or `voice`; `short`, `normal` or `detailed` |
+
+`bin/bosskit.py instructions` turns these into a **settings in effect** block, loaded right after the host commands, that says in plain words what is on: which kinds the boss and its workers may post (and nothing else), the `GitHub:` line every dispatch carries in place of the host commands' PR-comment line, who marks ready, the merge method, proof, cleanup and reports.
+
+**Done detection without a status comment.** The envelope stays mandatory whatever `github.comments` says. With `status` off, a host whose own watcher reads the screen, or whose workers send the envelope as a message, still tells the boss a worker is done; the block names that path. On a host with neither, the PR marker is the watcher's only done signal: the block says so, the boss falls back to the idle fire, and allowing `marker` brings the signal back without a visible note.
 
 ## Onboarding
 
-Run `/boss` in the worktree that will be the boss. When no project resolves there, it onboards instead of loading:
+Run `/boss` in the worktree that will be the boss. When no project resolves there, it onboards instead of loading. Onboarding is a form: the questions live in one file, [`skills/boss/questions.json`](skills/boss/questions.json), which the skill and `bin/boss-init` both read.
 
-1. **Detect** (`bin/bosskit.py detect`, read-only): each installed host plugin, whether its CLI is there and answers, this session's id, `gh` login, the git remote and default branch, the projects in `$BOSS_HOME` and which config layers exist.
-2. **Propose** a config from that: host, project name, repo, base branch, `me`, and the `# Boss workspace <id>` marker.
-3. **Ask** only what can't be derived (a name clash, tracker, wake, model overrides).
-4. **Show** the full resolved config, which layer each value lands in, and every file it would create or change.
-5. **Write** only once you say yes: `boss-init` for a new project, `config set --apply` per layer, the marker line. Nothing is overwritten.
+1. **Detect** (`bin/bosskit.py onboard questions`, read-only): it runs `detect` (each installed host plugin, this session's id, the `gh` login, the git remote and default branch, the projects in `$BOSS_HOME`), answers what it can (host, project name, repo, base branch, login), and packs the rest into question pages of at most four, each with its current value first.
+2. **Ask** with Claude Code's question form: first **what should be posted on the PR** (two checkbox questions; none is a valid answer), then the PR knobs, the project, pages, cleanup, models and effort, wake on mail, deck buttons, the boss's name and whether it is a domain boss, and report style. Merging is not asked: the boss never merges without your OK, and it says so.
+3. **One open question:** "What are your expectations of me as the boss of your project?" Your answer goes to the project's `BOSS.md` under `## Expectations`, which every later session loads.
+4. **Show** (`bin/bosskit.py onboard apply <answers.json>`, a dry run): the full resolved config with the layer of each value, every file it would write, the expectations and the marker line.
+5. **Write** only once you say yes: `boss-init --answers` for a new project, `onboard apply --apply` for an existing one (each file merged, a `.bak` kept), the marker line. Nothing is overwritten.
 
-Re-run it any time with `/boss onboard user`, `/boss onboard project` or `/boss onboard boss` to change one layer.
+The form ends with the boss's own words: "I'm a mere boss but you are the god. I hope to please you and get things done. Always let me know how I can be better."
+
+Re-run it any time with `/boss onboard`, or `/boss onboard user|project|boss` to land every change in one layer. Without a Claude session, `bin/boss-init --questions` prints the form and `bin/boss-init <name> --answers answers.json` takes the same answers from a file (`{"<id>": <answer>}`: an option's label or value, a list for a checkbox question, or your own text):
+
+```json
+{"repo": "acme/widgets", "me": "jane", "comments_worker": ["Status comment"], "comments_boss": "none",
+ "merge": "Squash", "expectations": "Small PRs, and tell me what needs me first."}
+```
 
 ## Requirements
 
@@ -353,7 +373,7 @@ Every DONE carries a `proof:` field:
 | Backend | a page: tests run, before/after, the revert-proves-red output |
 | Read-only or docs | `proof: none: <why>` |
 
-Workers also post the links in their PR status comment: plain English for people, ending with the hidden line `<!-- BOSS_WORKER_DONE task: <id> -->` that the watcher and the pane read (the envelope itself never goes on the PR). The boss opens each one before believing it, and records them in the ledger's Proof column. Every worker also appends one line per page it publishes to `.boss-worker/pages.jsonl` (`{"url", "title", "at"}`, git-ignored with the rest of `.boss-worker/`), and the boss does the same for its own pages in its boss folder's `pages.jsonl`; both panes list them.
+Workers also post the links in their PR status comment (when `github.comments` allows `status` and `proof`): plain English for people, ending with the hidden line `<!-- BOSS_WORKER_DONE task: <id> -->` that the watcher and the pane read (the envelope itself never goes on the PR). The boss opens each one before believing it, and records them in the ledger's Proof column. Every worker also appends one line per page it publishes to `.boss-worker/pages.jsonl` (`{"url", "title", "at"}`, git-ignored with the rest of `.boss-worker/`), and the boss does the same for its own pages in its boss folder's `pages.jsonl`; both panes list them.
 
 After a batch of merges, or when you ask, the boss publishes a **review page**: the stack, what merged, what each PR proved (linked), open risks, and next actions. It uses the host's pages when its prompt offers them, else a claude.ai artifact (config `pages`), and writes the URL to its `review.txt` for the pane.
 
@@ -401,17 +421,18 @@ Both files are append-only and numbered. An exact duplicate is refused; one that
 
 | Command | What it does |
 |---|---|
-| `bin/boss-init <name> [--repo o/r] [--base main] [--me login] [--host PLUGIN] [--worktree DIR]` | Copies `projects/_template` to `$BOSS_HOME/<name>`, seeds the shared lessons, and writes `DIR/.boss` |
+| `bin/boss-init <name> [--repo o/r] [--base main] [--me login] [--host PLUGIN] [--worktree DIR] [--answers FILE]` \| `--questions` | Copies `projects/_template` to `$BOSS_HOME/<name>`, seeds the shared lessons, and writes `DIR/.boss`; `--answers` applies the onboarding form's answers (config, `BOSS.md`'s expectations), `--questions` prints the form |
 | `bin/bosskit.py show \| instructions` | The resolved paths (and host) as JSON, or the full boss instructions (what `/boss` loads) |
 | `bin/bosskit.py config show [--json] \| config set --level user\|project\|boss KEY=VALUE... [--apply]` | The resolved config with each value's layer; `set` is a dry run until `--apply`, merges into the file and keeps a `.bak` copy |
 | `bin/bosskit.py detect` | Read-only environment probe for onboarding: host CLIs, session id, gh, git, `$BOSS_HOME` projects and layers |
+| `bin/bosskit.py onboard questions [--text] \| onboard apply FILE [--project N] [--level L] [--apply]` | The onboarding form with current values, packed into question pages; its answers as config, `BOSS.md`'s `## Expectations` and `Domain:` lines, a dry run until `--apply` |
 | `bin/bosshost.py kind \| self \| workers [ID...] \| send ID TEXT [TERM] \| rename ID NAME \| open ID \| screen ID TERM` | The host adapter from the shell: what the scripts and the pane call |
 | `bin/boss-mail send \| inbox \| read \| reply \| done` | Boss mail, above |
 | `bin/boss-kit-update` | `git pull --ff-only` in the kit (`$BOSS_KIT`, else `$BOSS_KIT_HOME`, else `~/.claude/boss-kit`), prints `old..new` and the one-line log, then drops one `fyi` mail (`kit updated old..new: run /reload-plugins`) in the inbox of every live boss in `bosses.json`. It refuses a kit with uncommitted changes to tracked files or one that cannot fast-forward. It writes inbox files only: no keys or text go to any terminal, so nothing lands in a boss's input box. Each boss runs `/reload-plugins` between turns, after its user's OK |
 | `bin/boss-lesson add \| list \| promote` | Lessons, above |
 | `bin/boss-migrate [--kit DIR] [--boss ID] [--apply]` | Moves a v0.4-or-older kit's project data into `$BOSS_HOME` and leaves a symlink at each old path, and adds the host plugin's prompt import after the template line of each boss's `CLAUDE.local.md` that lacks it. Dry run unless `--apply`; never overwrites a moved path. `--boss` names the boss that owned the old `state/<name>/` |
 | `bin/boss-event <ws> <stage> [note]` | Appends `{at, ws, stage, note}` to this boss's `events.jsonl`. The boss logs `sent` on each dispatch, `checked`, `ready` and `retired`; the watcher logs `DONE`, `BLOCKED`, `PR READY` and `merged` when it fires |
-| `bin/boss-merge <pr> [--sha SHA]` | Run inside the repo. Refuses unless the PR head is the verified sha (`--sha`, else the sha in this boss's last `checked` event for the workspace on the PR's branch), mergeable is `MERGEABLE`, every review thread is resolved or has a reply from the PR author (unanswered ones are listed), and no check is failing or pending. Merges with `gh pr merge --squash --match-head-commit`; when the base branch policy refuses and you can bypass every ruleset on the base, retries with `--admin` and says so. Never `--auto`, never force. Then prints the merge commit, logs `merged "PR #N"`, and prints the worktree's leftover check (uncommitted, unpushed, ignored files beyond rebuildable output) and the archive command. It never archives |
+| `bin/boss-merge <pr> [--sha SHA]` | Run inside the repo. Refuses unless the PR head is the verified sha (`--sha`, else the sha in this boss's last `checked` event for the workspace on the PR's branch), mergeable is `MERGEABLE`, every review thread is resolved or has a reply from the PR author (unanswered ones are listed), and no check is failing or pending. Merges with `gh pr merge --<github.merge> --match-head-commit` (squash by default); when the base branch policy refuses and you can bypass every ruleset on the base, retries with `--admin` and says so. Never `--auto`, never force. Then prints the merge commit, logs `merged "PR #N"`, and prints the worktree's leftover check (uncommitted, unpushed, ignored files beyond rebuildable output) and the archive command. It never archives |
 | `bin/verify [dir]` | The kit's checks in `dir` (default: the kit): unit tests, pane selftest, watcher test, `claude plugin test` and `validate`, the mod's type check, and a junk guard that fails on committed `*.profraw`, `.DS_Store`, `__pycache__` or `*.tmp`. One summary line each, non-zero exit on any failure. Copies the gitignored `mods/boss-deck/.claude-plugin/types/` from another worktree or the installed kit when missing (Claude Code writes it the first time it loads the mod) |
 | `bin/boss-sync.py --only=N,N [--push]` | Run inside the repo. For each listed PR (stacked ones after their base), merges `origin/<base>` into the branch in a throwaway worktree and reports `up to date`, `merged clean` or `REAL CONFLICT: files`. Dry run by default; `--push` pushes (plain push, never force). `--gen=FILES --regen="cmd"` auto-resolves conflicts only in generated files; `--if-moved` exits early when the base hasn't moved. **Use `--only` with your own PR numbers.** `--all` would push to teammates' branches |
 | `bin/boss-tasks.py [--quiet]` | Read-only tracker sync into this boss's `cache/tracker.json` (a migrated `bosses/<id>/tracker.json` is read when that is missing). Prints what changed, your open tasks, team P0/P1 and In Review |

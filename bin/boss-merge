@@ -111,6 +111,9 @@ def main(argv):
         ctx = bosskit.load()
     except SystemExit:
         ctx = None
+    method = ((ctx.cfg if ctx else {}).get("github") or {}).get("merge") or "squash"
+    if method not in ("squash", "merge", "rebase"):
+        sys.exit(f"boss-merge: config github.merge is {method!r}: squash, merge or rebase")
     host = bosshost.get(ctx.cfg if ctx else None)
     ws = workspace(host, branch)
     if not sha and ws and ctx:
@@ -134,9 +137,6 @@ def main(argv):
         print("\n".join(f"refused: {w}" for w in why))
         sys.exit(1)
 
-    method = ((ctx.cfg if ctx else {}).get("github") or {}).get("merge") or "squash"
-    if method not in ("squash", "merge", "rebase"):
-        sys.exit(f"boss-merge: config github.merge is {method!r}: squash, merge or rebase")
     cmd = ("pr", "merge", n, f"--{method}", "--match-head-commit", head)
     rc, out, err = gh(*cmd)
     if rc and "base branch policy" in err + out:

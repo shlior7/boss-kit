@@ -87,6 +87,9 @@ prs='[{"number":1,"state":"OPEN","isDraft":true,"comments":[{"body":"Proof: http
  {"number":11,"state":"OPEN","isDraft":true,"comments":[{"body":"end with <!-- BOSS_WORKER_DONE task: <id> -->"}]}]'
 got=$(echo "$prs" | "$S" --ready | tr '\n' ' ' | sed 's/ $//')
 if [ "$got" = "1 5 6 7 8 9 10" ]; then echo "ok   PR READY -> $got"; else echo "FAIL PR READY: want '1 5 6 7 8 9 10', got '$got'"; fail=1; fi
+# With drafts off (config github.draft: false) an open non-draft PR is no done signal; merged and marked ones still are.
+got=$(echo "$prs" | BOSS_PR_DRAFT=0 "$S" --ready | tr '\n' ' ' | sed 's/ $//')
+if [ "$got" = "1 6 7 8 9 10" ]; then echo "ok   PR READY, drafts off -> $got"; else echo "FAIL PR READY drafts off: want '1 6 7 8 9 10', got '$got'"; fail=1; fi
 # The watcher runs the CLI and machine boss-host hands it (the adapter's), never a bare `superset` from PATH.
 t=$(mktemp -d); mkdir "$t/bin" "$t/cli"; ln -s "$(command -v jq)" "$t/bin/jq"
 printf '#!/bin/sh\necho "$*" >> "%s/calls"\necho "{\\"text\\": \\"hi\\"}"\n' "$t" > "$t/cli/the-cli"; chmod +x "$t/cli/the-cli"

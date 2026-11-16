@@ -14,14 +14,18 @@ The role, mandate, hard rules, routing, envelope, verification, merge and report
 | Host | the host plugin config's `host` names (`bin/boss-host plugins` lists them; its settings under `hosts.<name>`) |
 | Rules to inject in every dispatch | `<AGENTS.md / CLAUDE.md paths>`, the PR title format, "every behavioural fix ships a regression test", folders workers must never touch |
 
+## Expectations
+
+What the user expects of the boss, in their own words. `/boss onboard` asks and writes it here; every boss session loads it.
+
 ## Proof
 
 Which proof each kind of change owes (the template's routing rule 5), made concrete for this project:
 
 | Change | Proof | Where it goes |
 |---|---|---|
-| UI | demo via `/demo-recorder` (or screenshots on a page if it isn't installed) | PR status comment + envelope `proof:` |
-| Backend | a page (where the host commands' Pages line says): tests run, before/after, revert-proves-red output | PR status comment + envelope `proof:` |
+| UI | demo via `/demo-recorder` (or screenshots on a page if it isn't installed) | PR status comment (when config's `github.comments` allows it) + envelope `proof:` |
+| Backend | a page (where the host commands' Pages line says): tests run, before/after, revert-proves-red output | PR status comment (when config's `github.comments` allows it) + envelope `proof:` |
 | Read-only / docs | `proof: none: <why>` | envelope |
 
 Notes: `<how to start the app for a demo, test accounts or sites to record on, pages that must not show real data>`

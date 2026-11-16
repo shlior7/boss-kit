@@ -518,7 +518,7 @@ def questions_text(q_out):
     for k, v in q_out["derived"].items():
         out.append(f"Derived: {k} = {json.dumps(v)}")
     for q in f["questions"] + f["followups"] + [f["expectations"]]:
-        where = ", ".join(_keys(q)) or ("BOSS.md " + q["heading"] if q.get("heading") else q["id"])
+        where = ", ".join(_keys(q) + [q["level"]] if _keys(q) else []) or ("BOSS.md " + q["heading"] if q.get("heading") else q["id"])
         out.append(f"\n{q['id']}  [{where}{', any of' if q.get('multiSelect') else ''}]  {q['question']}")
         out += [f"    {json.dumps(o['value']):<16} {o['label']}: {o['description']}".rstrip(": ") for o in q.get("options") or []]
     return "\n".join(out + ["", f["closing"]]) + "\n"
