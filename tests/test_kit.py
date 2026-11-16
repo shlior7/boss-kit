@@ -932,6 +932,69 @@ class Hosts(Home):
         self.assertEqual(self.host.get({"host": "superset"}).kind, "superset")
 
 
+class WatchMsg(Home):
+    """bin/boss-watch-msg: the coderplex watcher fires on an envelope message, PR READY, blocked, idle or a gone session."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["BOSS_PROJECT"] = "widgets"
+        os.environ["CODERPLEX_SESSION_ID"] = "b0550000"
+        self.w = load_script("boss-watch-msg")
+        self.ctx = bosskit.load(self.wt)
+        self.out = []
+
+    def run_watch(self, inbound, states, prs=None, branch=""):
+        """inbound / states / prs: one value per poll (the first inbound and prs are the baseline)."""
+        inb, st, pr = iter(inbound), iter(states), iter(prs or [])
+        host = mock.Mock(self_id=lambda: "b0550000")
+        host.worker = lambda sid: (lambda s: {} if s == "gone" else {"terminals": [{"agent": {"state": s}}]})(next(st))
+        with mock.patch.object(self.w, "inbound", lambda boss, session: next(inb)), \
+             mock.patch.object(self.w, "pr_list", lambda b: next(pr)), mock.patch.object(self.w.time, "sleep", lambda s: None):
+            self.w.watch(self.ctx, host, "aaaa1111", branch, polls=20, out=self.out.append)
+        return self.out[0]
+
+    def stages(self):
+        return [(e["ws"], e["stage"], e["note"]) for e in bosskit.events(self.ctx.bdir)]
+
+    def test_sig_reads_both_tokens_and_skips_templates_and_prose(self):
+        self.assertEqual(self.w.sig("BOSS_WORKER_DONE\ntask: fix-1\nsummary: did it\nfiles: a"), "DONE|fix-1|did it files: a")
+        self.assertEqual(self.w.sig("SUPERSET_WORKER_BLOCKED task: fix-2\nreason: x"), "BLOCKED|fix-2|")
+        self.assertEqual(self.w.sig("end with BOSS_WORKER_DONE\ntask: <id>\nsummary: <one line>"), "")
+        self.assertEqual(self.w.sig("I will post the BOSS_WORKER_DONE envelope for task fix-1 later"), "")
+
+    def test_an_envelope_message_fires_and_logs_done(self):
+        old = [("m1", "BOSS_WORKER_DONE\ntask: fix-0\nsummary: an old one")]
+        got = self.run_watch([old, old, old + [("m2", "on it")], old + [("m2", "on it"), ("m3", "BOSS_WORKER_DONE\ntask: fix-1\nsummary: did it")]],
+                             ["working", "working", "working"])
+        self.assertEqual(got, "ENVELOPE DONE|fix-1|did it")
+        self.assertEqual(self.stages(), [("aaaa1111", "DONE", "fix-1: did it")])
+
+    def test_blocked_idle_and_gone(self):
+        self.assertTrue(self.run_watch([[]] * 3, ["working", "blocked"]).startswith("AGENT BLOCKED"))
+        self.assertEqual(self.stages()[-1][1], "BLOCKED")
+        self.out = []
+        self.assertTrue(self.run_watch([[]] * 12, ["idle"] * 11).startswith("AGENT IDLE WITHOUT ENVELOPE"))
+        self.out = []
+        self.assertTrue(self.run_watch([[]] * 3, ["gone"]).startswith("SESSION GONE"))
+
+    def test_pr_ready_on_the_branch(self):
+        draft = [{"number": 7, "state": "OPEN", "isDraft": True, "comments": []}]
+        done = [{"number": 7, "state": "OPEN", "isDraft": True, "comments": [{"body": "BOSS_WORKER_DONE task: fix-7\nsummary: x"}]}]
+        got = self.run_watch([[]] * 10, ["working"] * 10, [draft, draft, done], branch="fix/x")
+        self.assertEqual(got, "PR READY #7")
+        self.assertEqual(self.stages(), [("aaaa1111", "PR READY", "PR #7")])
+
+    def test_messages_from_coderplex(self):
+        body = os.path.join(self.tmp, "m3.md")
+        open(body, "w").write("BOSS_WORKER_DONE\ntask: fix-1\nsummary: ok")
+        stubs = fake_cli(self.tmp, "coderplex-ctl", {"sessions messages b0550000 --json": json.dumps({"messages": [
+            {"messageId": "m1", "from": {"session": "aaaa1111"}, "to": {"session": "ffff0000"}, "body": {"text": "not to me"}},
+            {"messageId": "m2", "from": {"session": "cccc2222"}, "to": {"session": "b0550000"}, "body": {"text": "another worker"}},
+            {"messageId": "m3", "from": {"session": "aaaa1111"}, "to": {"session": "b0550000"}, "body": {"file": body}}]})})
+        with mock.patch.dict(os.environ, {"PATH": f"{stubs}:/usr/bin:/bin"}):
+            self.assertEqual(self.w.inbound("b0550000", "aaaa1111"), [("m3", "BOSS_WORKER_DONE\ntask: fix-1\nsummary: ok")])
+
+
 class StatusAsk(unittest.TestCase):
     def test_dry_run_text_has_all_six_questions_and_no_new_work(self):
         out = subprocess.run([os.path.join(BIN, "boss-status-ask"), "--dry-run", "--as", "Studio 2 boss"],
