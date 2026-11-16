@@ -206,7 +206,9 @@ def sources(layers):
     def walk(d, layer, prefix=""):
         for k, v in d.items():
             key = prefix + k
-            if isinstance(v, dict) and (v or any(o.startswith(key + ".") for o in out)):  # {} over a dict changes nothing
+            if v == {} and (any(o.startswith(key + ".") for o in out) or isinstance(out.get(key, (None,))[0], dict)):
+                continue  # {} over a dict: deep_merge changes nothing, so the lower values keep their layers
+            if isinstance(v, dict) and v:
                 for old in [o for o in out if o == key]:  # a dict replaces a scalar set lower down
                     del out[old]
                 walk(v, layer, key + ".")

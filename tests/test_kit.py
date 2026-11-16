@@ -1505,6 +1505,9 @@ class ReviewFixes(Home):
         layers = [("kit", "", {"tracker": {"type": "none"}}), ("project", "", {"tracker": {}})]
         self.assertEqual(bosskit.merged(layers), {"tracker": {"type": "none"}})
         self.assertEqual(bosskit.sources(layers), {"tracker.type": ("none", "kit")})
+        layers = [("kit", "", {"hosts": {}}), ("project", "", {"hosts": {}})]  # empty over empty
+        self.assertEqual(bosskit.sources(layers), {"hosts": ({}, "kit")})
+        self.assertEqual(bosskit.sources([("kit", "", {"hosts": "x"}), ("project", "", {"hosts": {}})]), {"hosts": ({}, "project")})  # replaces a scalar
 
     def test_the_lessons_preamble_loses_its_lines_about_another_host(self):
         text = "# Lessons\nintro for all of them\nan otherhost note\n\n## 1. about fakehost (2026-01-01)\n\nwhy\n\n## 2. general (2026-01-01)\n\nwhy\n"
