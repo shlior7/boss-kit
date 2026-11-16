@@ -25,7 +25,7 @@ class Host(bosshost.Host):
 
     def host_id(self):
         if self._host is None:
-            self._host = os.environ.get("BOSS_HOST") or self.cfg.get("host_id") or self.root.get("superset_host") or ""
+            self._host = self.cfg.get("host_id") or os.environ.get("BOSS_HOST") or self.root.get("superset_host") or ""
             if not self._host:
                 d = _json(self.sh("hosts", "list", "--json"), [])
                 d = d if isinstance(d, list) else d.get("hosts", [])
@@ -60,11 +60,15 @@ class Host(bosshost.Host):
     def _project(self, repo):
         if self.cfg.get("project"):
             return self.cfg["project"]
-        want = repo.lower().rstrip("/").removesuffix(".git")
-        for p in _json(self.sh("projects", "list", "--json"), []):
-            url = (p.get("repo") or "").lower().rstrip("/").removesuffix(".git")
-            if p.get("id") and (url.endswith("/" + want) or p.get("name", "").lower() == want.rsplit("/", 1)[-1]):
-                return p["id"]
+        norm = lambda u: (u or "").lower().rstrip("/").removesuffix(".git")
+        want = norm(repo)
+        ps = [p for p in _json(self.sh("projects", "list", "--json"), []) if isinstance(p, dict) and p.get("id")]
+        url = lambda p: norm(p.get("repo"))
+        # its repo first; a name match only for a project that has no repo to tell it apart
+        hit = next((p for p in ps if url(p) == want or url(p).endswith(("/" + want, ":" + want))), None) or \
+            next((p for p in ps if "/" not in url(p) and p.get("name", "").lower() == want.rsplit("/", 1)[-1]), None)
+        if hit:
+            return hit["id"]
         self._no(f"creating a workspace for {repo!r}", "no Paradev project has that repo: set hosts.superset.project")
 
     def create(self, repo, branch, prompt, model="", effort="", name="", folder=""):
@@ -99,6 +103,10 @@ class Host(bosshost.Host):
 
     def archive(self, ws):
         subprocess.run([self.cli, "workspaces", "archive", ws, "--local"], check=True, capture_output=True)
+
+    def watch_env(self):
+        """The watcher's machine and CLI: the ones this adapter resolved."""
+        return {"BOSS_HOST": self.host_id(), "BOSS_HOST_CLI": self.cli}
 
     def archive_cmd(self, ws):
         return f"superset workspaces archive {ws} --local"

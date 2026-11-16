@@ -86,7 +86,10 @@ def send(ctx, to, kind, subject, body, reply_to=None):
         inbox = os.path.join(ctx.home, project, "bosses", boss, "inbox")
         os.makedirs(os.path.join(inbox, "done"), exist_ok=True)
         bosskit.save_json(os.path.join(inbox, msg["id"] + ".json"), msg)
-        wake(ctx.home, project, boss, msg)
+        try:
+            wake(ctx.home, project, boss, msg)
+        except Exception as e:  # the inbox file is the delivery: a failed wake never stops the fan-out
+            print(f"boss-mail: waking {project}/{boss} failed: {e}", file=sys.stderr)
         sent.append(f"{project}/{boss}")
     return msg["id"], sent
 

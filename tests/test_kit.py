@@ -1018,13 +1018,15 @@ class Watch(Home):
         plug = os.path.join(self.tmp, "plugs", "own")
         os.makedirs(plug)
         json.dump({"name": "own", "priority": 1, "session_env": ["OWN_SESSION"], "watch": "watch.sh"}, open(os.path.join(plug, "host.json"), "w"))
-        open(os.path.join(plug, "adapter.py"), "w").write("import bosshost\nclass Host(bosshost.Host):\n    def worker(self, wid):\n        return {'terminals': [{'id': 't9', 'agent': {'state': 'idle'}}]}\n")
-        open(os.path.join(plug, "watch.sh"), "w").write('#!/bin/sh\nls "$BOSS_BIN/boss-event" >/dev/null && echo "own watcher $$ $*"\n')
+        open(os.path.join(plug, "adapter.py"), "w").write("import bosshost\nclass Host(bosshost.Host):\n    def worker(self, wid):\n        return {'terminals': [{'id': 't9', 'agent': {'state': 'idle'}}]}\n"
+                                                          "    def watch_env(self):\n        return {'OWN_MACHINE': 'm-1'}\n")
+        open(os.path.join(plug, "watch.sh"), "w").write('#!/bin/sh\nls "$BOSS_BIN/boss-event" >/dev/null && echo "own watcher $$ on $OWN_MACHINE $*"\n')
         os.chmod(os.path.join(plug, "watch.sh"), 0o755)
         env = {**os.environ, "BOSS_HOST_PATH": os.path.dirname(plug) + os.pathsep + HOSTS, "BOSS_HOST_KIND": "own", "OWN_SESSION": "boss-9"}
         r = subprocess.run([os.path.join(BIN, "boss-host"), "watch", "aaaa1111", "fix/x"], cwd=self.wt, capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         pid = r.stdout.split()[2]
+        self.assertIn(" on m-1 ", r.stdout)  # the adapter's resolved instance reaches its watcher
         self.assertTrue(r.stdout.startswith("own watcher ") and r.stdout.endswith("aaaa1111 t9 fix/x\n"), r.stdout)
         ctx = bosskit.load(self.wt)
         reg = json.load(open(os.path.join(ctx.cache, "..", "..", "boss-9", "cache", "watchers", f"{pid}.json")))
@@ -1474,6 +1476,143 @@ class LedgerCells(Home):
         json.dump([], open(os.path.join(self.fixdir, "prs.json"), "w"))
         d = deck_json(self.wt, {**stub_tools(self.tmp, self.fixdir), "FAKE_SESSION": self.BOSS})
         self.assertEqual(sorted(w["name"] for w in d["workers"]), ["ws-a", "ws-c"])
+
+
+class ReviewFixes(Home):
+    """PR #22's review: multiline envelopes in PR comments, the selected host's session, config attribution and repair,
+    the worker view's boss layer and proof, mail fan-out, unreadable workers, and the host prompt import."""
+
+    def test_a_pr_comment_with_the_envelope_on_separate_lines_counts_as_done(self):
+        w, deck = load_script("boss-host"), load_script("boss-deck-data.py")
+        fake = bosshost.get({}, "fake")
+        deck.use_host(fake)
+        for body in ("BOSS_WORKER_DONE\ntask: fix-1\nsummary: x", "> OLDFAKE_WORKER_DONE\n\ntask: fix-1"):
+            pr = {"number": 1, "state": "OPEN", "isDraft": True, "comments": [{"body": body, "createdAt": "2026-01-02T10:00:00Z"}]}
+            self.assertEqual(w.ready(fake, [pr]), {1}, body)
+            self.assertGreater(deck.pr_row("a/b", {**pr, "title": "t", "body": ""}, True)["doneAt"], 0, body)
+        prose = {"number": 2, "state": "OPEN", "isDraft": True, "comments": [{"body": "I will post BOSS_WORKER_DONE\nlater, task: fix-2"}]}
+        self.assertEqual(w.ready(fake, [prose]), set())
+
+    def test_self_id_follows_the_host_named_by_the_pane(self):
+        os.environ.update({"FAKE_SESSION": "f-1", "OTHER_SESSION": "o-1"})
+        self.assertEqual(bosshost.self_id(), "f-1")  # by priority
+        os.environ["BOSS_HOST_KIND"] = "other"
+        self.assertEqual((bosshost.self_id(), bosskit.self_id()), ("o-1", "o-1"))
+        del os.environ["OTHER_SESSION"]
+        self.assertEqual(bosshost.self_id(), "")  # the named host has no session here: never another host's id
+
+    def test_an_empty_dict_layer_keeps_the_lower_values_and_their_layers(self):
+        layers = [("kit", "", {"tracker": {"type": "none"}}), ("project", "", {"tracker": {}})]
+        self.assertEqual(bosskit.merged(layers), {"tracker": {"type": "none"}})
+        self.assertEqual(bosskit.sources(layers), {"tracker.type": ("none", "kit")})
+
+    def test_the_lessons_preamble_loses_its_lines_about_another_host(self):
+        text = "# Lessons\nintro for all of them\nan otherhost note\n\n## 1. about fakehost (2026-01-01)\n\nwhy\n\n## 2. general (2026-01-01)\n\nwhy\n"
+        out = bosskit.for_host("fake", text, "lessons")
+        self.assertNotIn("otherhost", out)  # (the fake hosts' names are plain words: "other" is in the note itself)
+        self.assertIn("intro for all of them", out)
+        self.assertIn("0 of 2 lessons are about another host and are left out, and 1 line(s) before them", out)
+
+    def test_config_set_repairs_a_project_that_names_a_removed_plugin(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        path = os.path.join(self.home, "widgets", "config.json")
+        json.dump({"repo": "acme/widgets", "host": "removed"}, open(path, "w"))
+        cli = lambda *a: subprocess.run([sys.executable, os.path.join(BIN, "bosskit.py"), "config", "set", "--level", "project", *a],
+                                        cwd=self.wt, capture_output=True, text=True)
+        r = cli("host=fake")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("would write", r.stdout)
+        r = cli("host=fake", "--apply")
+        self.assertEqual((r.returncode, json.load(open(path))["host"]), (0, "fake"), r.stderr)
+        r = cli("host=gone")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("'gone'", r.stderr)  # the proposed host is still checked
+        self.assertEqual(json.load(open(path))["host"], "fake")
+
+    def test_the_worker_view_uses_the_dispatching_boss_layer_and_the_hosts_proof_links(self):
+        os.environ["FAKE_SESSION"] = "1a2b3c4d-0000"
+        open(os.path.join(self.home, "widgets", "ledger.md"), "w").write(
+            "| Date | Task | Workspace | Model | Status | Proof | Boss |\n|---|---|---|---|---|---|---|\n"
+            "| 2026-01-02 | fix-42: retry | 1a2b3c4d | mid | DISPATCHED | https://pages.example.com/p/fix-42 | ws-main |\n")
+        os.makedirs(os.path.join(self.home, "widgets", "bosses", "ws-main"))
+        json.dump({"base_branch": "develop"}, open(os.path.join(self.home, "widgets", "bosses", "ws-main", "config.json"), "w"))
+        w = deck_json(self.wt, stub_tools(self.tmp, self.fixdir), "--worker", "--workspace", "1a2b3c4d-0000")["worker"]  # a fresh process
+        self.assertEqual(w["base"], "develop")
+        self.assertEqual(w["proof"], [{"label": "page", "url": "https://pages.example.com/p/fix-42"}])
+
+    def test_a_failed_wake_never_stops_the_fan_out(self):
+        mail = load_script("boss-mail")
+        os.environ["BOSS_PROJECT"] = "gadgets"
+        ctx = bosskit.load(self.wt)
+        now = time.time()
+        bosskit.save_json(os.path.join(self.home, "bosses.json"), {b: {"project": "widgets", "workspace": b, "heartbeat": now} for b in ("w1", "w2")})
+        err = io.StringIO()
+        with mock.patch.object(mail, "wake", side_effect=bosshost.Unsupported("fake: sending a message is not supported")), \
+                mock.patch.object(sys, "stderr", err):
+            _, sent = mail.send(ctx, "widgets", "fyi", "hi", "body")
+        self.assertEqual(sent, ["widgets/w1", "widgets/w2"])
+        for b in ("w1", "w2"):
+            self.assertEqual(len(os.listdir(os.path.join(self.home, "widgets", "bosses", b, "inbox"))), 2)  # the message and done/
+        self.assertIn("waking widgets/w1 failed", err.getvalue())
+
+    def test_a_worker_the_host_cannot_read_is_not_gone(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        w, ctx, host, out = load_script("boss-host"), bosskit.load(self.wt), bosshost.get({}, "other"), []
+        reads = iter([None, None, {"terminals": [{"agent": {"state": "blocked"}}]}])
+        host.worker = lambda wid: next(reads)
+        with mock.patch.object(w.time, "sleep", lambda s: None):
+            w.watch(ctx, host, "aaaa1111", polls=5, out=out.append)
+        self.assertTrue(out[0].startswith("AGENT BLOCKED"), out)  # two failed reads, then the real state
+        out.clear()
+        host.worker = lambda wid: None
+        with mock.patch.object(w.time, "sleep", lambda s: None):
+            w.watch(ctx, host, "aaaa1111", polls=20, out=out.append)
+        self.assertTrue(out[0].startswith("WORKER UNREADABLE"), out)
+
+
+class HostImport(Home):
+    """A boss whose CLAUDE.local.md imports the template directly also imports its host's prompt, right after it."""
+
+    def test_the_line_goes_after_the_template_with_its_kit_path_once(self):
+        text = "# Boss workspace w1\n\n@/opt/kit/BOSS-template.md\n@~/.claude/boss/widgets/BOSS.md\n"
+        out = bosskit.with_host_import(text, "fake")
+        self.assertEqual(out, "# Boss workspace w1\n\n@/opt/kit/BOSS-template.md\n@/opt/kit/hosts/fake/prompt.md\n@~/.claude/boss/widgets/BOSS.md\n")
+        self.assertEqual(bosskit.with_host_import(out, "other"), out)  # already has one
+        self.assertEqual(bosskit.with_host_import("# Boss workspace w1\n\nRun the /boss skill.\n", "fake"), "# Boss workspace w1\n\nRun the /boss skill.\n")
+
+    def test_boss_migrate_adds_the_missing_line_to_each_registered_boss(self):
+        wt2 = os.path.join(self.tmp, "wt2")
+        os.makedirs(wt2)
+        local = "# Boss workspace {}\n\n@~/.claude/boss-kit/BOSS-template.md\n@~/.claude/boss/widgets/BOSS.md\n"
+        for wt, b in ((self.wt, "w1"), (wt2, "w2")):
+            open(os.path.join(wt, "CLAUDE.local.md"), "w").write(local.format(b))
+        bosskit.save_json(os.path.join(self.home, "bosses.json"), {"w1": {"project": "widgets", "worktree": self.wt, "hostKind": "other"},
+                                                                   "w2": {"project": "gadgets", "worktree": wt2}})
+        json.dump({"repo": "acme/gadgets", "host": "fake"}, open(os.path.join(self.home, "gadgets", "config.json"), "w"))
+        kit = os.path.join(self.tmp, "oldkit")
+        os.makedirs(kit)
+        run = lambda *a: subprocess.run([sys.executable, os.path.join(BIN, "boss-migrate"), "--kit", kit, *a], cwd=self.tmp,
+                                        capture_output=True, text=True)
+        r = run()
+        self.assertIn("would add  the host prompt import to " + os.path.join(self.wt, "CLAUDE.local.md"), r.stdout)
+        self.assertIn("dry run", r.stdout)
+        self.assertEqual(open(os.path.join(self.wt, "CLAUDE.local.md")).read(), local.format("w1"))
+        r = run("--apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("@~/.claude/boss-kit/BOSS-template.md\n@~/.claude/boss-kit/hosts/other/prompt.md\n@~/.claude/boss/widgets/BOSS.md",
+                      open(os.path.join(self.wt, "CLAUDE.local.md")).read())  # the host it registered with
+        self.assertIn("BOSS-template.md\n@~/.claude/boss-kit/hosts/fake/prompt.md\n", open(os.path.join(wt2, "CLAUDE.local.md")).read())  # its config's
+        self.assertNotIn("would add", run().stdout)  # nothing left to add
+
+    def test_boss_init_prints_the_line_and_adds_it_to_an_existing_file(self):
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace w1\n\n@~/.claude/boss-kit/BOSS-template.md\n")
+        r = subprocess.run([os.path.join(BIN, "boss-init"), "gizmos", "--repo", "acme/gizmos", "--host", "other", "--worktree", self.wt],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        kit = os.path.dirname(BIN).replace(os.path.expanduser("~"), "~", 1)
+        self.assertIn(f"@{kit}/BOSS-template.md\n     @{kit}/hosts/other/prompt.md\n", r.stdout)
+        self.assertEqual(open(os.path.join(self.wt, "CLAUDE.local.md")).read(),
+                         "# Boss workspace w1\n\n@~/.claude/boss-kit/BOSS-template.md\n@~/.claude/boss-kit/hosts/other/prompt.md\n")
 
 
 if __name__ == "__main__":

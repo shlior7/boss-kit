@@ -112,11 +112,12 @@ def session_ids():
 
 
 def self_id():
-    """This session's id on its host: $BOSS_SESSION_ID (the pane sets it), else the first plugin's session_env; '' outside any."""
+    """This session's id on its host: $BOSS_SESSION_ID (the pane sets it), else the session_env of the plugin $BOSS_HOST_KIND
+    names, else of the first plugin; '' outside any."""
     if os.environ.get("BOSS_SESSION_ID"):
         return os.environ["BOSS_SESSION_ID"]
-    ids = session_ids()
-    return ids[0][1] if ids else ""
+    ids, k = session_ids(), os.environ.get("BOSS_HOST_KIND")
+    return next((sid for n, sid, _ in ids if n == k or not k), "")
 
 
 def kind(cfg=None):
@@ -181,6 +182,10 @@ class Host:
         w = self.manifest.get("watch")
         return os.path.join(self.manifest["dir"], w) if w else ""
 
+    def watch_env(self):
+        """Env for the plugin's own watcher (its resolved instance, CLI path)."""
+        return {}
+
     def envelope_prefixes(self):
         return ["BOSS"] + [p for p in _list(self.manifest.get("envelope_aliases")) if p.isidentifier()]
 
@@ -198,6 +203,7 @@ class Host:
         self._no("listing workers")
 
     def worker(self, wid):
+        """One worker; {} when it is gone, None when the host could not be read."""
         return next((w for w in self.workers([wid]) if w.get("id", "").startswith(wid[:8]) or wid.startswith(w.get("id", "\0"))), {})
 
     def by_branch(self, branch):

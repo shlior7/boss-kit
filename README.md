@@ -256,10 +256,13 @@ The short way: start Claude Code in the worktree that will be the boss and run `
    # Boss workspace <workspace id>
 
    @~/.claude/boss-kit/BOSS-template.md
+   @~/.claude/boss-kit/hosts/<host>/prompt.md
    @~/.claude/boss/widgets/BOSS.md
    @~/.claude/boss/widgets/lessons.md
    @~/.claude/boss/lessons.md
    ```
+
+   `<host>` is the host plugin this boss uses (`bin/boss-host kind`): its prompt holds the host commands, and it goes right after the template line. `bin/boss-init` prints this file for a new project; `bin/boss-migrate --apply` adds the missing host line to the `CLAUDE.local.md` of every registered boss that imports the template without it.
 
    Put the boss's own workspace id after the heading (`bin/boss-host self` in its terminal). The heading with that id is what makes a session the boss, and only there: the pane, its heartbeat and the rename. That matters because `CLAUDE.local.md` travels. Every workspace on the same checkout reads it, and a new workspace's setup can copy it into its worktree. Any session whose id on its host doesn't match stays a normal session: no pane, no heartbeat, and `/boss` and the template tell it it isn't the boss. A bare `# Boss workspace` still works outside any host session, where there is no id, but then every session on that checkout is a boss. At the start of each session the pane renames that workspace to **BOSS** (config `boss_name`), so it stands out in the sidebar.
 
@@ -402,7 +405,7 @@ Both files are append-only and numbered. An exact duplicate is refused; one that
 | `bin/boss-mail send \| inbox \| read \| reply \| done` | Boss mail, above |
 | `bin/boss-kit-update` | `git pull --ff-only` in the kit (`$BOSS_KIT`, else `$BOSS_KIT_HOME`, else `~/.claude/boss-kit`), prints `old..new` and the one-line log, then drops one `fyi` mail (`kit updated old..new: run /reload-plugins`) in the inbox of every live boss in `bosses.json`. It refuses a kit with uncommitted changes to tracked files or one that cannot fast-forward. It writes inbox files only: no keys or text go to any terminal, so nothing lands in a boss's input box. Each boss runs `/reload-plugins` between turns, after its user's OK |
 | `bin/boss-lesson add \| list \| promote` | Lessons, above |
-| `bin/boss-migrate [--kit DIR] [--boss ID] [--apply]` | Moves a v0.4-or-older kit's project data into `$BOSS_HOME` and leaves a symlink at each old path. Dry run unless `--apply`; never overwrites. `--boss` names the boss that owned the old `state/<name>/` |
+| `bin/boss-migrate [--kit DIR] [--boss ID] [--apply]` | Moves a v0.4-or-older kit's project data into `$BOSS_HOME` and leaves a symlink at each old path, and adds the host plugin's prompt import after the template line of each boss's `CLAUDE.local.md` that lacks it. Dry run unless `--apply`; never overwrites a moved path. `--boss` names the boss that owned the old `state/<name>/` |
 | `bin/boss-event <ws> <stage> [note]` | Appends `{at, ws, stage, note}` to this boss's `events.jsonl`. The boss logs `sent` on each dispatch, `checked`, `ready` and `retired`; the watcher logs `DONE`, `BLOCKED`, `PR READY` and `merged` when it fires |
 | `bin/boss-merge <pr> [--sha SHA]` | Run inside the repo. Refuses unless the PR head is the verified sha (`--sha`, else the sha in this boss's last `checked` event for the workspace on the PR's branch), mergeable is `MERGEABLE`, every review thread is resolved or has a reply from the PR author (unanswered ones are listed), and no check is failing or pending. Merges with `gh pr merge --squash --match-head-commit`; when the base branch policy refuses and you can bypass every ruleset on the base, retries with `--admin` and says so. Never `--auto`, never force. Then prints the merge commit, logs `merged "PR #N"`, and prints the worktree's leftover check (uncommitted, unpushed, ignored files beyond rebuildable output) and the archive command. It never archives |
 | `bin/verify [dir]` | The kit's checks in `dir` (default: the kit): unit tests, pane selftest, watcher test, `claude plugin test` and `validate`, the mod's type check, and a junk guard that fails on committed `*.profraw`, `.DS_Store`, `__pycache__` or `*.tmp`. One summary line each, non-zero exit on any failure. Copies the gitignored `mods/boss-deck/.claude-plugin/types/` from another worktree or the installed kit when missing (Claude Code writes it the first time it loads the mod) |

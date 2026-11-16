@@ -72,7 +72,17 @@ prs='[{"number":1,"state":"OPEN","isDraft":true,"comments":[{"body":"Proof: http
  {"number":4,"state":"OPEN","isDraft":true,"comments":[]},
  {"number":5,"state":"OPEN","isDraft":false,"comments":[]},
  {"number":6,"state":"MERGED","isDraft":false},
- {"number":7,"state":"OPEN","isDraft":true,"comments":[{"body":"BOSS_WORKER_DONE task: fix-7\nsummary: done"}]}]'
+ {"number":7,"state":"OPEN","isDraft":true,"comments":[{"body":"BOSS_WORKER_DONE task: fix-7\nsummary: done"}]},
+ {"number":8,"state":"OPEN","isDraft":true,"comments":[{"body":"BOSS_WORKER_DONE\ntask: fix-8\nsummary: done"}]}]'
 got=$(echo "$prs" | "$S" --ready | tr '\n' ' ' | sed 's/ $//')
-if [ "$got" = "1 5 6 7" ]; then echo "ok   PR READY -> $got"; else echo "FAIL PR READY: want '1 5 6 7', got '$got'"; fail=1; fi
+if [ "$got" = "1 5 6 7 8" ]; then echo "ok   PR READY -> $got"; else echo "FAIL PR READY: want '1 5 6 7 8', got '$got'"; fail=1; fi
+# The watcher runs the CLI and machine boss-host hands it (the adapter's), never a bare `superset` from PATH.
+t=$(mktemp -d); mkdir "$t/bin" "$t/cli"; ln -s "$(command -v jq)" "$t/bin/jq"
+printf '#!/bin/sh\necho "$*" >> "%s/calls"\necho "{\\"text\\": \\"hi\\"}"\n' "$t" > "$t/cli/the-cli"; chmod +x "$t/cli/the-cli"
+PATH="$t/bin:/usr/bin:/bin" BOSS_HOST=m-7 BOSS_HOST_CLI="$t/cli/the-cli" "$S" w1 t1 >/dev/null 2>&1 & pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$t/calls" ] && break; sleep 0.2; done; kill $pid 2>/dev/null; wait $pid 2>/dev/null
+got=$(head -1 "$t/calls" 2>/dev/null)
+if [ "$got" = "terminals read --workspace w1 --host m-7 --terminal t1 --max-lines 600 --json" ]; then echo "ok   resolved CLI and machine -> $got"
+else echo "FAIL resolved CLI and machine: got '${got:-no call}'"; fail=1; fi
+rm -rf "$t"
 exit $fail

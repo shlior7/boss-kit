@@ -53,7 +53,7 @@ CHECKED_EVENTS = {"checked", "ready"}
 VERIFIED_LEDGER = {"VERIFIED", "CHECKED", "READY", "MERGED", "ARCHIVED"}
 DONE_LEDGER = {"DONE"}
 # A PR comment that starts a DONE envelope; use_host() adds the host's older envelope tokens.
-DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*BOSS_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]")
+DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*BOSS_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
 # A boss refreshes every minute; past this its heartbeat age shows (bosskit.live drops it after STALE_S).
 BOSS_STALE_S = 300
 STATE_LINES = 3  # a domain boss's state file, in its details
@@ -83,7 +83,7 @@ PROOF_KINDS = (
 def use_host(host):
     """The host's proof links (its pages) and older envelope tokens count too; another host's never do."""
     global DONE_COMMENT, PROOF_KINDS
-    DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]")
+    DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
     PROOF_KINDS = tuple((label, re.compile(pat)) for label, pat in host.proof_links()) + PROOF_KINDS[-2:]
 
 
@@ -629,18 +629,18 @@ def worker_view(home, ws, cwd, status=None, fresh=False):
     found = find_dispatch(home, ws)
     if not found:
         return None
-    cfg = bosskit.config_for(home, found[0])
+    project, _, (_, _, _, _, named, _) = found
+    pdir = os.path.join(home, project)
+    reg = bosskit.registry(home)
+    bid = worker_boss(reg, project, named)
+    cfg = bosskit.config_for(home, project, bid)  # the dispatching boss's layer too
     host = bosshost.get(cfg)
     use_host(host)
-    # Read the row again: its page links (the host's and config's proof_urls) count as proof only now.
-    project, _, (task, ledger, date, proof, named, text) = find_dispatch(home, ws)
-    pdir = os.path.join(home, project)
+    _, _, (task, ledger, date, proof, named, text) = find_dispatch(home, ws)  # again: the host's proof links now count
     wt = bosskit.worktree(cwd)
     exclude_boss_dir(wt)
     if status:
         write_status(wt, status)
-    reg = bosskit.registry(home)
-    bid = worker_boss(reg, project, named)
     cache = os.path.join(pdir, "bosses", bid, "cache") if bid else ""
     if not os.path.isdir(cache):
         cache = os.path.join(wt, ".boss-worker")
@@ -650,7 +650,7 @@ def worker_view(home, ws, cwd, status=None, fresh=False):
     base = (pr or {}).get("base") or cfg.get("base_branch") or "main"
     behind = bosskit._git(wt, "rev-list", "--count", f"HEAD..origin/{base}")
     evs = project_events(pdir, ws)
-    me = host.worker(ws)
+    me = host.worker(ws) or {}
     msgs = [e for e in evs if e["stage"].lower() == "msg"]
     stages = [e for e in evs if e["stage"].lower() != "msg"]
     return {

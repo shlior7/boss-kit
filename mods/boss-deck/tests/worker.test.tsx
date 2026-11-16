@@ -76,8 +76,8 @@ const WORKER: WorkerDeck = {
   }),
 }
 
-function session(on: On, deck: WorkerDeck | object, opened: string[], runs: string[][], sess: object = { kind: 'hosta', id: '1a2b3c4d-full', terminal: '' }) {
-  mock.clock(on)
+function session(on: On, deck: WorkerDeck | object, opened: string[], runs: string[][], sess: object = { kind: 'hosta', id: '1a2b3c4d-full', terminal: '' }, failedLookups = 0) {
+  const clock = mock.clock(on)
   on('fs.read', async () => {
     throw new Error('no CLAUDE.local.md')
   })
@@ -94,11 +94,29 @@ function session(on: On, deck: WorkerDeck | object, opened: string[], runs: stri
     return { value: { isPlaced: true as const } }
   })
   on('process.run', async (_$, e) => {
-    if (e.argv.includes('boss-host-session')) return { value: { exitCode: 0, stdout: JSON.stringify(sess), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (e.argv.includes('boss-host-session')) {
+      runs.push(['boss-host-session'])
+      if (failedLookups-- > 0) return { value: { exitCode: 1, stdout: '', stderr: 'Traceback', isStdoutTruncated: false, isStderrTruncated: false } }
+      return { value: { exitCode: 0, stdout: JSON.stringify(sess), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     runs.push([...e.argv])
     return { value: { exitCode: 0, stdout: JSON.stringify(deck), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
+  return clock
 }
+
+test('a failed host lookup is not outside a host: the pane asks again a minute later and starts then', async ($, on) => {
+  const opened: string[] = []
+  const runs: string[][] = []
+  const clock = session(on, WORKER, opened, runs, undefined, 1)
+  await $.session.start({ cwd: '/w/worker', surface: 'terminal', isInteractive: true })
+  expect(runs).toEqual([['boss-host-session']])
+  expect(opened).toEqual([])
+  await clock.advance(60_000)
+  expect(runs.filter(r => r[0] === 'boss-host-session').length).toBe(2)
+  expect(runs.some(r => r.includes('--worker'))).toBe(true)
+  expect(opened).toEqual(['Worker'])
+})
 
 test('no dispatch row for this workspace: no pane', async ($, on) => {
   const opened: string[] = []
