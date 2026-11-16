@@ -4,7 +4,6 @@
   "me": "your-github-login",
   "extra_prs": [],
   "host": "",
-  "superset_host": "",
   "tracker": {
     "type": "none",
     "url_env": "BOSS_TRACKER_URL",

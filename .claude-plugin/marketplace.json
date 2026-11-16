@@ -1,12 +1,12 @@
 {
   "name": "boss-kit",
   "owner": { "name": "Lior Steinberg", "url": "https://github.com/shlior7" },
-  "description": "Boss orchestrator kit for Claude Code + Paradev or coderplex: the boss-deck pane",
+  "description": "Boss orchestrator kit for Claude Code, with pluggable worker hosts: the boss-deck pane",
   "plugins": [
     {
       "name": "boss-deck",
       "source": "./mods/boss-deck",
-      "description": "Quiet boss pane: what needs you, Paradev or coderplex workers, watchers, PRs and the tracker; a worker view in each worker's session",
+      "description": "Quiet boss pane: what needs you, workers on any host, watchers, PRs and the tracker; a worker view in each worker's session",
       "version": "0.8.0"
     }
   ]

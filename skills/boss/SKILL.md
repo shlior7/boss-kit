@@ -1,6 +1,6 @@
 ---
 name: boss
-description: Become this worktree's boss, the orchestrator of its project's workers (Paradev workspaces or coderplex sessions). Loads the boss prompt, the host's commands, the project's facts, and the project and shared lessons; on first run (no project here) or on "/boss onboard [user|project|boss]", walks through setup and shows the config before writing it. Use at the start of a boss session, or when the user says "/boss", "be the boss" or "set up boss-kit".
+description: Become this worktree's boss, the orchestrator of its project's workers on its host plugin. Loads the boss prompt, the host's commands, the project's facts, and the project and shared lessons; on first run (no project here) or on "/boss onboard [user|project|boss]", walks through setup and shows the config before writing it. Use at the start of a boss session, or when the user says "/boss", "be the boss" or "set up boss-kit".
 ---
 
 # Boss
@@ -11,9 +11,9 @@ Set `KIT="${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}"` in your head; every command
 
 ## Onboard (writes nothing until the user approves)
 
-1. **Detect.** `python3 "$KIT/bin/bosskit.py" detect` prints JSON: the host CLIs and whether they answer (`hosts`), this session's id (`session`: `$SUPERSET_WORKSPACE_ID` or `$CODERPLEX_SESSION_ID`), the host it implies (`detected_host`), the gh login, the git remote, branch and default branch, the projects in `$BOSS_HOME` with their repo and host, the project this worktree resolves to (`project`, or null), the three config files and whether they exist (`layers`), and the `CLAUDE.local.md` marker. If `project` resolves, also run `python3 "$KIT/bin/bosskit.py" config show` for the current values and their layers.
+1. **Detect.** `python3 "$KIT/bin/bosskit.py" detect` prints JSON: each installed host plugin, whether its CLI is there and answers, and this session's id on it (`hosts`), this session's id (`session`), the host it resolves to (`detected_host`), the gh login, the git remote, branch and default branch, the projects in `$BOSS_HOME` with their repo and host, the project this worktree resolves to (`project`, or null), the three config files and whether they exist (`layers`), and the `CLAUDE.local.md` marker. If `project` resolves, also run `python3 "$KIT/bin/bosskit.py" config show` for the current values and their layers.
 2. **Propose**, deriving everything you can:
-   - host: `detected_host` (a signed-in CLI and this session's env agree). If the project already exists with another host (for example a `superset_host` and you are in a coderplex session), put `host` in the **boss** layer, so the project's other bosses keep theirs. A new project gets it in the **project** layer.
+   - host: `detected_host`, the plugin this session runs on (a plugin whose `session` is set, and `ok`). Propose only an installed plugin; never name a host `detect` did not list. If the project already exists with another host, put `host` in the **boss** layer, so the project's other bosses keep theirs. A new project gets it in the **project** layer. A plugin's own settings go under `hosts.<name>` (its `host.json` `defaults` list them).
    - project name: the repo's name (`owner/widgets` → `widgets`), unless a project already has this repo; repo from `git.repo`; base branch from `git.default_branch`; `me` from `gh.login`.
    - leave the rest at the kit defaults (`config show` lists them: `models`, `effort`, `wake`, `pages`, `boss_name`, `tracker`).
    - the `CLAUDE.local.md` marker: `# Boss workspace <session.boss_id>` (gitignored; it is what makes this session, and only this one, the boss).
@@ -36,7 +36,7 @@ python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/bosskit.py" instructions
 
 That prints, in order:
 1. The boss prompt (`BOSS-template.md`).
-2. The host's commands (`hosts/superset.md` or `hosts/coderplex.md`, by config's `host`).
+2. The host's commands: the prompt of the one host plugin config's `host` resolves to, and no other.
 3. This project's `BOSS.md`.
 4. This project's lessons.
 5. The shared lessons. When the shared file is over its budget, you get every title plus the 20 most recent entries in full, and it says so; read the file for the rest when a title looks relevant.

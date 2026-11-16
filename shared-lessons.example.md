@@ -38,7 +38,7 @@ After a base PR is squash-merged, its stacked PRs carry the base's original comm
 Why: three stacked PRs conflicted at once after one squash merge.
 
 ## 9. Claude Code draws the envelope inside a reply box (2026-11-11, quack)
-A reply renders as `│ SUPERSET_WORKER_DONE task: x summary: ...` with the side pane on the same line, so a regex that wants the name alone on its line never matches, and every fire is the idle fallback (late, and false while a background shell runs). Strip the box characters and the side pane, find the name anywhere, read its `task:` value, and test the parser on a captured screen.
+A reply renders as `│ BOSS_WORKER_DONE task: x summary: ...` with the side pane on the same line, so a regex that wants the name alone on its line never matches, and every fire is the idle fallback (late, and false while a background shell runs). Strip the box characters and the side pane, find the name anywhere, read its `task:` value, and test the parser on a captured screen.
 Why: six watcher fires in a row were idle fallbacks; three of them hid real envelopes.
 
 ## 10. The boss's own work is invisible: put it in a workspace (2026-11-11, quack)
@@ -46,8 +46,8 @@ The boss fixed two prod bugs, resolved five merge conflicts and ran a research a
 Why: the user said "everything boss does should be a separate workspace; only high level boss tasks are done on the boss itself".
 
 ## 11. A host restart kills worker terminals too (2026-11-11, quack)
-Not only watchers die: relaunch each worker in its SAME workspace with `superset terminals create --local --workspace <id> --command "command claude --dangerously-skip-permissions --continue"` so it keeps its conversation, check git status, /compact if context is high, resend its orders and re-arm watchers on the NEW terminal ids.
-Why: a Paradev host restart ended four worker sessions mid-task.
+Not only watchers die: relaunch each worker in its SAME workspace with `claude --continue` (the host's command for a new terminal in a workspace) so it keeps its conversation, check git status, /compact if context is high, resend its orders and re-arm watchers on the NEW terminal ids.
+Why: a host restart ended four worker sessions mid-task.
 
 ## 12. Close done workspaces as you go (2026-11-11, quack)
 Retire an implementation workspace once its PRs are merged and verified with nothing queued, and sweep the board at every status report. Keep research workspaces: research often turns into the implementation in the same conversation. Copy any ignored output worth keeping (a rendered video, audio) out of the worktree first: archiving deletes the folder.
@@ -58,11 +58,11 @@ Research, ops and checks ran in fresh workspaces, each a full copy of the repo w
 Why: the user: "creating a workspace is creating a worktree which copies all the repo, only do it for real changes".
 
 ## 14. Group workspaces by concern, and keep their names current (2026-11-11, quack)
-Seven workspaces sat in one flat list with names like "build (PR #4)" and "notes #8 + account" that no longer said what they did. Tags (`superset workspaces update <id> --local --tag <group> --name <name>`) file them into sidebar folders by area; the boss suggests a regrouping as it learns the project.
+Seven workspaces sat in one flat list with names like "build (PR #4)" and "notes #8 + account" that no longer said what they did. Folders (`boss-host move <id> <group>`, `boss-host rename <id> <name>`) file them into sidebar groups by area; the boss suggests a regrouping as it learns the project.
 Why: the user asked for groups, and for the boss to propose reorganizations over time.
 
 ## 15. Two finished PRs sat unnoticed: the boss had swapped its watcher for `terminals wait` (2026-11-11, quack)
-After one false positive, the boss replaced `boss-watch-done.sh` with `superset terminals wait --match "<one-line regex>" --max-lines 30`. Claude Code drew a worker's whole reply at once, and the envelope's first line landed 48 rows up, outside the 30-row window. Another worker split the envelope over two lines. Neither matched, `terminals wait` has no idle fallback, and both PRs had already left draft without anyone checking GitHub.
+After one false positive, the boss replaced the kit's watcher with its host CLI's `terminals wait --match "<one-line regex>" --max-lines 30`. Claude Code drew a worker's whole reply at once, and the envelope's first line landed 48 rows up, outside the 30-row window. Another worker split the envelope over two lines. Neither matched, `terminals wait` has no idle fallback, and both PRs had already left draft without anyone checking GitHub.
 Why: the user noticed workspaces "done and nothing occurred". The fix is the script plus a PR sweep every turn: fix the watcher, never bypass it, and keep one check that does not read the screen.
 
 ## 16. Permission mode follows the user's default (2026-11-12)
