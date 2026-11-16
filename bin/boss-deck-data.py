@@ -2,7 +2,7 @@
 """Boss deck data: one JSON snapshot of what the boss manages, for the boss-deck mod.
 
 Read-only. Sources: the project ledger's dispatch rows (task per workspace), the host's workers (bin/bosshost.py:
-each worker's agent state, tags and worktree), running `boss-watch-done*` / `boss-watch-msg` processes (armed watchers), `gh` for my
+each worker's agent state, tags and worktree), the armed watchers (`boss-host watch` leaves one file each in cache/watchers/), `gh` for my
 open PRs (cached 5 min so a 60 s refresh stays cheap), this boss's events.jsonl (each workspace's
 stage log, from bin/boss-event and the watcher), the tracker snapshot boss-tasks.py writes,
 this boss's inbox, and the registry of bosses (this project's: the main boss and its domain
@@ -21,11 +21,10 @@ usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--host-ki
   --fresh: skip the PR cache (the pane passes it right after the boss merges, comments or dispatches)
   --session-start: also mark this boss's new session (the base for "N new shared lessons"), and
                    rename this boss's own workspace or session to config's boss_name (BOSS)
-  --workspace, --cwd: the session's workspace (or coderplex session) id and directory, which the mod passes so its
+  --workspace, --cwd: the session's id on its host and its directory, which the mod passes so its
                       process resolves the same boss as the session's shell
-  --host-kind: superset | coderplex, the host the session runs in (the mod passes it; config's host still wins)
-  --terminal: the session's own terminal id (else $SUPERSET_TERMINAL_ID, or coderplex's $CODERPLEX_AGENT_PANE_KEY),
-              left out of this boss's sessions list
+  --host-kind: the host plugin the session runs in (the mod passes it; config's host still wins)
+  --terminal: the session's own terminal id (else the host's terminal env var), left out of this boss's sessions list
   --status: the worker pane's task progress, {tasks_done, tasks_total, current}, written to .boss-worker/status.json
 """
 import json
@@ -51,8 +50,8 @@ CHECKED_EVENTS = {"checked", "ready"}
 # Ledger status words that mean the boss verified the row's work, or that the worker reported DONE.
 VERIFIED_LEDGER = {"VERIFIED", "CHECKED", "READY", "MERGED", "ARCHIVED"}
 DONE_LEDGER = {"DONE"}
-# A PR comment that starts a DONE envelope (bin/boss-watch-done.sh's pick() uses the same test).
-DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*(?:BOSS|SUPERSET)_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]")
+# A PR comment that starts a DONE envelope; use_host() adds the host's older envelope tokens.
+DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*BOSS_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]")
 # A boss refreshes every minute; past this its heartbeat age shows (bosskit.live drops it after STALE_S).
 BOSS_STALE_S = 300
 STATE_LINES = 3  # a domain boss's state file, in its details
@@ -71,10 +70,16 @@ BEHIND_PRS = 20  # PRs per fetch that get a compare call for "N behind <base>"
 # Proof links a PR or a ledger row can carry: a published page, an artifact, a demo video.
 URL_RE = re.compile(r"https?://[^\s)<>\]\"']+")
 PROOF_KINDS = (
-    ("page", re.compile(r"^https://app\.superset\.sh/page/")),
     ("artifact", re.compile(r"^https://claude\.ai/(?:code/)?artifact/")),
     ("demo", re.compile(r"(?:\.(?:mp4|webm|mov|gif)(?:\?|$))|^https://github\.com/user-attachments/assets/|^https://(?:www\.)?loom\.com/share/")),
 )
+
+
+def use_host(host):
+    """The host's proof links (its pages) and older envelope tokens count too; another host's never do."""
+    global DONE_COMMENT, PROOF_KINDS
+    DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]")
+    PROOF_KINDS = tuple((label, re.compile(pat)) for label, pat in host.proof_links()) + PROOF_KINDS[-2:]
 
 
 def proof_links(text):
@@ -168,18 +173,22 @@ def repo_tag(repo, aliases=None):
     return "".join(w[0] for w in words if w).lower() or repo
 
 
-def watchers(out=None):
-    """Armed watchers from the process list: superset's boss-watch-done.sh <ws> <term>, coderplex's boss-watch-msg <session>."""
-    out = run(["ps", "-axo", "pid=,etime=,command="]) if out is None else out
+def watchers(cache):
+    """Armed watchers: the files `boss-host watch` leaves in cache/watchers/, one per live process; a dead one's file is removed."""
+    d = os.path.join(cache, "watchers")
     found = []
-    for line in out.splitlines():
-        m = re.search(r"^\s*\d+\s+(\S+)\s+\S*bash\s+\S*boss-watch-done\S*\s+([0-9a-f-]{36})\s+([0-9a-f-]{36})", line)
-        if m:
-            found.append({"ws": m.group(2), "term": m.group(3), "ageS": etime_s(m.group(1))})
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        path = os.path.join(d, f)
+        try:
+            w = json.load(open(path))
+            os.kill(int(w["pid"]), 0)
+        except (OSError, ValueError, KeyError, TypeError):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
             continue
-        m = re.search(r"^\s*\d+\s+(\S+)\s+\S*python\S*\s+\S*boss-watch-msg\s+([0-9a-f]{8}[0-9a-f-]*)(?:\s|$)", line)
-        if m:
-            found.append({"ws": m.group(2), "term": "", "ageS": etime_s(m.group(1))})
+        found.append({"ws": str(w["ws"]), "term": str(w.get("term") or ""), "ageS": max(0, int(time.time()) - int(w.get("at") or 0))})
     return found
 
 
@@ -582,6 +591,8 @@ def worker_view(home, ws, cwd, status=None, fresh=False):
     project, cfg, (task, ledger, date, proof, named, text) = found
     pdir = os.path.join(home, project)
     cfg = bosskit.config_for(home, project)
+    host = bosshost.get(cfg)
+    use_host(host)
     wt = bosskit.worktree(cwd)
     exclude_boss_dir(wt)
     if status:
@@ -597,7 +608,7 @@ def worker_view(home, ws, cwd, status=None, fresh=False):
     base = (pr or {}).get("base") or cfg.get("base_branch") or "main"
     behind = bosskit._git(wt, "rev-list", "--count", f"HEAD..origin/{base}")
     evs = project_events(pdir, ws)
-    me = bosshost.get(cfg).worker(ws)
+    me = host.worker(ws)
     msgs = [e for e in evs if e["stage"].lower() == "msg"]
     stages = [e for e in evs if e["stage"].lower() != "msg"]
     return {
@@ -617,11 +628,10 @@ def arg(name):
 
 
 def main():
-    kind = arg("--host-kind")
-    if kind in bosskit.HOSTS:
-        os.environ["BOSS_HOST_KIND"] = kind
-    if arg("--workspace"):  # the session's id, in the variable its host sets
-        os.environ["CODERPLEX_SESSION_ID" if kind == "coderplex" else "SUPERSET_WORKSPACE_ID"] = arg("--workspace")
+    if arg("--host-kind") in bosshost.plugins():
+        os.environ["BOSS_HOST_KIND"] = arg("--host-kind")
+    if arg("--workspace"):
+        os.environ["BOSS_SESSION_ID"] = arg("--workspace")
     if "--worker" in sys.argv:
         ws = bosskit.self_id()
         view = worker_view(bosskit.home(), ws, arg("--cwd"), arg("--status"), "--fresh" in sys.argv) if ws else None
@@ -631,11 +641,12 @@ def main():
     if not bosskit.is_boss(ctx):
         sys.exit(bosskit.not_boss_note(ctx))  # no heartbeat, no rename: another workspace is the boss
     cfg = ctx.cfg
-    host = bosshost.get(cfg)
+    host = bosshost.get(cfg, ctx.host)
+    use_host(host)
     tasks = ledger_tasks(os.path.join(ctx.pdir, cfg.get("ledger", "ledger.md")))
     # Watchers are host-wide; keep the ones on this boss's dispatches (rows without a Boss belong to every boss).
     mine = {p for p, row in tasks.items() if not row[4] or row[4] == ctx.bid}
-    armed = [w for w in watchers() if w["ws"][:8] in mine]
+    armed = [w for w in watchers(ctx.cache) if w["ws"][:8] in mine]
     spaces = host.workers(list(tasks) + ([ctx.workspace] if ctx.workspace else []))
     by_prefix = {w["id"][:8]: w for w in spaces}
     # A domain boss covers only the workspaces in its sidebar folder; the main boss ('' folder) covers all.
@@ -696,7 +707,7 @@ def main():
     except (OSError, ValueError):
         first_seen = {}
     sessions = boss_sessions(next((w for w in spaces if w.get("id") == ctx.workspace), None) if ctx.workspace else None,
-                             arg("--terminal") or os.environ.get("SUPERSET_TERMINAL_ID") or os.environ.get("CODERPLEX_AGENT_PANE_KEY", ""),
+                             arg("--terminal") or host.terminal_id(),
                              ledger_terms(os.path.join(ctx.pdir, cfg.get("ledger", "ledger.md")), ctx.workspace[:8]) if ctx.workspace else {},
                              first_seen, time.time())
     bosskit.save_json(sessions_path, first_seen)
@@ -733,6 +744,8 @@ def main():
 
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
+        # a host whose pages live at pages.example.com
+        PROOF_KINDS = (("page", re.compile(r"^https://pages\.example\.com/p/")),) + PROOF_KINDS
         assert etime_s("01:19") == 79 and etime_s("1:02:03") == 3723 and etime_s("2-00:00:01") == 172801
         assert ci_summary([{"name": "Ownership approval", "conclusion": "FAILURE"}, {"name": "x", "conclusion": "SUCCESS"}]) == "green"
         assert ci_summary([{"name": "x", "status": "IN_PROGRESS"}]) == "pending"
@@ -741,15 +754,15 @@ if __name__ == "__main__":
         p = {"num": 9, "repo": "acme/widgets", "primary": True, "ci": "green", "review": "APPROVED", "draft": False}
         got = [i["text"] for i in attention([w], [], [p])]
         assert got == ["#9 approved + green: ready to merge (no proof)", "pr-1: idle, t has no watcher"], got
-        p["proof"] = [{"label": "page", "url": "https://app.superset.sh/page/x"}]
+        p["proof"] = [{"label": "page", "url": "https://pages.example.com/p/x"}]
         assert attention([], [], [p])[0]["text"] == "#9 approved + green: ready to merge"
-        text = ("Demo: https://github.com/user-attachments/assets/ab12 and page https://app.superset.sh/page/fix-42-ab3d. "
+        text = ("Demo: https://github.com/user-attachments/assets/ab12 and page https://pages.example.com/p/fix-42-ab3d. "
                 "Also (https://claude.ai/code/artifact/9f2e), a clip https://cdn.example.com/run.mp4?x=1, "
                 "plus junk: https://github.com/acme/widgets/pull/42 https://example.com/img.png and again "
-                "https://app.superset.sh/page/fix-42-ab3d.")
+                "https://pages.example.com/p/fix-42-ab3d.")
         assert [(x["label"], x["url"]) for x in proof_links(text)] == [
             ("demo", "https://github.com/user-attachments/assets/ab12"),
-            ("page", "https://app.superset.sh/page/fix-42-ab3d"),
+            ("page", "https://pages.example.com/p/fix-42-ab3d"),
             ("artifact", "https://claude.ai/code/artifact/9f2e"),
             ("demo", "https://cdn.example.com/run.mp4?x=1"),
         ], proof_links(text)
@@ -757,10 +770,10 @@ if __name__ == "__main__":
         import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
             f.write("## Dispatches 2026-01-02\n\n| Date | Task | WS | Model | Status |\n|---|---|---|---|---|\n"
-                    "| 2026-01-02 | fix-42: do it | 1a2b3c4d / 5e6f | mid | DISPATCHED, watcher armed | https://app.superset.sh/page/p42 |\n"
+                    "| 2026-01-02 | fix-42: do it | 1a2b3c4d / 5e6f | mid | DISPATCHED, watcher armed | https://pages.example.com/p/p42 |\n"
                     "| 2026-01-01 | old-41: older | 1a2b3c4d / 5e6f | mid | DONE |\n")
         assert ledger_tasks(f.name) == {"1a2b3c4d": ("fix-42", "DISPATCHED", "2026-01-02",
-                                                     [{"label": "page", "url": "https://app.superset.sh/page/p42"}], "", "fix-42: do it")}, ledger_tasks(f.name)
+                                                     [{"label": "page", "url": "https://pages.example.com/p/p42"}], "", "fix-42: do it")}, ledger_tasks(f.name)
         with open(f.name, "a") as g:  # a newer row with a Boss column, for another boss
             g.write("| 2026-01-03 | fix-43: next | 1a2b3c4d / 5e6f | mid | DISPATCHED | | boss-b |\n")
         assert ledger_tasks(f.name)["1a2b3c4d"][4] == "boss-b"

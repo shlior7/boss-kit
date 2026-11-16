@@ -9,8 +9,8 @@
 
 Addressing a project delivers to every live boss of it (heartbeat in the last 30 min), or to every
 registered one when none is live, or, when none ever registered, to every <project>/bosses/*/ directory. With "wake": true in the target boss's
-config, one line is also sent to its session so it notices: on superset only when its agent is idle (typed into its terminal), on
-coderplex always (the message queues until the agent is idle).
+config, one line is also sent to its session so it notices, on the host that boss last ran on: always when that host queues
+messages until the agent is idle, else only into an idle agent terminal.
 
 Safety: mail is information, never approval. It cannot authorize a merge, push, prod write, spend
 or settings change; those need the receiving boss's own user. Never put secrets in mail.
@@ -47,8 +47,8 @@ def targets(to, me, reg, home):
 
 
 def wake(h, project, boss, msg):
-    """Send one line to the target boss's session when its config opts in: on a host that queues (coderplex) always,
-    else into its idle agent terminal only."""
+    """Send one line to the target boss's session when its config opts in, on the host it registered with (never this
+    session's host): on a host that queues, always; else into its idle agent terminal only."""
     try:
         cfg = bosskit.config_for(h, project, boss)
     except SystemExit:  # a broken config: the mail itself is delivered, the wake is skipped
@@ -56,9 +56,12 @@ def wake(h, project, boss, msg):
     b = bosskit.registry(h).get(boss, {})
     if not cfg.get("wake") or not b.get("workspace"):
         return
-    if b.get("host") and not cfg.get("superset_host") and not os.environ.get("BOSS_HOST"):
-        cfg = {**cfg, "superset_host": b["host"]}  # the host the target boss last ran on
-    host = bosshost.get(cfg)
+    kind = cfg.get("host") or b.get("hostKind")
+    if kind not in bosshost.plugins():
+        return  # which host that boss runs on is unknown here: the inbox file is the delivery
+    if b.get("host"):  # the host instance that boss last ran on, unless its config names one
+        cfg = bosskit.deep_merge({"hosts": {kind: {"host_id": b["host"]}}}, cfg)
+    host = bosshost.get(cfg, kind)
     term = None
     if not host.queues:
         ws = next((w for w in host.workers([b["workspace"]]) if w.get("id") == b["workspace"]), {})

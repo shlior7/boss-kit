@@ -4,17 +4,17 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Boss, Deck, Detail, Live, Pr, ProofLink, Worker, WorkerDeck } from '../types'
 import { KIT_STALE, ago, bossDetails, bossRow, footer, isActive, isBoss, kitStale, mailContext, prDetails, prRow, rank, workerDetails, workerRow } from './details'
 import type { PrView, Row } from './details'
-import { activity, newMsgs, progress, prParts, sentMessages, stateParts, taskList, workerWarnings } from './worker'
+import { activity, newMsgs, progress, prParts, stateParts, taskList, workerWarnings } from './worker'
 
 const PANE = 'boss-deck'
 const TITLE = 'Boss'
 const WORKER_TITLE = 'Worker'
 // The kit root: $BOSS_KIT_HOME, else ~/.claude/boss-kit. A shell expands it so the mod needs no env access.
 const DATA_CMD = ['sh', '-c', 'exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/boss-deck-data.py" "$@"', 'boss-deck-data']
-// Logs one stage event for a workspace as this boss: the variable that carries its id and the id, then boss-event's own arguments.
-const EVENT_CMD = ['sh', '-c', 'export "$1=$2"; shift 2; exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/boss-event" "$@"', 'boss-event']
-// The host adapter (bin/bosshost.py) for this session's host kind, then its own arguments: open, screen.
-const HOST_CMD = ['sh', '-c', 'BOSS_HOST_KIND="$1"; export BOSS_HOST_KIND; shift; exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/bosshost.py" "$@"', 'bosshost']
+// bin/boss-host as this session: its host plugin and id first, then boss-host's own arguments (open, screen).
+const HOST_CMD = ['sh', '-c', 'BOSS_HOST_KIND="$1" BOSS_SESSION_ID="$2"; export BOSS_HOST_KIND BOSS_SESSION_ID; shift 2; exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/boss-host" "$@"', 'boss-host']
+// This session on its host, {kind, id, terminal}: boss-host reads the env this process passes on, so the mod reads none.
+const HOST_SESSION_CMD = ['sh', '-c', 'exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/boss-host" session', 'boss-host-session']
 const REFRESH_MS = 60_000
 // The worker view's FROM BOSS rows.
 const MSG_ROWS = 3
@@ -35,14 +35,19 @@ let loadedKit: string | undefined
 
 // Quiet by design: grey text, color only where it means something: stage marks and what needs attention.
 
-type Self = { id?: string; kind?: 'superset' | 'coderplex'; idVar?: string; term?: string }
-/** This session on its host: a Paradev workspace, else a coderplex session; its own terminal (or agent tab), and the variable carrying its id. */
-async function self($: EngineInterface): Promise<Self> {
-  const ws = await $.env.get('SUPERSET_WORKSPACE_ID')
-  if (ws) return { id: ws, kind: 'superset', idVar: 'SUPERSET_WORKSPACE_ID', term: (await $.env.get('SUPERSET_TERMINAL_ID')) ?? undefined }
-  const cx = await $.env.get('CODERPLEX_SESSION_ID')
-  if (cx) return { id: cx, kind: 'coderplex', idVar: 'CODERPLEX_SESSION_ID', term: (await $.env.get('CODERPLEX_AGENT_PANE_KEY')) ?? undefined }
-  return {}
+type Self = { id?: string; kind?: string; term?: string }
+let hostSession: Promise<Self> | undefined
+/** This session on its host (its plugin, id and own terminal), {} outside any; asked once per session start. */
+function self($: EngineInterface): Promise<Self> {
+  hostSession ??= $.process.run(HOST_SESSION_CMD, { timeoutMs: 20_000 }).then(r => {
+    try {
+      const v = JSON.parse(r.stdout) as { kind?: string; id?: string; terminal?: string }
+      return v?.id ? { id: v.id, kind: v.kind, term: v.terminal || undefined } : {}
+    } catch {
+      return {}
+    }
+  })
+  return hostSession
 }
 const kindArgs = (s: Self) => (s.kind ? ['--host-kind', s.kind] : [])
 const idArgs = (s: Self) => (s.id ? ['--workspace', s.id] : [])
@@ -87,19 +92,13 @@ async function workerRefresh($: EngineInterface, patch: Partial<Live> = {}) {
   }
 }
 
-/** Logs each message the boss just sent a worker as that workspace's "msg" event, for the worker's FROM BOSS. */
-async function logSent($: EngineInterface, command: string) {
-  const me = await self($)
-  for (const m of sentMessages(command))
-    await $.process.run([...EVENT_CMD, me.idVar ?? 'SUPERSET_WORKSPACE_ID', me.id ?? '', m.ws, 'msg', m.text], { cwd: await $.session.cwd(), timeoutMs: 20_000 })
-}
-
 async function openUrl($: EngineInterface, url: string) {
   await $.process.run(['open', url], { timeoutMs: 10_000 })
 }
 
 async function openWorkspace($: EngineInterface, id: string) {
-  await $.process.run([...HOST_CMD, (await self($)).kind ?? '', 'open', id], { cwd: await $.session.cwd(), timeoutMs: 20_000 })
+  const me = await self($)
+  await $.process.run([...HOST_CMD, me.kind ?? '', me.id ?? '', 'open', id], { cwd: await $.session.cwd(), timeoutMs: 20_000 })
 }
 
 /** Unread mail now: the inbox dir only, so a prompt costs one listing. */
@@ -129,9 +128,10 @@ async function prView($: EngineInterface, p: Pr) {
 
 /** A workspace's details and its PR's, in one accordion; the proof links of both. */
 async function workerPeek($: EngineInterface, w: Worker) {
-  // The worker's screen where the host has one (superset); coderplex prints nothing, and its status file says what it is doing.
+  // The worker's screen where its host can read one; otherwise nothing, and the worker's status file says what it is doing.
+  const me = await self($)
   const [read, pr] = await Promise.all([
-    w.id && w.term ? $.process.run([...HOST_CMD, (await self($)).kind ?? '', 'screen', w.id, w.term], { cwd: await $.session.cwd(), timeoutMs: 20_000 }) : undefined,
+    w.id && w.term ? $.process.run([...HOST_CMD, me.kind ?? '', me.id ?? '', 'screen', w.id, w.term], { cwd: await $.session.cwd(), timeoutMs: 20_000 }) : undefined,
     w.pr ? prView($, w.pr).catch(() => [{ label: 'pr', value: 'could not load', color: 'error' }]) : [],
   ])
   const screen = read?.exitCode === 0 ? read.stdout : ''
@@ -141,10 +141,11 @@ async function workerPeek($: EngineInterface, w: Worker) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    hostSession = undefined
     const local = await $.fs.read('CLAUDE.local.md').catch(() => '')
     const ws = (await self($)).id
-    // Not the boss (a copy of its CLAUDE.local.md, another workspace on its checkout, any other session): a Paradev
-    // workspace or coderplex session gets the worker view once a boss's ledger has its dispatch row; anything else stays quiet.
+    // Not the boss (a copy of its CLAUDE.local.md, another workspace on its checkout, any other session): a host session
+    // gets the worker view once a boss's ledger has its dispatch row; anything else stays quiet.
     if (!isBoss(local, ws)) {
       if (!ws) return next(e)
       role = 'worker'
@@ -191,12 +192,11 @@ export const register: Register = on => {
     return next(note ? { ...e, context: [...(e.context ?? []), note] } : e)
   })
 
-  // Refresh right after the boss dispatches, merges or comments, not only on the timer; log each message it sent a worker.
+  // Refresh right after the boss dispatches, messages, merges or comments, not only on the timer (boss-host logs the messages).
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
     if (role !== 'boss') return ran
-    if (!('deny' in ran) && !ran.isError) await logSent($, e.command)
-    if (/superset (terminals send|agents create)|coderplex-ctl sessions (send|create)|gh pr (merge|edit|comment)|boss-sync/.test(e.command)) void refresh($, false, true)
+    if (/boss-host (send|create|archive)|boss-merge|gh pr (merge|edit|comment)|boss-sync/.test(e.command)) void refresh($, false, true)
 
     return ran
   })

@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On, SessionMessage } from 'claude-code'
 
 import { workerDetails } from '../hooks/details'
-import { activity, newMsgs, progress, prParts, sentMessages, taskList, workerWarnings } from '../hooks/worker'
+import { activity, newMsgs, progress, prParts, taskList, workerWarnings } from '../hooks/worker'
 import type { Live, Pr, Worker, WorkerDeck, WorkerView } from '../types'
 
 const use = (tool: string, input: Record<string, unknown>, result?: unknown) => ({ tool_use_id: `${tool}-${Math.random()}`, tool, input, result })
@@ -30,22 +30,6 @@ test('now is the latest tool call, else one line of the latest assistant text', 
   expect(activity([said('Reading the queue', [use('Bash', { command: 'make test-http\nmore' })]), { role: 'user', text: 'ok', toolUses: [] }])).toBe('Bash(make test-http)')
   expect(activity([said('', [use('Read', { file_path: 'a.py' })]), said('\n  Backoff caps at five retries.\nmore')])).toBe('Backoff caps at five retries.')
   expect(activity([])).toBe('')
-})
-
-test('a sent message is logged with its workspace; a key-only send is not', () => {
-  const cmd = `superset terminals send --workspace 1a2b3c4d-full --terminal t1 --keys ctrl+u --local && superset terminals send --workspace 1a2b3c4d-full --terminal t1 --text "also cover the \\"429\\" case" --local`
-  expect(sentMessages(cmd)).toEqual([{ ws: '1a2b3c4d-full', text: 'also cover the "429" case' }])
-  expect(sentMessages(`superset terminals send --workspace w2 --text 'x'`)).toEqual([{ ws: 'w2', text: 'x' }])
-  expect(sentMessages('superset terminals send --workspace w2 --keys enter')).toEqual([])
-  expect(sentMessages('superset terminals read --workspace w2')).toEqual([])
-  expect(sentMessages(`coderplex-ctl sessions send aaaa1111 --text "fix the \\"429\\" case" && coderplex-ctl sessions send bbbb2222 --file p.txt`)).toEqual([
-    { ws: 'aaaa1111', text: 'fix the "429" case' },
-  ])
-  expect(sentMessages(`cd x; superset terminals send --workspace w2 --text 'a'; coderplex-ctl sessions send cccc3333 --text b`)).toEqual([
-    { ws: 'w2', text: 'a' },
-    { ws: 'cccc3333', text: 'b' },
-  ])
-  expect(sentMessages(`superset terminals send --workspace w2 --text "${'a'.repeat(300)}"`)[0]?.text.length).toBe(200)
 })
 
 const pr = (o: Partial<Pr> = {}): Pr => ({ repo: 'acme/widgets', primary: true, num: 61, title: '', draft: true, review: '', merge: 'MERGEABLE', ci: 'green', reviewers: [], url: 'https://example.com/pr/61', base: 'main', head: 'fix/retry', updated: '', proof: [], ...o })
@@ -92,8 +76,7 @@ const WORKER: WorkerDeck = {
   }),
 }
 
-function session(on: On, deck: WorkerDeck | object, opened: string[], runs: string[][], env: Record<string, string> = { SUPERSET_WORKSPACE_ID: '1a2b3c4d-full' }) {
-  mock.env(on, env)
+function session(on: On, deck: WorkerDeck | object, opened: string[], runs: string[][], sess: object = { kind: 'hosta', id: '1a2b3c4d-full', terminal: '' }) {
   mock.clock(on)
   on('fs.read', async () => {
     throw new Error('no CLAUDE.local.md')
@@ -111,6 +94,7 @@ function session(on: On, deck: WorkerDeck | object, opened: string[], runs: stri
     return { value: { isPlaced: true as const } }
   })
   on('process.run', async (_$, e) => {
+    if (e.argv.includes('boss-host-session')) return { value: { exitCode: 0, stdout: JSON.stringify(sess), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     runs.push([...e.argv])
     return { value: { exitCode: 0, stdout: JSON.stringify(deck), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -127,14 +111,14 @@ test('no dispatch row for this workspace: no pane', async ($, on) => {
   expect(said).toEqual({ text: 'No boss ledger has a dispatch row for this workspace.' })
 })
 
-test('a coderplex session is a worker too: its session id and host kind go to the data script', async ($, on) => {
+test('a session on any host plugin is a worker too: its id and host go to the data script', async ($, on) => {
   const opened: string[] = []
   const runs: string[][] = []
-  session(on, WORKER, opened, runs, { CODERPLEX_SESSION_ID: 'aaaa1111', CODERPLEX_AGENT_PANE_KEY: 'agent-1:claude' })
+  session(on, WORKER, opened, runs, { kind: 'hostb', id: 'aaaa1111', terminal: 'agent-1' })
   await $.session.start({ cwd: '/w/worker', surface: 'terminal', isInteractive: true })
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
   const run = runs.find(r => r.includes('--worker')) ?? []
-  expect(run.slice(-9, -4)).toEqual(['--host-kind', 'coderplex', '--worker', '--workspace', 'aaaa1111'])
+  expect(run.slice(-9, -4)).toEqual(['--host-kind', 'hostb', '--worker', '--workspace', 'aaaa1111'])
   expect(opened[0]).toBe('Worker')
 })
 

@@ -3,8 +3,10 @@
 
   verify [dir]        dir defaults to the repo root this script is in
 
-Runs the unit tests, the pane data selftest, the watcher test, the mod's tests, its manifest validation and its type
-check, plus a junk guard: no committed *.profraw, .DS_Store, __pycache__ or *.tmp. The type check needs the gitignored
+Runs the unit tests, each host plugin's tests (hosts/<name>/tests: test_*.py and test-*.sh), the pane data selftest, the
+mod's tests, its manifest validation and its type check, plus two guards: no committed *.profraw, .DS_Store, __pycache__
+or *.tmp (junk), and no file outside hosts/ naming a host plugin (decoupled: the kit names none; only a plugin's own folder
+does). The type check needs the gitignored
 mods/boss-deck/.claude-plugin/types/, which Claude Code writes only when an interactive session loads the mod; when it
 is missing, verify copies it from another worktree of the repo or from the installed kit ($BOSS_KIT_HOME, else
 ~/.claude/boss-kit), read-only. If none has it, open `claude --plugin-dir mods/boss-deck` once.
@@ -20,11 +22,50 @@ JUNK = ("*.profraw", ".DS_Store", "__pycache__", "*.tmp")
 CHECKS = [
     ("unit tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests"]),
     ("deck selftest", [sys.executable, "bin/boss-deck-data.py", "--selftest"]),
-    ("watcher test", ["bin/test-boss-watch.sh"]),
     ("plugin test", ["claude", "plugin", "test", "mods/boss-deck"]),
     ("plugin validate", ["claude", "plugin", "validate", "mods/boss-deck"]),
     ("tsc", ["npm", "exec", "-y", "--package=typescript@5.6.3", "--", "tsc", "-p", "mods/boss-deck", "--noEmit"]),
 ]
+
+
+def host_checks(d):
+    """Each host plugin's own tests, as (name, command)."""
+    out = []
+    root = os.path.join(d, "hosts")
+    for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        tests = os.path.join(root, name, "tests")
+        files = sorted(os.listdir(tests)) if os.path.isdir(tests) else []
+        if any(f.startswith("test_") and f.endswith(".py") for f in files):
+            out.append((f"host {name} tests", [sys.executable, "-m", "unittest", "discover", "-s", os.path.join("hosts", name, "tests")]))
+        out += [(f"host {name} {f}", [os.path.join("hosts", name, "tests", f)]) for f in files if f.startswith("test-") and f.endswith(".sh")]
+    return out
+
+
+def leaks(d, files):
+    """Files outside hosts/ that name a host plugin (its name, keywords, CLIs, env vars or envelope alias): file -> words."""
+    sys.path.insert(0, os.path.join(d, "bin"))
+    import bosshost
+    words = set()
+    root = os.path.join(d, "hosts")
+    for name in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        try:
+            m = __import__("json").load(open(os.path.join(root, name, "host.json")))
+        except (OSError, ValueError):
+            continue
+        m.update({k: bosshost._list(m.get(k)) for k in ("session_env", "terminal_env", "cli")})
+        words |= bosshost.keywords(m)
+    out = {}
+    for f in files:
+        if f.startswith("hosts/"):
+            continue
+        try:
+            text = open(os.path.join(d, f), encoding="utf-8").read().lower()
+        except (OSError, UnicodeDecodeError):  # binary: screenshots
+            continue
+        hit = sorted(w for w in words if w in text)
+        if hit:
+            out[f] = hit
+    return out
 
 
 def junk(files):
@@ -70,14 +111,19 @@ def main(argv):
         sys.exit(__doc__)
     d = os.path.abspath(argv[0] if argv else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     failed = 0
-    for name, cmd in CHECKS:
+    for name, cmd in CHECKS[:1] + host_checks(d) + CHECKS[1:]:
         why = ensure_types(d) if name == "tsc" else ""
         ok, last = (False, why) if why else run(d, cmd)
         failed += not ok
         print(f"{'ok  ' if ok else 'FAIL'} {name}: {last[:160]}")
-    bad = junk(git(d, "ls-files").splitlines())
+    files = git(d, "ls-files").splitlines()
+    bad = junk(files)
     failed += bool(bad)
     print(f"{'FAIL' if bad else 'ok  '} junk guard: " + (", ".join(bad[:10]) if bad else "no committed junk"))
+    named = leaks(d, files)
+    failed += bool(named)
+    print(f"{'FAIL' if named else 'ok  '} decoupled: " + ("; ".join(f"{f}: {', '.join(w)}" for f, w in list(named.items())[:8])
+                                                         if named else "no file outside hosts/ names a host plugin"))
     sys.exit(1 if failed else 0)
 
 

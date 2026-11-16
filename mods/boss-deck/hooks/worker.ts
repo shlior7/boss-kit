@@ -51,20 +51,6 @@ export function activity(msgs: readonly SessionMessage[]): string {
   return ''
 }
 
-/** The messages a Bash command sends a worker: `superset terminals send --workspace W --text T` (a key-only send, --keys,
- * is no message) or `coderplex-ctl sessions send S --text T` (the session id comes first). */
-export function sentMessages(command: string): { ws: string; text: string }[] {
-  const SEND = /^(?:superset\s+terminals|coderplex-ctl\s+sessions)\s+send\b/
-  return command.split(/(?=\b(?:superset\s+terminals|coderplex-ctl\s+sessions)\s+send\b)/).filter(seg => SEND.test(seg)).flatMap(seg => {
-    const ws = seg.startsWith('superset')
-      ? /--workspace[=\s]+["']?([\w-]+)/.exec(seg)?.[1]
-      : /^coderplex-ctl\s+sessions\s+send\s+["']?([\w-]+)/.exec(seg)?.[1]
-    const t = /--text[=\s]+(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+))/.exec(seg)
-    const text = (t?.[1]?.replace(/\\(.)/g, '$1') ?? t?.[2] ?? t?.[3] ?? '').replace(/\s+/g, ' ').trim().slice(0, 200)
-    return ws && text ? [{ ws, text }] : []
-  })
-}
-
 const CI_MARK = { green: ['✓', 'success'], red: ['✗', 'error'], pending: ['…', undefined] } as const
 /** A worker's PR as one row: number, draft or ready, CI, mergeability, review. */
 export function prParts(p: Pr): Part[] {

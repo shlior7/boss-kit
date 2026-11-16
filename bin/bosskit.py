@@ -39,14 +39,11 @@ MARKER = re.compile(r"^# Boss workspace(?:[ \t]+(\S+))?[ \t]*$", re.M)
 DOMAIN = re.compile(r"^Domain:[ \t]*([A-Za-z0-9._-]+)[ \t]*$", re.M)
 FOLDER = re.compile(r"^Folder:[ \t]*(\S(?:.*\S)?)[ \t]*$", re.M)
 HEADING = re.compile(r"^## (\d+)\. (.*)$", re.M)
-# The first line of a worker's completion envelope. BOSS_ is what dispatches ask for; SUPERSET_ is the older token.
-ENVELOPE = r"(?:BOSS|SUPERSET)_WORKER_(DONE|BLOCKED)"
-HOSTS = ("superset", "coderplex")
 LEVELS = ("user", "project", "boss")
 # The kit's config layer: every key a boss reads, with its default.
 DEFAULTS = {
-    "host": "",                 # superset | coderplex; "" detects it from the session (see host_kind)
-    "superset_host": "",        # superset only: the host id; "" = the first host
+    "host": "",                 # the host plugin's name (bosshost.py); "" detects it from the session
+    "hosts": {},                # each host plugin's own settings, under its name
     "base_branch": "main",
     "ledger": "ledger.md",
     "wake": False,              # mail to this boss also messages its session
@@ -108,26 +105,19 @@ def project_name(cwd=None, h=None):
 
 
 def self_id():
-    """This session's id on its host: the Paradev workspace, else the coderplex session; '' outside both."""
-    return os.environ.get("SUPERSET_WORKSPACE_ID") or os.environ.get("CODERPLEX_SESSION_ID") or ""
+    """This session's id on its host (bosshost.self_id); '' outside any host session."""
+    import bosshost
+    return bosshost.self_id()
 
 
 def host_kind(cfg=None):
-    """Which host runs the workers: config's host, else the session's own (the pane passes it as $BOSS_HOST_KIND),
-    else whichever CLI is installed, else superset. No host set inside a Paradev workspace is superset, as before."""
-    for kind in ((cfg or {}).get("host"), os.environ.get("BOSS_HOST_KIND")):
-        if kind in HOSTS:
-            return kind
-    if os.environ.get("SUPERSET_WORKSPACE_ID"):
-        return "superset"
-    if os.environ.get("CODERPLEX_SESSION_ID"):
-        return "coderplex"
-    has_superset = shutil.which("superset") or os.path.exists(os.path.expanduser("~/.superset/bin/superset"))
-    return "coderplex" if not has_superset and shutil.which("coderplex-ctl") else "superset"
+    """The host plugin this boss uses (bosshost.kind)."""
+    import bosshost
+    return bosshost.kind(cfg)
 
 
 def boss_id(cwd=None, h=None):
-    """This session's host id (a Paradev workspace or coderplex session) when running inside one, else the workspace
+    """This session's id on its host when running inside one, else the workspace
     this worktree registered under (a process started without the session's env, like a mod's), else a short hash of the path."""
     if self_id():
         return self_id()
@@ -280,7 +270,7 @@ def boss_domain(wt):
 
 
 def boss_folder(wt):
-    """The Paradev sidebar folder (workspace tag) a domain boss owns: a 'Folder: <tag>' line in CLAUDE.local.md (spaces
+    """The sidebar folder (a worker tag) a domain boss owns: a 'Folder: <tag>' line in CLAUDE.local.md (spaces
     allowed), else its domain name. '' for the project's main boss, which covers every folder."""
     domain = boss_domain(wt)
     m = FOLDER.search(_read(os.path.join(wt, "CLAUDE.local.md"))) if domain else None
@@ -327,7 +317,7 @@ def heartbeat(ctx, host="", summary=None, now=None):
     now = int(now or time.time())
     reg = {i: b for i, b in registry(ctx.home).items()
            if i != ctx.bid and now - b.get("heartbeat", 0) < PRUNE_S and not same_boss(b, ctx.workspace, ctx.worktree)}
-    reg[ctx.bid] = {"project": ctx.name, "workspace": ctx.workspace, "worktree": ctx.worktree, "host": host,
+    reg[ctx.bid] = {"project": ctx.name, "workspace": ctx.workspace, "worktree": ctx.worktree, "host": host, "hostKind": ctx.host,
                     "heartbeat": now, **(summary or {})}
     save_json(os.path.join(ctx.home, "bosses.json"), reg)
 
@@ -429,12 +419,37 @@ def _read(path):
         return ""
 
 
+def host_prompt(ctx):
+    """The resolved host plugin's commands: the only host text a boss ever loads."""
+    import bosshost
+    return bosshost.get(ctx.cfg, ctx.host).prompt()
+
+
+def for_host(host, text, what):
+    """*text* without what names another installed host, and a note saying how much was left out: a boss sees only its own
+    host. A lessons file loses whole entries; other text (project facts) loses the lines."""
+    import bosshost
+    if not text.strip() or not bosshost.foreign(host, text):
+        return text
+    entries = lesson_entries(text)
+    if not entries:
+        lines = text.splitlines()
+        keep = [l for l in lines if not bosshost.foreign(host, l)]
+        return (f"(Your host is {host}: {len(lines) - len(keep)} line(s) of {what} are about another host and are left out.)\n\n"
+                + "\n".join(keep) + "\n")
+    keep = [e for _, _, e in entries if not bosshost.foreign(host, e)]
+    head = text[:text.index(entries[0][1])] if entries else ""
+    return (f"(Your host is {host}: {len(entries) - len(keep)} of {len(entries)} {what} are about another host and are left out.)\n\n"
+            + head + "\n\n".join(keep) + "\n")
+
+
 def instructions(ctx):
+    lessons = lambda path, what: for_host(ctx.host, _read(path), what)
     parts = [("BOSS-template.md", _read(os.path.join(KIT, "BOSS-template.md"))),
-             (f"hosts/{ctx.host}.md (host commands)", _read(os.path.join(KIT, "hosts", f"{ctx.host}.md"))),
-             (f"{ctx.name}/BOSS.md", _read(os.path.join(ctx.pdir, "BOSS.md"))),
-             (f"{ctx.name}/lessons.md (project lessons)", _read(os.path.join(ctx.pdir, "lessons.md"))),
-             ("lessons.md (shared lessons)", shared_view(_read(os.path.join(ctx.home, "lessons.md"))))]
+             (f"host plugin {ctx.host} (host commands)", host_prompt(ctx)),
+             (f"{ctx.name}/BOSS.md", for_host(ctx.host, _read(os.path.join(ctx.pdir, "BOSS.md")), "the project facts")),
+             (f"{ctx.name}/lessons.md (project lessons)", lessons(os.path.join(ctx.pdir, "lessons.md"), "project lessons")),
+             ("lessons.md (shared lessons)", shared_view(lessons(os.path.join(ctx.home, "lessons.md"), "shared lessons")))]
     domain = boss_domain(ctx.worktree)
     if domain:
         ddir = os.path.join(ctx.pdir, "domains")
@@ -442,7 +457,7 @@ def instructions(ctx):
         parts.insert(4, (f"{ctx.name}/domains/{domain}-state.md (domain state, you keep it current)", _read(os.path.join(ddir, f"{domain}-state.md"))))
     head = f"# Boss session: project {ctx.name}, boss {ctx.bid}, host {ctx.host}" + (f", domain {domain}" if domain else "") + "\n"
     if domain:
-        head += (f"\nYour folder: workspaces tagged '{boss_folder(ctx.worktree)}' (a Paradev tag or a coderplex section). Tag every workspace you create with it, and read, "
+        head += (f"\nYour folder: workspaces tagged '{boss_folder(ctx.worktree)}' (the host's folders). Tag every workspace you create with it, and read, "
                  "message, verify and archive only workspaces in it; anything else goes to the main boss by boss-mail.\n")
     return head + "".join(f"\n\n<!-- {name} -->\n\n{body.strip()}\n" for name, body in parts if body.strip())
 
@@ -456,17 +471,10 @@ def _out(argv, timeout=15):
 
 
 def detect(cwd=None):
-    """What onboarding needs to propose a config: host CLIs and whether they answer, the session's host id, gh, git,
-    and $BOSS_HOME's projects and layers. Read-only: it writes nothing."""
+    """What onboarding needs to propose a config: each host plugin (installed, answering, this session's id on it), the
+    host this session would resolve to, gh, git, and $BOSS_HOME's projects and layers. Read-only: it writes nothing."""
+    import bosshost
     h, wt = home(), worktree(cwd)
-    superset = shutil.which("superset") or next((p for p in [os.path.expanduser("~/.superset/bin/superset")] if os.path.exists(p)), "")
-    hosts_raw = _out([superset, "hosts", "list", "--json"]) if superset else None
-    cpx = shutil.which("coderplex-ctl") or ""
-    status = _out([cpx, "status", "--json"]) if cpx else None
-    try:
-        cpx_ok = any(t.get("ok") for t in json.loads(status).get("targets", [])) if status else False
-    except (ValueError, AttributeError):
-        cpx_ok = False
     try:
         project = project_name(cwd, h)
     except SystemExit:
@@ -475,18 +483,24 @@ def detect(cwd=None):
     if not head:  # worktrees often lack origin/HEAD: ask the remote
         m = re.search(r"^ref: refs/heads/(\S+)\s+HEAD", _out(["git", "-C", wt, "ls-remote", "--symref", "origin", "HEAD"]) or "", re.M)
         head = f"origin/{m.group(1)}" if m else ""
-    projs = []
-    for name in projects(h):
-        c = _json_file(layer_path(h, "project", name))
-        projs.append({"name": name, "repo": c.get("repo", ""), "host": c.get("host", ""), "superset_host": c.get("superset_host", "")})
+    projs = [{"name": n, "repo": c.get("repo", ""), "host": c.get("host", "")}
+             for n, c in ((n, _json_file(layer_path(h, "project", n))) for n in projects(h))]
     bid = boss_id(cwd, h)
     layers = {lvl: layer_path(h, lvl, project, bid) for lvl in LEVELS if lvl == "user" or project}
+    hosts = {}
+    for name, m in bosshost.plugins().items():
+        try:
+            hosts[name] = {"description": m.get("description", ""), **bosshost.get({}, name).detect()}
+        except Exception as e:  # a broken plugin is reported, never fatal
+            hosts[name] = {"description": m.get("description", ""), "error": str(e)[:200]}
+    try:
+        detected = bosshost.kind({})
+    except SystemExit:
+        detected = ""
     return {
-        "session": {"superset_workspace": os.environ.get("SUPERSET_WORKSPACE_ID", ""), "coderplex_session": os.environ.get("CODERPLEX_SESSION_ID", ""),
-                    "boss_id": bid},
-        "hosts": {"superset": {"cli": superset, "signed_in": bool(hosts_raw and hosts_raw not in ("[]", "{}"))},
-                  "coderplex": {"cli": cpx, "daemon_ok": cpx_ok}},
-        "detected_host": host_kind({}),
+        "session": {"id": bosshost.self_id(), "boss_id": bid},
+        "hosts": hosts,
+        "detected_host": detected,
         "gh": {"login": _out(["gh", "api", "user", "--jq", ".login"]) or ""},
         "git": {"worktree": wt, "repo": remote_repo(wt), "branch": _git(wt, "rev-parse", "--abbrev-ref", "HEAD"),
                 "default_branch": head.split("/", 1)[1] if "/" in head else ""},
