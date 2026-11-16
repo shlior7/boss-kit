@@ -136,14 +136,15 @@ def boss_id(cwd=None, h=None):
     return max(known)[1] if known else "wt-" + hashlib.sha1(wt.encode()).hexdigest()[:8]
 
 
-def load(cwd=None, name=None):
+def load(cwd=None, name=None, make=True):
+    """The resolved project and boss; make=False creates no folders (config show and set's dry run)."""
     h = home()
     name = name or project_name(cwd, h)
     pdir = os.path.join(h, name)
     json.load(open(os.path.join(pdir, "config.json")))  # the project's own layer must parse
     bid = boss_id(cwd, h)
     bdir = os.path.join(pdir, "bosses", bid)
-    for d in ("cache", "inbox/done"):
+    for d in ("cache", "inbox/done") if make else ():
         os.makedirs(os.path.join(bdir, d), exist_ok=True)
     layers = config_layers(h, name, bid)
     cfg = merged(layers)
@@ -446,11 +447,61 @@ def instructions(ctx):
     return head + "".join(f"\n\n<!-- {name} -->\n\n{body.strip()}\n" for name, body in parts if body.strip())
 
 
+def _out(argv, timeout=15):
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def detect(cwd=None):
+    """What onboarding needs to propose a config: host CLIs and whether they answer, the session's host id, gh, git,
+    and $BOSS_HOME's projects and layers. Read-only: it writes nothing."""
+    h, wt = home(), worktree(cwd)
+    superset = shutil.which("superset") or next((p for p in [os.path.expanduser("~/.superset/bin/superset")] if os.path.exists(p)), "")
+    hosts_raw = _out([superset, "hosts", "list", "--json"]) if superset else None
+    cpx = shutil.which("coderplex-ctl") or ""
+    status = _out([cpx, "status", "--json"]) if cpx else None
+    try:
+        cpx_ok = any(t.get("ok") for t in json.loads(status).get("targets", [])) if status else False
+    except (ValueError, AttributeError):
+        cpx_ok = False
+    try:
+        project = project_name(cwd, h)
+    except SystemExit:
+        project = None
+    head = _git(wt, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if not head:  # worktrees often lack origin/HEAD: ask the remote
+        m = re.search(r"^ref: refs/heads/(\S+)\s+HEAD", _out(["git", "-C", wt, "ls-remote", "--symref", "origin", "HEAD"]) or "", re.M)
+        head = f"origin/{m.group(1)}" if m else ""
+    projs = []
+    for name in projects(h):
+        c = _json_file(layer_path(h, "project", name))
+        projs.append({"name": name, "repo": c.get("repo", ""), "host": c.get("host", ""), "superset_host": c.get("superset_host", "")})
+    bid = boss_id(cwd, h)
+    layers = {lvl: layer_path(h, lvl, project, bid) for lvl in LEVELS if lvl == "user" or project}
+    return {
+        "session": {"superset_workspace": os.environ.get("SUPERSET_WORKSPACE_ID", ""), "coderplex_session": os.environ.get("CODERPLEX_SESSION_ID", ""),
+                    "boss_id": bid},
+        "hosts": {"superset": {"cli": superset, "signed_in": bool(hosts_raw and hosts_raw not in ("[]", "{}"))},
+                  "coderplex": {"cli": cpx, "daemon_ok": cpx_ok}},
+        "detected_host": host_kind({}),
+        "gh": {"login": _out(["gh", "api", "user", "--jq", ".login"]) or ""},
+        "git": {"worktree": wt, "repo": remote_repo(wt), "branch": _git(wt, "rev-parse", "--abbrev-ref", "HEAD"),
+                "default_branch": head.split("/", 1)[1] if "/" in head else ""},
+        "boss_home": {"path": h, "exists": os.path.isdir(h), "projects": projs},
+        "project": project,
+        "layers": {lvl: {"path": p, "exists": os.path.exists(p)} for lvl, p in layers.items()},
+        "marker": boss_marker(wt),
+    }
+
+
 def config_cmd(args):
     """bosskit.py config show [--json] | set --level L KEY=VALUE... [--apply]"""
     sub = args[0] if args else "show"
     if sub == "show":
-        ctx = load()
+        ctx = load(make=False)
         return show_config(ctx.layers, "--json" in args) + ("" if "--json" in args else f"\n\nhost: {ctx.host}")
     if sub == "set":
         level = args[args.index("--level") + 1] if "--level" in args[:-1] else ""
@@ -460,7 +511,7 @@ def config_cmd(args):
         if level == "user":  # needs no project: the user layer is shared by all of them
             layers = [("kit", "", DEFAULTS), ("user", layer_path(home(), "user"), _json_file(layer_path(home(), "user")))]
         else:
-            layers = load().layers
+            layers = load(make="--apply" in args).layers
         return set_config(layers, level, parse_sets(pairs), "--apply" in args)
     sys.exit(config_cmd.__doc__)
 
@@ -469,6 +520,9 @@ def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "show"
     if cmd == "config":
         print(config_cmd(sys.argv[2:]))
+        return
+    if cmd == "detect":
+        print(json.dumps(detect(), indent=1))
         return
     ctx = load()
     if cmd == "show":

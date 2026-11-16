@@ -807,10 +807,34 @@ class ConfigLayers(Home):
         self.assertEqual(json.load(open(os.path.join(ctx.bdir, "config.json"))), {"host": "coderplex"})
         self.assertEqual(bosskit.load(self.wt).host, "coderplex")
 
+    def test_config_cli_dry_run_creates_nothing(self):
+        before = sorted(os.walk(self.home))
+        out = subprocess.run([sys.executable, os.path.join(BIN, "bosskit.py"), "config", "set", "--level", "boss", "host=coderplex"],
+                             cwd=self.wt, capture_output=True, text=True, check=True).stdout
+        self.assertIn("would write", out)
+        self.assertEqual(sorted(os.walk(self.home)), before)
+
     def test_config_cli_show_json(self):
         out = subprocess.run([sys.executable, os.path.join(BIN, "bosskit.py"), "config", "show", "--json"], cwd=self.wt,
                              capture_output=True, text=True, check=True).stdout
         self.assertEqual(json.loads(out)["models.mid"], {"value": "sonnet-x", "from": "user"})
+
+
+class Detect(Home):
+    def test_detect_reports_projects_layers_and_writes_nothing(self):
+        os.environ["CODERPLEX_SESSION_ID"] = "a19f77fa"
+        git(self.wt, "remote", "add", "origin", "git@github.com:acme/widgets.git")
+        before = sorted(os.walk(self.home))
+        with mock.patch.dict(os.environ, {"PATH": f"{fake_cli(self.tmp, 'coderplex-ctl', {'status --json': json.dumps({'targets': [{'ok': True}]})})}:/usr/bin:/bin",
+                                          "HOME": self.tmp}):
+            d = bosskit.detect(self.wt)
+        self.assertEqual(sorted(os.walk(self.home)), before)
+        self.assertEqual((d["project"], d["detected_host"], d["session"]["boss_id"]), ("widgets", "coderplex", "a19f77fa"))
+        self.assertTrue(d["hosts"]["coderplex"]["daemon_ok"])
+        self.assertEqual(d["hosts"]["superset"]["cli"], "")
+        self.assertEqual([p["name"] for p in d["boss_home"]["projects"]], ["gadgets", "widgets"])
+        self.assertEqual(d["layers"]["boss"], {"path": os.path.join(self.home, "widgets", "bosses", "a19f77fa", "config.json"), "exists": False})
+        self.assertIsNone(d["marker"])
 
 
 class HostKind(Home):
