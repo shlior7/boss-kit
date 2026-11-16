@@ -158,3 +158,34 @@ test('a boss button submits exactly its configured prompt to the session, once, 
   await ui.press({ key: 'peek-p-acme/widgets-7' })
   expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).not.toContain('Verify')
 })
+
+test('the header names the page provider, a worker\'s accordion lists its pages and proof once each, and the boss lists its own', async ($, on) => {
+  const pages = [{ url: 'https://example.com/page', title: 'after run', at: 2 }, { url: 'https://example.com/before', title: 'before run', at: 1 }]
+  const deck: Deck = {
+    ...DECK, pagesTo: 'acme-pages',
+    workers: [DECK.workers[0]!, { ...DECK.workers[1]!, pages }],
+    bosses: [{ ...DECK.bosses![0]!, pages: [{ url: 'https://example.com/review', title: 'review 2026-01-02', at: 3 }] }],
+  }
+  mock.clock(on)
+  on('session.cwd', async () => ({ value: '/w/boss' }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('process.run', async (_$, e) => (e.argv.includes('boss-host-session') ? out(SESSION) : out(deck)))
+  await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const texts = async () => (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
+  expect((await texts()).filter(t => t.startsWith('pages →'))).toEqual(['pages → acme-pages'])
+  await ui.press({ key: 'peek-w-5e6f7a8b' })
+  expect((await texts()).filter(t => t.endsWith('↗'))).toEqual(['after run ↗', 'before run ↗', 'demo ↗', 'open workspace ↗', 'open on GitHub ↗'])
+  await ui.press({ key: 'peek-b-ws-me' })
+  expect((await texts()).filter(t => t.endsWith('↗'))).toEqual(['review 2026-01-02 ↗', 'open workspace ↗'])
+})
+
+test('no provider set: no pages line', async ($, on) => {
+  mock.clock(on)
+  on('session.cwd', async () => ({ value: '/w/boss' }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('process.run', async (_$, e) => (e.argv.includes('boss-host-session') ? out(SESSION) : out(DECK)))
+  await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  expect((await ui.findAll({ type: 'Text' })).some(t => (t.text ?? '').startsWith('pages →'))).toBe(false)
+})

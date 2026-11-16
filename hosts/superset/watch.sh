@@ -10,10 +10,11 @@
 #     screen loses its first line before a 20 s poll sees it.
 # So: (a) `sig` strips the box and side pane, joins the token with the next non-empty line, and counts an envelope only when
 # the token is directly followed by `task: <id>` (prose like "the BOSS_WORKER_DONE envelope for task x" never fires;
-# templates whose field value is <placeholder> or literally "..." are skipped); (b) the optional <branch> adds a check that does not depend on the screen:
+# templates whose field value is <placeholder> or literally "..." are skipped, and so is the PR comment's hidden marker
+# <!-- BOSS_WORKER_DONE task: x -->, which a dispatch prompt quotes with the real id); (b) the optional <branch> adds a check that does not depend on the screen:
 # about every 3rd poll, `gh pr list --head <branch> --state all` fires "PR READY #n" when a PR gets a comment holding a DONE
-# envelope, becomes non-draft or merges, and was not so at start (run from the repo, or set GH_REPO). Workers keep their PR
-# draft and post the envelope there; the boss marks it ready. `--ready < pr-list.json` prints the numbers (tests/test-watch.sh).
+# envelope or its hidden marker, becomes non-draft or merges, and was not so at start (run from the repo, or set GH_REPO).
+# Workers keep their PR draft and post a status comment ending with the marker there; the boss marks it ready. `--ready < pr-list.json` prints the numbers (tests/test-watch.sh).
 # Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen, 135 (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
 # On a fire it logs the stage to the boss's events.jsonl through bin/boss-event (DONE, BLOCKED, PR READY or merged), for the boss-deck stages.
 # Env: BOSS_HOST (default: first host), BOSS_HOST_CLI (default: superset); boss-host sets both to what the adapter resolved.
@@ -25,6 +26,7 @@
 sig(){ LC_ALL=C awk '/^ {21,}(│|╭|╰)/ { l[NR] = ""; next }   # the boss'\''s own message box is drawn past column 20: never an envelope
   { gsub(/││.*$/, ""); gsub(/│|─|╭|╮|╰|╯|⏺/, " "); l[NR]=$0 }
   END { for (n = NR; n > 0; n--) if (match(l[n], /(BOSS|SUPERSET)_WORKER_(DONE|BLOCKED)/)) {
+    if (substr(l[n], 1, RSTART - 1) ~ /<!--[ \t]*$/) continue   # the hidden marker of a PR comment (a prompt quotes it): never the envelope
     k = substr(l[n], RSTART, RLENGTH); sub(/^.*_WORKER_/, "", k); r = substr(l[n], RSTART + RLENGTH)
     for (m = n + 1; m <= NR && l[m] ~ /^[ \t]*$/; m++) ;
     if (m <= NR) r = r " " l[m]
@@ -34,9 +36,10 @@ sig(){ LC_ALL=C awk '/^ {21,}(│|╭|╰)/ { l[NR] = ""; next }   # the boss'\'
     sub(/^[ \t]*task:[ \t]*/, "", r); sub(/[^A-Za-z0-9._-].*$/, "", r)
     su = ""; if (match(b, /summary:? +/)) { su = substr(b, RSTART + RLENGTH, 30); gsub(/[ \t]+/, " ", su); sub(/ $/, "", su) }
     print k "|" r "|" su; exit } }'; }
-# PR numbers that count as done: merged, open non-draft, or carrying a comment whose line starts a DONE envelope
+# PR numbers that count as done: merged, open non-draft, or carrying a comment whose line starts a DONE envelope or holds
+# its hidden marker (<!-- BOSS_WORKER_DONE task: x -->, the human-readable status comment's last line)
 pick(){ jq -r '.[] | select(.state == "MERGED" or (.state == "OPEN" and (.isDraft == false
-    or any((.comments // [])[]; .body | test("(^|\n)[ \t>`]*(BOSS|SUPERSET)_WORKER_DONE\\s+task:[ \t]*[A-Za-z0-9._-]"))))) | .number'; }
+    or any((.comments // [])[]; .body | test("(^|\n)[ \t>`]*(<!--[ \t]*)?(BOSS|SUPERSET)_WORKER_DONE\\s+task:[ \t]*[A-Za-z0-9._-]"))))) | .number'; }
 [ "$1" = --sig ] && { sig; exit; }
 [ "$1" = --ready ] && { pick; exit; }
 W=$1; T=$2; B=$3

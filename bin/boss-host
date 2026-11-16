@@ -38,8 +38,8 @@ def envelope_re(host):
 
 
 def done_comment_re(host):
-    """A PR comment that starts a DONE envelope."""
-    return re.compile(r"(^|\n)[ \t>`]*(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
+    """A PR comment that starts a DONE envelope, or holds only its hidden marker: <!-- BOSS_WORKER_DONE task: <id> -->."""
+    return re.compile(r"(^|\n)[ \t>`]*(?:<!--[ \t]*)?(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
 
 
 def sig(host, text):
@@ -54,7 +54,7 @@ def sig(host, text):
 
 
 def ready(host, prs):
-    """PR numbers that count as done: merged, open non-draft, or carrying a comment that starts a DONE envelope."""
+    """PR numbers that count as done: merged, open non-draft, or carrying a comment that starts a DONE envelope or its marker."""
     rx = done_comment_re(host)
     return {p["number"] for p in prs if p.get("state") == "MERGED" or (p.get("state") == "OPEN" and (
         not p.get("isDraft") or any(rx.search(c.get("body") or "") for c in p.get("comments") or [])))}

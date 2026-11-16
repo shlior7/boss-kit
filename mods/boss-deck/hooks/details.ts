@@ -1,4 +1,4 @@
-import type { Boss, Deck, DeckButton, Detail, MailItem, Pr, Worker } from '../types'
+import type { Boss, Deck, DeckButton, Detail, MailItem, Page, Pr, ProofLink, Worker } from '../types'
 
 export const ago = (s: number) =>
   s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : s < 129_600 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`
@@ -228,6 +228,12 @@ export function prDetails(p: Pr, v: PrView, nowS: number): Detail[] {
     { label: 'branch', value: `${p.head} → ${p.base}` },
     { label: 'head', value: `${(v.headRefOid ?? '').slice(0, 9)} · updated ${updated} ago` },
   ]
+}
+
+/** A worker's or boss's pages as links: its pages file by title, then the proof links found for it, each URL once. */
+export function pageLinks(pages: Page[] | undefined, ...found: ProofLink[][]): ProofLink[] {
+  const all = [...(pages ?? []).map(p => ({ label: p.title.slice(0, 30), url: p.url })), ...found.flat()]
+  return all.filter((l, i) => all.findIndex(m => m.url === l.url) === i)
 }
 
 /** Ready to merge (approved, green, not a draft) but carrying no proof link: the one case the pane colors. */

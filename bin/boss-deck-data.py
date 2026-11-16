@@ -14,7 +14,9 @@ Paths and project resolution: bin/bosskit.py.
 
 Worker mode (--worker): the same pane in a dispatched worker's own session. It finds the workspace's newest
 dispatch row across every project's ledger, its boss, its PR (the boss's fetch and cache), pushed commits, its
-events and the messages the boss sent it, and keeps the worktree's .boss-worker/ (notes.md, status.json) git-ignored.
+events and the messages the boss sent it, and keeps the worktree's .boss-worker/ (notes.md, status.json, pages.jsonl) git-ignored.
+Every worker appends one {url, title, at} line per page it publishes to .boss-worker/pages.jsonl; the boss keeps its own
+in its boss folder. Both panes list them, and the header names config's page provider when `pages` sets one.
 
 usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--host-kind K] [--terminal ID] [--cwd DIR] [--selftest]
        boss-deck-data.py --worker --workspace ID [--host-kind K] [--cwd DIR] [--status JSON]
@@ -50,8 +52,9 @@ CHECKED_EVENTS = {"checked", "ready"}
 # Ledger status words that mean the boss verified the row's work, or that the worker reported DONE.
 VERIFIED_LEDGER = {"VERIFIED", "CHECKED", "READY", "MERGED", "ARCHIVED"}
 DONE_LEDGER = {"DONE"}
-# A PR comment that starts a DONE envelope; use_host() adds the host's older envelope tokens.
-DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*BOSS_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
+# A PR comment that starts a DONE envelope, or carries its hidden marker (<!-- BOSS_WORKER_DONE task: x -->);
+# use_host() adds the host's older envelope tokens.
+DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*(?:<!--[ \t]*)?BOSS_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
 # A boss refreshes every minute; past this its heartbeat age shows (bosskit.live drops it after STALE_S).
 BOSS_STALE_S = 300
 STATE_LINES = 3  # a domain boss's state file, in its details
@@ -62,6 +65,9 @@ IDLE_STALE_S = 1800
 DELIVERED_ROWS = 5
 MSG_ROWS = 10
 NOTE_ROWS = 4
+PAGE_ROWS = 8
+# A Boss cell that can be a boss id; anything else (a dash, a note) counts as any boss, never as another one.
+BOSS_CELL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{3,}")
 BOSS_NOTE_ROWS = 2
 DELIVERED_EVENTS = {"sent", "pr ready", "done", "checked", "ready", "merged"}
 PR_FIELDS = ("number,title,isDraft,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,"
@@ -78,7 +84,7 @@ PROOF_KINDS = (
 def use_host(host):
     """The host's proof links (its pages) and older envelope tokens count too; another host's never do."""
     global DONE_COMMENT, PROOF_KINDS
-    DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
+    DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*(?:<!--[ \t]*)?(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
     PROOF_KINDS = tuple((label, re.compile(pat)) for label, pat in host.proof_links()) + PROOF_KINDS[-2:]
 
 
@@ -102,6 +108,16 @@ def run(argv, timeout=40):
         return ""
 
 
+def cells(line):
+    """A ledger row's cells, stripped; an escaped pipe (\\|) stays inside its cell."""
+    return [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", line)]
+
+
+def is_mine(boss, bid):
+    """Whether a row's Boss cell names boss *bid*: empty (every boss), its id, or its id's 8-character prefix."""
+    return not boss or boss in (bid, bid[:8])
+
+
 def ledger_tasks(path):
     """Workspace-id prefix -> (task, status word, date), newest row per workspace.
 
@@ -117,7 +133,7 @@ def ledger_tasks(path):
     for i, line in enumerate(lines):
         if line.startswith("## "):
             prepends = line.startswith("## Dispatches")
-        cols = [c.strip() for c in line.split("|")]
+        cols = cells(line)
         if len(cols) < 7 or not re.match(r"\d{4}-\d{2}-\d{2}", cols[1]):
             continue
         ws = re.match(r"(?:NEW )?([0-9a-f]{8})", cols[3])
@@ -128,7 +144,7 @@ def ledger_tasks(path):
         # A Proof column (6th), or "proof: <url>" anywhere in the row.
         # Optional columns: Proof (6th), Boss (7th). Old rows have neither and still parse.
         proof = proof_links(" ".join(cols[6:7]) + " " + " ".join(re.findall(r"proof:\s*(\S+)", line)))
-        boss = cols[7] if len(cols) >= 9 else ""
+        boss = cols[7] if len(cols) >= 9 and BOSS_CELL.fullmatch(cols[7]) else ""
         rows.append(((cols[1], prepends, -i if prepends else i), ws.group(1), text, status, cols[1], proof, boss))
     tasks = {}
     for _, prefix, text, status, date, proof, boss in sorted(rows, reverse=True, key=lambda r: r[0]):
@@ -149,7 +165,7 @@ def ledger_terms(path, ws_prefix):
     for i, line in enumerate(lines):
         if line.startswith("## "):
             prepends = line.startswith("## Dispatches")
-        cols = [c.strip() for c in line.split("|")]
+        cols = cells(line)
         if len(cols) < 7 or not re.match(r"\d{4}-\d{2}-\d{2}", cols[1]):
             continue
         m = re.match(r"(?:NEW )?([0-9a-f]{8})\s*/\s*([0-9a-f]{4,})", cols[3])
@@ -232,8 +248,33 @@ def read_status(wt):
         return None
 
 
+def read_pages(path):
+    """The pages in a pages.jsonl (one {url, title, at} per line), newest first, each URL once; bad lines are skipped."""
+    out = {}
+    for line in bosskit._read(path).splitlines() if path else []:
+        try:
+            p = json.loads(line)
+            url = str(p["url"])
+            if url.startswith(("http://", "https://")):
+                out[url] = {"url": url, "title": str(p.get("title") or url)[:80], "at": int(p.get("at") or 0)}
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return sorted(out.values(), key=lambda p: p["at"], reverse=True)[:PAGE_ROWS]
+
+
+def worker_pages(wt):
+    """The pages a worktree's worker published: <worktree>/.boss-worker/pages.jsonl."""
+    return read_pages(os.path.join(wt, ".boss-worker", "pages.jsonl") if wt else "")
+
+
+def page_provider(cfg):
+    """Config's page provider when `pages` names one, else ''."""
+    p = cfg.get("pages")
+    return str(p.get("provider") or "") if isinstance(p, dict) else ""
+
+
 def exclude_boss_dir(wt):
-    """Adds .boss-worker/ to the worktree's .git/info/exclude once, so its notes and status are never committed."""
+    """Adds .boss-worker/ to the worktree's .git/info/exclude once, so its notes, status and pages are never committed."""
     path = bosskit._git(wt, "rev-parse", "--git-path", "info/exclude")
     if not path:
         return
@@ -496,7 +537,8 @@ def bosses(reg, project, me, pdir, now=None, workspace="", wt="", sessions=()):
     out = [{"id": i, "workspace": b.get("workspace", ""), "domain": b.get("domain", ""), "me": k == "",
             "next": b.get("next", ""), "working": b.get("working", 0), "forYou": b.get("forYou", 0),
             "heartbeat": b.get("heartbeat", 0), "stale": now - b.get("heartbeat", 0) > BOSS_STALE_S,
-            "state": domain_state(pdir, b.get("domain", "")), "sessions": list(sessions) if k == "" else []}
+            "state": domain_state(pdir, b.get("domain", "")), "sessions": list(sessions) if k == "" else [],
+            "pages": read_pages(os.path.join(pdir, "bosses", i, "pages.jsonl"))}
            for k, (i, b) in best.items()]
     return sorted(out, key=lambda b: (not b["me"], b["domain"] != "", b["domain"]))
 
@@ -538,8 +580,8 @@ def find_dispatch(home, ws):
 
 def worker_boss(reg, project, named):
     """A dispatch's boss: the row's Boss column, else the project's live main boss, else its newest live boss."""
-    if named:
-        return named
+    if named:  # its full id, or the 8-character prefix of a registered one
+        return named if named in reg else next((i for i in reg if i[:8] == named), named)
     live = sorted(bosskit.live(reg, project=project).items(), key=lambda ib: (ib[1].get("domain", "") != "", -ib[1].get("heartbeat", 0)))
     return live[0][0] if live else ""
 
@@ -618,7 +660,7 @@ def worker_view(home, ws, cwd, status=None, fresh=False):
         "pr": pr, "proof": proof, "boss": {"id": bid, "workspace": (reg.get(bid) or {}).get("workspace") or ("" if bid.startswith("wt-") else bid)},
         "stage": {**stages[-1], "hm": hm(stages[-1]["at"])} if stages else None,
         "sentAt": max((e["at"] for e in stages if e["stage"].lower() == "sent"), default=0),
-        "delivered": delivered(pushed(wt, branch), stages), "notes": notes_tail(wt),
+        "delivered": delivered(pushed(wt, branch), stages), "notes": notes_tail(wt), "pages": worker_pages(wt), "pagesTo": page_provider(cfg),
         "msgs": [{"at": e["at"], "hm": hm(e["at"]), "text": e["note"]} for e in reversed(msgs[-MSG_ROWS:])],
     }
 
@@ -646,7 +688,7 @@ def main():
     use_host(host)
     tasks = ledger_tasks(os.path.join(ctx.pdir, cfg.get("ledger", "ledger.md")))
     # Watchers are host-wide; keep the ones on this boss's dispatches (rows without a Boss belong to every boss).
-    mine = {p for p, row in tasks.items() if not row[4] or row[4] == ctx.bid}
+    mine = {p for p, row in tasks.items() if is_mine(row[4], ctx.bid)}
     armed = [w for w in watchers(ctx.cache) if w["ws"][:8] in mine]
     spaces = host.workers(list(tasks) + ([ctx.workspace] if ctx.workspace else []))
     by_prefix = {w["id"][:8]: w for w in spaces}
@@ -668,7 +710,7 @@ def main():
     today = day_start(time.time())
     workers, done = [], []
     for prefix, (task, status, date, proof, boss, text) in list(tasks.items()):
-        if boss and boss != ctx.bid:
+        if not is_mine(boss, ctx.bid):
             continue  # another boss's dispatch
         if ctx.workspace and prefix == ctx.workspace[:8]:
             continue  # this boss's own workspace (a research or ops session's row): sessions below, never a worker
@@ -692,6 +734,7 @@ def main():
             "task": task, "taskText": text, "ledger": status, "date": date, "state": state, "watched": prefix in watched,
             "proof": proof, "prTag": old.get("prTag", ""), "tags": tags,
             "tasks": read_status(info.get("worktree", "")), "notes": notes_tail(info.get("worktree", ""), BOSS_NOTE_ROWS),
+            "pages": worker_pages(info.get("worktree", "")),
         })
     join(workers, pr_rows)
     if folder:  # only this folder's workspaces, their watchers and their PRs; no PR-only rows
@@ -736,6 +779,7 @@ def main():
         name_boss_workspace(host, cfg)
     print(json.dumps({
         "at": int(time.time()), "kit": kit_head(), "me": {"id": ctx.bid, "project": ctx.name}, "next": now_line, "review": review,
+        "pagesTo": page_provider(cfg),
         "attention": todo, "workers": workers, "watchers": armed, "prs": pr_rows, "board": board(cfg, bosskit.tracker_snapshot(ctx)),
         "others": others(bosskit.registry(ctx.home), ctx.bid, workspace=ctx.workspace, wt=ctx.worktree), "mail": mail(ctx.inbox),
         "bosses": bosses(bosskit.registry(ctx.home), ctx.name, ctx.bid, ctx.pdir, workspace=ctx.workspace, wt=ctx.worktree, sessions=sessions),
