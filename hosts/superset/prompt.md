@@ -17,4 +17,4 @@ Your host is Paradev (formerly Superset), CLI 2.x. A worker is a **workspace**: 
 - Pages: `superset pages publish scratch/pages/<f>.html --title ... --description ...` (self-contained HTML, no remote scripts/fetch/eval).
 
 ## Completion: the envelope on the worker's screen
-Every dispatched prompt ends with: "End your final message with exactly this envelope, each field on its own line starting at column 0, and post the same envelope as a PR comment." The watcher reads it from the screen.
+Every dispatched prompt ends with: "End your final message with exactly this envelope, each field on its own line starting at column 0. On the PR, post one short plain-English status comment (what changed, checks, proof) ending with the line `<!-- BOSS_WORKER_DONE task: <id> -->`; never the envelope." The watcher reads it from the screen.

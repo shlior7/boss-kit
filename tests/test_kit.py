@@ -1615,5 +1615,34 @@ class HostImport(Home):
                          "# Boss workspace w1\n\n@~/.claude/boss-kit/BOSS-template.md\n@~/.claude/boss-kit/hosts/other/prompt.md\n")
 
 
+
+class HumanPrComments(Home):
+    """A worker's PR comment is plain English ending with a hidden marker; every PR reader counts a comment that holds only
+    that marker, for this host's tokens (the older ones too), and never the template's <id>."""
+
+    COMMENTS = {"marker": "Retries failed webhooks with backoff; 12 tests pass; proof on the page.\n\n<!-- BOSS_WORKER_DONE task: fix-9 -->",
+                "old marker": "Done.\n<!-- OLDFAKE_WORKER_DONE task: fix-9 -->",
+                "bare marker": "<!--BOSS_WORKER_DONE task: fix-9-->"}
+
+    def pr(self, body):
+        return [{"number": 9, "state": "OPEN", "isDraft": True, "comments": [{"body": body, "createdAt": "2026-01-02T10:00:00Z"}]}]
+
+    def test_boss_host_pr_check(self):
+        bh = load_script("boss-host")
+        host = bosshost.get({}, "fake")
+        for name, body in self.COMMENTS.items():
+            self.assertEqual(bh.ready(host, self.pr(body)), {9}, name)
+        for body in ("end with <!-- BOSS_WORKER_DONE task: <id> -->", "the <!-- BOSS_WORKER_DONE --> marker comes later"):
+            self.assertEqual(bh.ready(host, self.pr(body)), set(), body)
+        self.assertEqual(bh.ready(bosshost.get({}, "other"), self.pr(self.COMMENTS["old marker"])), set())  # another host's token
+
+    def test_deck_done_comment(self):
+        deck = load_script("boss-deck-data.py")
+        deck.use_host(bosshost.get({}, "fake"))
+        for name, body in self.COMMENTS.items():
+            self.assertGreater(deck.pr_row("a/b", {"number": 9, "title": "t", "comments": self.pr(body)[0]["comments"]}, True)["doneAt"], 0, name)
+        self.assertEqual(deck.pr_row("a/b", {"number": 9, "title": "t", "comments": self.pr("<!-- BOSS_WORKER_DONE task: <id> -->")[0]["comments"]}, True)["doneAt"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

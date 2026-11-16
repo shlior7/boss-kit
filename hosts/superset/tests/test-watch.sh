@@ -57,6 +57,14 @@ check "new token, prose false positive" "" <<'X'
 │ When finished, post the BOSS_WORKER_DONE
 │ envelope for task demo-task.
 X
+check "a dispatch prompt quoting the PR comment's hidden marker with the real id" "" <<'X'
+> On the PR, post one short status comment ending with the line
+  <!-- BOSS_WORKER_DONE task: demo-task -->
+X
+check "an envelope below a quoted marker still fires" "DONE|demo-task|did it" <<'X'
+  <!-- BOSS_WORKER_DONE task: demo-task -->
+│ ⏺ BOSS_WORKER_DONE task: demo-task summary: did it
+X
 a=$("$S" --sig <<'X'
 │ SUPERSET_WORKER_DONE task: demo-task summary: first run checks: ok
 X
@@ -73,9 +81,12 @@ prs='[{"number":1,"state":"OPEN","isDraft":true,"comments":[{"body":"Proof: http
  {"number":5,"state":"OPEN","isDraft":false,"comments":[]},
  {"number":6,"state":"MERGED","isDraft":false},
  {"number":7,"state":"OPEN","isDraft":true,"comments":[{"body":"BOSS_WORKER_DONE task: fix-7\nsummary: done"}]},
- {"number":8,"state":"OPEN","isDraft":true,"comments":[{"body":"BOSS_WORKER_DONE\ntask: fix-8\nsummary: done"}]}]'
+ {"number":8,"state":"OPEN","isDraft":true,"comments":[{"body":"BOSS_WORKER_DONE\ntask: fix-8\nsummary: done"}]},
+ {"number":9,"state":"OPEN","isDraft":true,"comments":[{"body":"Retries failed webhooks; tests pass.\n\n<!-- BOSS_WORKER_DONE task: fix-9 -->"}]},
+ {"number":10,"state":"OPEN","isDraft":true,"comments":[{"body":"Done.\n<!-- SUPERSET_WORKER_DONE task: fix-10 -->"}]},
+ {"number":11,"state":"OPEN","isDraft":true,"comments":[{"body":"end with <!-- BOSS_WORKER_DONE task: <id> -->"}]}]'
 got=$(echo "$prs" | "$S" --ready | tr '\n' ' ' | sed 's/ $//')
-if [ "$got" = "1 5 6 7 8" ]; then echo "ok   PR READY -> $got"; else echo "FAIL PR READY: want '1 5 6 7 8', got '$got'"; fail=1; fi
+if [ "$got" = "1 5 6 7 8 9 10" ]; then echo "ok   PR READY -> $got"; else echo "FAIL PR READY: want '1 5 6 7 8 9 10', got '$got'"; fail=1; fi
 # The watcher runs the CLI and machine boss-host hands it (the adapter's), never a bare `superset` from PATH.
 t=$(mktemp -d); mkdir "$t/bin" "$t/cli"; ln -s "$(command -v jq)" "$t/bin/jq"
 printf '#!/bin/sh\necho "$*" >> "%s/calls"\necho "{\\"text\\": \\"hi\\"}"\n' "$t" > "$t/cli/the-cli"; chmod +x "$t/cli/the-cli"

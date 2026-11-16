@@ -52,8 +52,9 @@ CHECKED_EVENTS = {"checked", "ready"}
 # Ledger status words that mean the boss verified the row's work, or that the worker reported DONE.
 VERIFIED_LEDGER = {"VERIFIED", "CHECKED", "READY", "MERGED", "ARCHIVED"}
 DONE_LEDGER = {"DONE"}
-# A PR comment that starts a DONE envelope; use_host() adds the host's older envelope tokens.
-DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*BOSS_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
+# A PR comment that starts a DONE envelope, or carries its hidden marker (<!-- BOSS_WORKER_DONE task: x -->);
+# use_host() adds the host's older envelope tokens.
+DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*(?:<!--[ \t]*)?BOSS_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
 # A boss refreshes every minute; past this its heartbeat age shows (bosskit.live drops it after STALE_S).
 BOSS_STALE_S = 300
 STATE_LINES = 3  # a domain boss's state file, in its details
@@ -83,7 +84,7 @@ PROOF_KINDS = (
 def use_host(host):
     """The host's proof links (its pages) and older envelope tokens count too; another host's never do."""
     global DONE_COMMENT, PROOF_KINDS
-    DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
+    DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*(?:<!--[ \t]*)?(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
     PROOF_KINDS = tuple((label, re.compile(pat)) for label, pat in host.proof_links()) + PROOF_KINDS[-2:]
 
 

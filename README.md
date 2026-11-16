@@ -309,10 +309,12 @@ A prompt names the task id, the objective, the files it may touch, how to verify
 Task id: fix-42 (PR #42 acme/widgets, branch fix/retry-backoff, this workspace).
 Goal: the retry loop honours Retry-After. Add a regression test that fails when reverted.
 Merge origin/main first (merge, never rebase or force). Run `make test`. Plain push.
-Proof: a page with the test run, before and after, and the revert-proves-red output; link it in a PR comment.
+Proof: a page with the test run, before and after, and the revert-proves-red output.
 Files you may touch: src/http/** and tests/http/** only. Do not broaden scope.
 
-Keep the PR draft. End your final message with exactly this envelope, each field on its own line, starting at column 0, and post the same envelope as a PR comment:
+Keep the PR draft. On the PR, post one short plain-English comment (what changed, checks, proof links) ending with the line
+<!-- BOSS_WORKER_DONE task: fix-42 -->
+End your final message with exactly this envelope, each field on its own line, starting at column 0 (never on the PR):
 BOSS_WORKER_DONE
 task: fix-42
 summary: <one line>
@@ -349,7 +351,7 @@ Every DONE carries a `proof:` field:
 | Backend | a page: tests run, before/after, the revert-proves-red output |
 | Read-only or docs | `proof: none: <why>` |
 
-Workers also post the links in a PR comment. The boss opens each one before believing it, and records them in the ledger's Proof column. Every worker also appends one line per page it publishes to `.boss-worker/pages.jsonl` (`{"url", "title", "at"}`, git-ignored with the rest of `.boss-worker/`), and the boss does the same for its own pages in its boss folder's `pages.jsonl`; both panes list them.
+Workers also post the links in their PR status comment: plain English for people, ending with the hidden line `<!-- BOSS_WORKER_DONE task: <id> -->` that the watcher and the pane read (the envelope itself never goes on the PR). The boss opens each one before believing it, and records them in the ledger's Proof column. Every worker also appends one line per page it publishes to `.boss-worker/pages.jsonl` (`{"url", "title", "at"}`, git-ignored with the rest of `.boss-worker/`), and the boss does the same for its own pages in its boss folder's `pages.jsonl`; both panes list them.
 
 After a batch of merges, or when you ask, the boss publishes a **review page**: the stack, what merged, what each PR proved (linked), open risks, and next actions. It uses the host's pages when its prompt offers them, else a claude.ai artifact (config `pages`), and writes the URL to its `review.txt` for the pane.
 

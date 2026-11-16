@@ -18,4 +18,4 @@ Your host is coderplex. A worker is a **session**: its own git worktree, termina
 - No screen read: what a worker is doing comes from its `.boss-worker/status.json` and its messages.
 
 ## Completion: the worker sends its envelope to you
-Every dispatched prompt ends with: "When done, send exactly this envelope to the boss with `coderplex-ctl sessions send <boss id> --file -` (the envelope on stdin), each field on its own line starting at column 0, and post the same envelope as a PR comment." Fill in this boss's id.
+Every dispatched prompt ends with: "When done, send exactly this envelope to the boss with `coderplex-ctl sessions send <boss id> --file -` (the envelope on stdin), each field on its own line starting at column 0. On the PR, post one short plain-English status comment (what changed, checks, proof) ending with the line `<!-- BOSS_WORKER_DONE task: <id> -->`; never the envelope." Fill in this boss's id.
