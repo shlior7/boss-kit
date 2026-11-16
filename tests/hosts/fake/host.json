@@ -1,0 +1,13 @@
+{
+  "name": "fake",
+  "description": "test host: workers from $FIX/snapshot.json and $FIX/list.json, every action logged to $FIX/calls",
+  "priority": 0,
+  "keywords": ["fakehost"],
+  "session_env": ["FAKE_SESSION"],
+  "terminal_env": ["FAKE_TERMINAL"],
+  "cli": ["sh"],
+  "queues": false,
+  "envelope_aliases": ["OLDFAKE"],
+  "proof_links": [{"label": "page", "pattern": "^https://pages\\.example\\.com/p/"}],
+  "defaults": {"region": "eu"}
+}
