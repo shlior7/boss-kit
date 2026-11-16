@@ -13,7 +13,8 @@
   boss-host watch ID [BRANCH] [--terminal T] the watcher (run with run_in_background). A plugin with its own watcher runs
                                              that; otherwise this one: every 20 s, for up to 3 h, it exits (waking the boss) on a
                                              new envelope message from the worker, PR READY on BRANCH, a blocked agent, 9 idle
-                                             polls (3 min) without an envelope, or a gone worker, and logs the stage.
+                                             polls (3 min) without an envelope, a gone worker, or 9 polls in a row the host
+                                             does not answer (a failed read is never a gone worker), and logs the stage.
   boss-host sig < text                       the envelope a text holds, as the watcher reads it (DONE|<task>|<summary start>)
 A host that cannot do something says so and names what to do instead (exit 3).
 Env for watch: BOSS_WATCH_POLL_S (20), BOSS_WATCH_POLLS (540).
@@ -38,7 +39,7 @@ def envelope_re(host):
 
 def done_comment_re(host):
     """A PR comment that starts a DONE envelope."""
-    return re.compile(r"(^|\n)[ \t>`]*(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]")
+    return re.compile(r"(^|\n)[ \t>`]*(?:" + "|".join(host.envelope_prefixes()) + r")_WORKER_DONE\s+task:[ \t]*[A-Za-z0-9._-]")
 
 
 def sig(host, text):
@@ -81,7 +82,7 @@ def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print):
     seen = {i for i, _, at in (msgs or []) if not since or at < since}
     prs = pr_list(branch) if branch else None
     pr_base = ready(host, prs) if prs is not None else None
-    idle = 0
+    idle = unread = 0
     for i in range(1, polls + 1):
         time.sleep(poll_s)
         for mid, text, _ in (host.messages(boss, wid) or []) if msgs is not None else []:
@@ -108,6 +109,13 @@ def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print):
                     out(f"PR READY #{n}")
                     return 0
         w = host.worker(wid)
+        if w is None:  # the host did not answer: not gone
+            unread += 1
+            if unread >= IDLE_POLLS:
+                out(f"WORKER UNREADABLE (the host did not answer {unread} polls in a row: boss-host show {wid})")
+                return 0
+            continue
+        unread = 0
         if not w:
             out("WORKER GONE (archived or ended)")
             return 0
@@ -213,9 +221,10 @@ def main(argv):
             script = host.watch_script()
             if script:  # the plugin's own watcher, in this process, so the pane's watcher file stays true
                 if not term:
-                    term = next((t["id"] for t in host.worker(wid).get("terminals", []) if t.get("agent")), "")
+                    term = next((t["id"] for t in (host.worker(wid) or {}).get("terminals", []) if t.get("agent")), "")
                 register_watcher(ctx, wid, term, branch)
                 os.environ["BOSS_BIN"] = os.path.dirname(os.path.abspath(__file__))
+                os.environ.update({k: v for k, v in host.watch_env().items() if v})
                 os.execv(script, [script, wid, term, *([branch] if branch else [])])
             path = register_watcher(ctx, wid, term, branch)
             try:

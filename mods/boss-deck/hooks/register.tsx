@@ -37,19 +37,24 @@ let loadedKit: string | undefined
 
 // Quiet by design: grey text, color only where it means something: stage marks and what needs attention.
 
-type Self = { id?: string; kind?: string; term?: string }
+type Self = { id?: string; kind?: string; term?: string; failed?: true }
 let hostSession: Promise<Self> | undefined
-/** This session on its host (its plugin, id and own terminal), {} outside any; asked once per session start. */
+/** This session on its host (its plugin, id and own terminal), {} outside any; asked once per session start. A failed
+ * lookup is `failed`, not outside a host, and is never kept: the next call asks again. */
 function self($: EngineInterface): Promise<Self> {
-  hostSession ??= $.process.run(HOST_SESSION_CMD, { timeoutMs: 20_000 }).then(r => {
+  const asked = (hostSession ??= $.process.run(HOST_SESSION_CMD, { timeoutMs: 20_000 }).then(r => {
     try {
+      if (r.exitCode !== 0) return { failed: true as const }
       const v = JSON.parse(r.stdout) as { kind?: string; id?: string; terminal?: string }
       return v?.id ? { id: v.id, kind: v.kind, term: v.terminal || undefined } : {}
     } catch {
-      return {}
+      return { failed: true as const }
     }
+  }))
+  void asked.then(s => {
+    if (s.failed && hostSession === asked) hostSession = undefined
   })
-  return hostSession
+  return asked
 }
 const kindArgs = (s: Self) => (s.kind ? ['--host-kind', s.kind] : [])
 const idArgs = (s: Self) => (s.id ? ['--workspace', s.id] : [])
@@ -149,31 +154,39 @@ async function workerPeek($: EngineInterface, w: Worker) {
   return { rows: workerDetails(w, screen, pr), links }
 }
 
+/** Picks this session's role and starts its pane. A failed host lookup decides nothing: it asks again a minute later. */
+async function start($: EngineInterface) {
+  const local = await $.fs.read('CLAUDE.local.md').catch(() => '')
+  const me = await self($)
+  if (me.failed) {
+    $.clock.after(REFRESH_MS, () => void start($))
+    return
+  }
+  // Not the boss (a copy of its CLAUDE.local.md, another workspace on its checkout, any other session): a host session
+  // gets the worker view once a boss's ledger has its dispatch row; anything else stays quiet.
+  if (!isBoss(local, me.id)) {
+    if (!me.id) return
+    role = 'worker'
+    workerShown = false
+    loadedKit = undefined
+    await $.command.register({ name: 'boss-deck', description: 'Open this worker\'s pane and refresh it now' })
+    void workerRefresh($)
+    $.clock.every(REFRESH_MS, () => void workerRefresh($))
+    return
+  }
+
+  role = 'boss'
+  loadedKit = undefined
+  await $.command.register({ name: 'boss-deck', description: 'Open the boss pane and refresh it now' })
+  void $.ui.open({ id: PANE, title: TITLE })
+  void refresh($, true)
+  $.clock.every(REFRESH_MS, () => void refresh($))
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     hostSession = undefined
-    const local = await $.fs.read('CLAUDE.local.md').catch(() => '')
-    const ws = (await self($)).id
-    // Not the boss (a copy of its CLAUDE.local.md, another workspace on its checkout, any other session): a host session
-    // gets the worker view once a boss's ledger has its dispatch row; anything else stays quiet.
-    if (!isBoss(local, ws)) {
-      if (!ws) return next(e)
-      role = 'worker'
-      workerShown = false
-      loadedKit = undefined
-      await $.command.register({ name: 'boss-deck', description: 'Open this worker\'s pane and refresh it now' })
-      void workerRefresh($)
-      $.clock.every(REFRESH_MS, () => void workerRefresh($))
-      return next(e)
-    }
-
-    role = 'boss'
-    loadedKit = undefined
-    await $.command.register({ name: 'boss-deck', description: 'Open the boss pane and refresh it now' })
-    void $.ui.open({ id: PANE, title: TITLE })
-    void refresh($, true)
-    $.clock.every(REFRESH_MS, () => void refresh($))
-
+    await start($)
     return next(e)
   })
 

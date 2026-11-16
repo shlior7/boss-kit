@@ -25,9 +25,26 @@ class Host(bosshost.Host):
         return d.get("sessions", []) if isinstance(d, dict) else []
 
     def _show(self, sid):
-        d = _json(self.ctl("sessions", "show", sid, "--json", timeout=20), {})
-        s = (d.get("sessions") or [{}])[0] if isinstance(d, dict) else {}
-        return s if isinstance(s, dict) else {}
+        """The session's record; {} when it is gone (show or the list says so), None when the daemon did not answer."""
+        d = _json(self.ctl("sessions", "show", sid, "--json", timeout=20), None)
+        if isinstance(d, dict):
+            s = (d.get("sessions") or [{}])[0]
+            return s if isinstance(s, dict) else {}
+        ls = _json(self.ctl("sessions", "ls", "--json"), None)  # show failed: gone only when the list answers without it
+        listed = ls.get("sessions") if isinstance(ls, dict) else None
+        if not isinstance(listed, list):
+            return None
+        return None if any(s.get("id", "").startswith(sid[:8]) for s in listed if isinstance(s, dict)) else {}
+
+    def _ok(self, *args):
+        """Run a coderplex-ctl change; raises with its error when it fails."""
+        try:
+            r = subprocess.run(["coderplex-ctl", *args], capture_output=True, text=True, timeout=20)
+            err = "" if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200] or f"exit {r.returncode}"
+        except (OSError, subprocess.TimeoutExpired) as e:
+            err = str(e)[:200]
+        if err:
+            raise bosshost.Unsupported(f"coderplex: {' '.join(args[:2])} failed: {err}")
 
     @staticmethod
     def state(phase):
@@ -47,15 +64,15 @@ class Host(bosshost.Host):
     def workers(self, ids=None):
         """The sessions whose id starts with one of *ids* (all when None), each read in full for its agent phase."""
         keep = [s["id"] for s in self._ls() if s.get("id") and (ids is None or any(s["id"].startswith(i[:8]) or i.startswith(s["id"]) for i in ids))]
-        return [self._worker(s) for s in map(self._show, keep) if s.get("id")]
+        return [self._worker(s) for s in map(self._show, keep) if s and s.get("id")]
 
     def worker(self, sid):
         s = self._show(sid)
-        return self._worker(s) if s.get("id") else {}
+        return None if s is None else self._worker(s) if s.get("id") else {}
 
     def by_branch(self, branch):
         s = next((s for s in self._ls() if s.get("branch") == branch), None)
-        return {"id": s["id"], "worktree": self._show(s["id"]).get("worktree") or ""} if s else None
+        return {"id": s["id"], "worktree": (self._show(s["id"]) or {}).get("worktree") or ""} if s else None
 
     def create(self, repo, branch, prompt, model="", effort="", name="", folder=""):
         argv = ["coderplex-ctl", "sessions", "create", "--target", self.host_id(), "--repo", repo.rsplit("/", 1)[-1],
@@ -69,7 +86,10 @@ class Host(bosshost.Host):
         if not sid:
             raise bosshost.Unsupported(f"coderplex: sessions create failed: {((d.get('error') or {}).get('message') if isinstance(d, dict) else '') or r.stderr[:200]}")
         if folder:
-            self.move(sid, folder)
+            try:
+                self.move(sid, folder)
+            except bosshost.Unsupported as e:  # the session exists: name it, so the boss files it instead of creating another
+                raise bosshost.Unsupported(f"{e} (session {sid} was created; file it with: boss-host move {sid} {folder})")
         return sid
 
     def send(self, sid, text, terminal=None):
@@ -78,10 +98,10 @@ class Host(bosshost.Host):
                        check=True, capture_output=True)
 
     def rename(self, sid, name):
-        self.ctl("sessions", "rename", sid, "--name", name, timeout=20)
+        self._ok("sessions", "rename", sid, "--name", name)
 
     def move(self, sid, folder):
-        self.ctl("sessions", "move", sid, "--section", folder, timeout=20)
+        self._ok("sessions", "move", sid, "--section", folder)
 
     def open(self, sid):
         run(["open", f"coderplex://session/local/{sid}"], timeout=10)
@@ -119,7 +139,7 @@ class Host(bosshost.Host):
         """The boss's last message to the session, else the session's creation."""
         sent = [(m.get("createdAt") or 0) / 1000 for m in self._messages(boss) if self._between(m, boss, sid)]
         try:
-            created = datetime.fromisoformat(self._show(sid).get("createdAt", "").replace("Z", "+00:00")).timestamp()
+            created = datetime.fromisoformat((self._show(sid) or {}).get("createdAt", "").replace("Z", "+00:00")).timestamp()
         except ValueError:
             created = 0
         return max(sent + [created])

@@ -2,11 +2,13 @@
 import os
 
 
-def fake_cli(tmp, name, cases):
-    """A stub *name* on a temp PATH dir that appends its argv to <tmp>/calls and prints cases[a prefix of its args] (else exits 0)."""
+def fake_cli(tmp, name, cases, fails=()):
+    """A stub *name* on a temp PATH dir that appends its argv to <tmp>/calls and prints cases[a prefix of its args] (else exits 0);
+    args starting with one of *fails* print an error and exit 1."""
     stubs = os.path.join(tmp, "stubs")
     os.makedirs(stubs, exist_ok=True)
-    body = "".join(f'  "{k}"*) cat <<\'JSON\'\n{v}\nJSON\n;;\n' for k, v in cases.items())
+    body = "".join(f'  "{k}"*) echo "error: {k} failed" >&2; exit 1;;\n' for k in fails)
+    body += "".join(f'  "{k}"*) cat <<\'JSON\'\n{v}\nJSON\n;;\n' for k, v in cases.items())
     path = os.path.join(stubs, name)
     open(path, "w").write(f'#!/bin/sh\necho "{name} $*" >> "{tmp}/calls"\ncase "$*" in\n{body}  *) exit 0;;\nesac\n')
     os.chmod(path, 0o755)
