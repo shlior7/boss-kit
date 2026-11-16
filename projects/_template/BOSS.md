@@ -21,7 +21,7 @@ Which proof each kind of change owes (the template's routing rule 5), made concr
 | Change | Proof | Where it goes |
 |---|---|---|
 | UI | demo via `/demo-recorder` (or screenshots on a page if it isn't installed) | PR comment + envelope `proof:` |
-| Backend | a page (the host's pages, else a claude.ai artifact): tests run, before/after, revert-proves-red output | PR comment + envelope `proof:` |
+| Backend | a page (where the host commands' Pages line says): tests run, before/after, revert-proves-red output | PR comment + envelope `proof:` |
 | Read-only / docs | `proof: none: <why>` | envelope |
 
 Notes: `<how to start the app for a demo, test accounts or sites to record on, pages that must not show real data>`

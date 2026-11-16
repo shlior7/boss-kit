@@ -16,7 +16,8 @@ A host plugin is a folder with a host.json manifest, found in (first wins on a n
   prompt.md    the commands the boss uses on this host, loaded after the boss prompt
 A boss uses exactly one host: config's "host" (the plugin name), else the session's (the pane passes $BOSS_HOST_KIND),
 else the first plugin, by priority, whose session_env is set, then whose cli is installed. Only that plugin's prompt,
-adapter, envelope aliases and proof links are used. A plugin's own settings live in config under hosts.<name>.
+adapter, envelope aliases and proof links are used (config's proof_urls add to its links). A plugin's own settings live in
+config under hosts.<name>.
 
 A worker is {id, name, branch, worktree, tags, terminals: [{id, title, agent: {state}}]}, agent state working | idle | blocked.
 """
@@ -184,7 +185,9 @@ class Host:
         return ["BOSS"] + [p for p in _list(self.manifest.get("envelope_aliases")) if p.isidentifier()]
 
     def proof_links(self):
-        return [(p["label"], p["pattern"]) for p in self.manifest.get("proof_links") or [] if p.get("label") and p.get("pattern")]
+        """The host's page URLs, then config's proof_urls (another page provider's), labelled page."""
+        return [(p["label"], p["pattern"]) for p in self.manifest.get("proof_links") or [] if p.get("label") and p.get("pattern")] + \
+               [("page", p) for p in _list(self.root.get("proof_urls")) if p]
 
     def detect(self):
         """What onboarding shows for this host: installed CLI, whether it answers, this session's id on it."""

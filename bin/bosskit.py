@@ -7,14 +7,15 @@ Code is the kit ($BOSS_KIT_HOME, else the folder above bin/). Data is $BOSS_HOME
 
   bosses.json                     registry: boss id -> project, workspace, worktree, host, heartbeat
   lessons.md                      shared lessons, for every boss
+  org.md org.json                 optional org layer: instructions and config for every project on this machine
   <project>/BOSS.md config.json ledger.md lessons.md prompts/      shared by the project's bosses
-  <project>/bosses/<boss-id>/     next.txt review.txt notes.md events.jsonl cache/ inbox/ inbox/done/
+  <project>/bosses/<boss-id>/     next.txt review.txt notes.md pages.jsonl events.jsonl cache/ inbox/ inbox/done/
 
-Config is layered, later wins (dicts deep-merged, lists replaced): the kit's DEFAULTS, $BOSS_HOME/config.json (user),
-<project>/config.json (project), <project>/bosses/<boss-id>/config.json (one boss).
+Config is layered, later wins (dicts deep-merged, lists replaced): the kit's DEFAULTS, $BOSS_HOME/org.json (org, only when
+present), $BOSS_HOME/config.json (user), <project>/config.json (project), <project>/bosses/<boss-id>/config.json (one boss).
 
 usage: bosskit.py show            the resolved paths, as JSON
-       bosskit.py instructions    template + host commands + project BOSS.md + project and shared lessons (the /boss loader)
+       bosskit.py instructions    template + host commands + org.md + project BOSS.md + project and shared lessons (the /boss loader)
        bosskit.py config show [--json]                                 every config key, its value and the layer it came from
        bosskit.py config set --level user|project|boss KEY=VALUE... [--apply]
                                   shows the resolved config after the change; writes only with --apply
@@ -51,7 +52,9 @@ DEFAULTS = {
     "tracker": {"type": "none"},
     "models": {"strong": "opus", "mid": "sonnet", "cheap": "haiku"},
     "effort": "",
-    "pages": "auto",            # where proof and review pages go: auto (the host's pages, else a claude.ai artifact) | host | artifact
+    # where proof and review pages go: auto (the host's pages, else a claude.ai artifact) | host | artifact,
+    # or {"provider": "<name>", "publish": "<command with <dir>>"}: every page goes there instead
+    "pages": "auto",
     "boss_name": "BOSS",        # what the boss names its own workspace or session at session start; "" leaves it
 }
 
@@ -143,10 +146,10 @@ def load(cwd=None, name=None, make=True):
                            cache=os.path.join(bdir, "cache"), inbox=os.path.join(bdir, "inbox"))
 
 
-# ---- config: kit defaults < user < project < boss --------------------------------------------
+# ---- config: kit defaults < org < user < project < boss --------------------------------------
 
 def layer_path(h, level, project=None, bid=None):
-    return {"user": os.path.join(h, "config.json"), "project": os.path.join(h, project or "", "config.json"),
+    return {"org": os.path.join(h, "org.json"), "user": os.path.join(h, "config.json"), "project": os.path.join(h, project or "", "config.json"),
             "boss": os.path.join(h, project or "", "bosses", bid or "", "config.json")}[level]
 
 
@@ -160,10 +163,16 @@ def _json_file(path):
         sys.exit(f"bosskit: {path} is not valid JSON: {e}")
 
 
+def base_layers(h):
+    """The layers every project shares: kit, org (only when $BOSS_HOME/org.json exists), user."""
+    org = layer_path(h, "org")
+    return [("kit", "", DEFAULTS)] + ([("org", org, _json_file(org))] if os.path.exists(org) else []) + \
+           [("user", layer_path(h, "user"), _json_file(layer_path(h, "user")))]
+
+
 def config_layers(h, project, bid=None):
-    """[(layer, path, dict)], lowest first: kit, user, project, and the boss's own when bid is given."""
-    out = [("kit", "", DEFAULTS), ("user", layer_path(h, "user"), _json_file(layer_path(h, "user"))),
-           ("project", layer_path(h, "project", project), _json_file(layer_path(h, "project", project)))]
+    """[(layer, path, dict)], lowest first: kit, org, user, project, and the boss's own when bid is given."""
+    out = base_layers(h) + [("project", layer_path(h, "project", project), _json_file(layer_path(h, "project", project)))]
     if bid:
         out.append(("boss", layer_path(h, "boss", project, bid), _json_file(layer_path(h, "boss", project, bid))))
     return out
@@ -420,9 +429,22 @@ def _read(path):
 
 
 def host_prompt(ctx):
-    """The resolved host plugin's commands: the only host text a boss ever loads."""
+    """The resolved host plugin's commands: the only host text a boss ever loads. When config's `pages` names a provider,
+    its Pages line says where pages go instead."""
     import bosshost
-    return bosshost.get(ctx.cfg, ctx.host).prompt()
+    text = bosshost.get(ctx.cfg, ctx.host).prompt()
+    p = ctx.cfg.get("pages")
+    if not isinstance(p, dict) or not p.get("provider"):
+        return text
+    line = (f"- Pages: pages go to {p['provider']}: publish with `{p.get('publish') or '?'}`; "
+            "never the host's pages or a claude.ai artifact.")
+    out, n = re.subn(r"^- Pages:.*$", lambda _: line, text, flags=re.M)
+    return out if n else text.rstrip("\n") + "\n" + line + "\n"
+
+
+def org_files(h):
+    """The org layer's files that exist: $BOSS_HOME/org.md (instructions) and org.json (config)."""
+    return [p for p in (os.path.join(h, "org.md"), os.path.join(h, "org.json")) if os.path.exists(p)]
 
 
 def for_host(host, text, what):
@@ -447,15 +469,18 @@ def instructions(ctx):
     lessons = lambda path, what: for_host(ctx.host, _read(path), what)
     parts = [("BOSS-template.md", _read(os.path.join(KIT, "BOSS-template.md"))),
              (f"host plugin {ctx.host} (host commands)", host_prompt(ctx)),
+             ("org.md (org layer)", for_host(ctx.host, _read(os.path.join(ctx.home, "org.md")), "the org facts")),
              (f"{ctx.name}/BOSS.md", for_host(ctx.host, _read(os.path.join(ctx.pdir, "BOSS.md")), "the project facts")),
              (f"{ctx.name}/lessons.md (project lessons)", lessons(os.path.join(ctx.pdir, "lessons.md"), "project lessons")),
              ("lessons.md (shared lessons)", shared_view(lessons(os.path.join(ctx.home, "lessons.md"), "shared lessons")))]
     domain = boss_domain(ctx.worktree)
     if domain:
         ddir = os.path.join(ctx.pdir, "domains")
-        parts.insert(3, (f"{ctx.name}/domains/{domain}.md (domain charter)", _read(os.path.join(ddir, f"{domain}.md"))))
-        parts.insert(4, (f"{ctx.name}/domains/{domain}-state.md (domain state, you keep it current)", _read(os.path.join(ddir, f"{domain}-state.md"))))
-    head = f"# Boss session: project {ctx.name}, boss {ctx.bid}, host {ctx.host}" + (f", domain {domain}" if domain else "") + "\n"
+        parts.insert(4, (f"{ctx.name}/domains/{domain}.md (domain charter)", _read(os.path.join(ddir, f"{domain}.md"))))
+        parts.insert(5, (f"{ctx.name}/domains/{domain}-state.md (domain state, you keep it current)", _read(os.path.join(ddir, f"{domain}-state.md"))))
+    org = org_files(ctx.home)
+    head = (f"# Boss session: project {ctx.name}, boss {ctx.bid}, host {ctx.host}" + (f", domain {domain}" if domain else "")
+            + (f", org layer: {' + '.join(map(os.path.basename, org))}" if org else "") + "\n")
     if domain:
         head += (f"\nYour folder: workspaces tagged '{boss_folder(ctx.worktree)}' (the host's folders). Tag every workspace you create with it, and read, "
                  "message, verify and archive only workspaces in it; anything else goes to the main boss by boss-mail.\n")
@@ -523,7 +548,7 @@ def config_cmd(args):
             sys.exit(f"bosskit: config set needs --level {'|'.join(LEVELS)}")
         pairs = [a for i, a in enumerate(args[1:], 1) if "=" in a and args[i - 1] != "--level"]
         if level == "user":  # needs no project: the user layer is shared by all of them
-            layers = [("kit", "", DEFAULTS), ("user", layer_path(home(), "user"), _json_file(layer_path(home(), "user")))]
+            layers = base_layers(home())
         else:
             layers = load(make="--apply" in args).layers
         return set_config(layers, level, parse_sets(pairs), "--apply" in args)
@@ -545,7 +570,7 @@ def main():
                           "lessons": os.path.join(ctx.pdir, "lessons.md"), "shared_lessons": os.path.join(ctx.home, "lessons.md"),
                           "boss_dir": ctx.bdir, "next": os.path.join(ctx.bdir, "next.txt"),
                           "review": os.path.join(ctx.bdir, "review.txt"), "inbox": ctx.inbox, "is_boss": is_boss(ctx),
-                          "host": ctx.host}, indent=1))
+                          "host": ctx.host, **({"org": org_files(ctx.home)} if org_files(ctx.home) else {})}, indent=1))
     elif cmd == "instructions":
         print(instructions(ctx) if is_boss(ctx) else not_boss_note(ctx))
     else:

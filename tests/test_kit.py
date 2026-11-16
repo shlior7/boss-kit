@@ -1278,13 +1278,202 @@ class Verify(unittest.TestCase):
         self.assertEqual(verify.junk(["bin/verify", "README.md"]), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Close(unittest.TestCase):
     def test_no_args_prints_usage_and_fails(self):
         r = subprocess.run([os.path.join(BIN, "boss-close")], capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
 
 
+
+
+class OrgLayer(Home):
+    """$BOSS_HOME/org.md loads after the host commands and before the project's BOSS.md; org.json sits between kit and user.
+    Without either file, every output is what it was before the org layer existed."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["BOSS_PROJECT"] = "widgets"
+        os.environ["FAKE_SESSION"] = "ws-1"
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace\n")
+        open(os.path.join(self.home, "widgets", "BOSS.md"), "w").write("# Facts\n| Repo | acme/widgets |\n")
+        json.dump({"models": {"mid": "sonnet-x"}}, open(os.path.join(self.home, "config.json"), "w"))
+
+    def cli(self, *args):
+        return subprocess.run([sys.executable, os.path.join(BIN, "bosskit.py"), *args], cwd=self.wt, capture_output=True, text=True, check=True).stdout
+
+    def test_no_org_files_changes_no_output(self):
+        ctx = bosskit.load(self.wt)
+        # the loader's output as it was built before the org layer: template, host commands, BOSS.md, nothing else
+        parts = [("BOSS-template.md", bosskit._read(os.path.join(bosskit.KIT, "BOSS-template.md"))),
+                 ("host plugin fake (host commands)", bosskit._read(os.path.join(HOSTS, "fake", "prompt.md"))),
+                 ("widgets/BOSS.md", "# Facts\n| Repo | acme/widgets |\n")]
+        before = "# Boss session: project widgets, boss ws-1, host fake\n" + "".join(f"\n\n<!-- {n} -->\n\n{b.strip()}\n" for n, b in parts)
+        self.assertEqual(bosskit.instructions(ctx), before)
+        self.assertEqual(self.cli("instructions"), before + "\n")
+        self.assertEqual(sorted(json.loads(self.cli("show"))), sorted(
+            ["kit", "home", "project", "boss", "worktree", "boss_md", "ledger", "lessons", "shared_lessons", "boss_dir", "next", "review",
+             "inbox", "is_boss", "host"]))
+        self.assertEqual([l for l, _, _ in ctx.layers], ["kit", "user", "project", "boss"])
+        show = self.cli("config", "show")
+        self.assertEqual([l.split()[0] for l in show.split("layers, later wins:\n")[1].splitlines() if l.startswith("  ")],
+                         ["kit", "user", "project", "boss"])
+        self.assertNotIn("org", show.replace(os.path.join(self.home, ""), ""))
+
+    def test_org_md_loads_between_the_host_commands_and_the_project(self):
+        open(os.path.join(self.home, "org.md"), "w").write("# Org\n- every page needs a sign-in\n- otherhost workers have no network\n")
+        text = bosskit.instructions(bosskit.load(self.wt))
+        self.assertTrue(text.startswith("# Boss session: project widgets, boss ws-1, host fake, org layer: org.md\n"), text[:120])
+        self.assertLess(text.index("<!-- host plugin fake"), text.index("<!-- org.md (org layer) -->"))
+        self.assertLess(text.index("every page needs a sign-in"), text.index("<!-- widgets/BOSS.md -->"))
+        self.assertNotIn("otherhost", text)  # another host's line is left out, as in BOSS.md
+        self.assertEqual(json.loads(self.cli("show"))["org"], [os.path.join(self.home, "org.md")])
+
+    def test_org_json_sits_between_kit_and_user(self):
+        json.dump({"models": {"mid": "org-mid", "cheap": "org-cheap"}, "wake": True}, open(os.path.join(self.home, "org.json"), "w"))
+        ctx = bosskit.load(self.wt)
+        self.assertEqual([l for l, _, _ in ctx.layers], ["kit", "org", "user", "project", "boss"])
+        src = bosskit.sources(ctx.layers)
+        self.assertEqual((src["models.mid"], src["models.cheap"], src["models.strong"], src["wake"]),
+                         (("sonnet-x", "user"), ("org-cheap", "org"), ("opus", "kit"), (True, "org")))
+        show = self.cli("config", "show")
+        self.assertIn('"org-cheap"  (org)', show)
+        self.assertIn(f"  org      {os.path.join(self.home, 'org.json')}\n", show)
+        self.assertIn(", org layer: org.json\n", bosskit.instructions(ctx))
+        self.assertEqual(bosskit.config_for(self.home, "widgets")["models"]["cheap"], "org-cheap")  # worker mode and mail too
+        self.assertIn('"org-cheap"  (org)', self.cli("config", "set", "--level", "user", "wake=false"))
+
+
+class PagesProvider(Home):
+    """config's pages object sends every page to its provider; proof_urls make the deck see that provider's URLs."""
+
+    PAGES = {"provider": "acme-pages", "publish": "acme-pages deploy <dir> --json"}
+
+    def setUp(self):
+        super().setUp()
+        os.environ["BOSS_PROJECT"] = "widgets"
+
+    def test_a_provider_replaces_each_hosts_pages_line(self):
+        line = "- Pages: pages go to acme-pages: publish with `acme-pages deploy <dir> --json`; never the host's pages or a claude.ai artifact."
+        for name in bosshost.plugins():  # the test plugins (no Pages line) and the kit's own (one each)
+            with self.subTest(host=name):
+                os.environ["BOSS_HOST_KIND"] = name
+                ctx = bosskit.load(self.wt)
+                plain = bosskit.host_prompt(ctx)
+                self.assertEqual(plain, bosshost.get(ctx.cfg, name).prompt())  # pages "auto": the host's own text
+                ctx.cfg["pages"] = self.PAGES
+                got = bosskit.host_prompt(ctx)
+                self.assertEqual([l for l in got.splitlines() if l.startswith("- Pages:")], [line])
+                self.assertEqual([l for l in got.splitlines() if l != line], [l for l in plain.splitlines() if not l.startswith("- Pages:")])
+                self.assertIn(line, bosskit.instructions(ctx))
+
+    def test_proof_urls_are_page_links_on_any_host(self):
+        deck = load_script("boss-deck-data.py")
+        cfg = {"proof_urls": [r"^https://pages\.acme\.example/"]}
+        deck.use_host(bosshost.get(cfg, "other"))  # a host with no pages of its own
+        text = "proof: https://pages.acme.example/fix-42/ and https://pages.example.com/p/x"
+        self.assertEqual(deck.proof_links(text), [{"label": "page", "url": "https://pages.acme.example/fix-42/"}])
+        deck.use_host(bosshost.get(cfg, "fake"))  # the host's own pages still count
+        self.assertEqual([p["url"] for p in deck.proof_links(text)], ["https://pages.acme.example/fix-42/", "https://pages.example.com/p/x"])
+        self.assertEqual([l for l, _ in bosshost.get({"proof_urls": "^https://x/"}, "other").proof_links()], ["page"])  # one string is a list of one
+
+
+class PagesFiles(Home):
+    """Each worker's .boss-worker/pages.jsonl and the boss's own pages.jsonl reach both panes; the header names the provider."""
+
+    BOSS = "bbbbbbbb-0000-4000-8000-000000000009"
+    WS = "aaaaaaaa-0000-4000-8000-000000000001"
+
+    def setUp(self):
+        super().setUp()
+        self.deck = load_script("boss-deck-data.py")
+        self.tools = stub_tools(self.tmp, self.fixdir)
+        self.worker_wt = os.path.join(self.tmp, "worker-a")
+        git(self.tmp, "init", "-q", self.worker_wt)
+        os.makedirs(os.path.join(self.worker_wt, ".boss-worker"))
+        lines = [{"url": "https://pages.example.com/p/before", "title": "before run", "at": 100},
+                 {"url": "https://pages.example.com/p/after", "title": "after run", "at": 300},
+                 {"url": "https://pages.example.com/p/before", "title": "before run, redone", "at": 200}]
+        with open(os.path.join(self.worker_wt, ".boss-worker", "pages.jsonl"), "w") as f:
+            f.write("".join(json.dumps(l) + "\n" for l in lines) + "not json\n" + json.dumps({"url": "ftp://x"}) + "\n" + json.dumps({"title": "no url"}) + "\n")
+        json.dump({"pages": {"provider": "acme-pages", "publish": "acme-pages deploy <dir>"}}, open(os.path.join(self.home, "org.json"), "w"))
+        open(os.path.join(self.home, "widgets", "ledger.md"), "w").write(
+            "## Dispatches 2026-01-02\n\n| Date | Task | Workspace | Model | Status | Proof | Boss |\n|---|---|---|---|---|---|---|\n"
+            "| 2026-01-02 | fix-1: a | aaaaaaaa | mid | DISPATCHED | https://pages.example.com/p/after https://pages.example.com/p/ledger | |\n")
+        json.dump({"workspaces": [{"id": self.WS, "name": "cart-totals", "branch": "fix/a", "terminals": [{"id": "t", "agent": {"state": "working"}}]}]},
+                  open(os.path.join(self.fixdir, "snapshot.json"), "w"))
+        json.dump([{"id": self.WS, "worktreePath": self.worker_wt}], open(os.path.join(self.fixdir, "list.json"), "w"))
+        json.dump([], open(os.path.join(self.fixdir, "prs.json"), "w"))
+
+    def test_the_pages_file_newest_first_each_url_once(self):
+        self.assertEqual([(p["title"], p["at"]) for p in self.deck.worker_pages(self.worker_wt)], [("after run", 300), ("before run, redone", 200)])
+        self.assertEqual((self.deck.worker_pages(""), self.deck.read_pages(os.path.join(self.tmp, "none.jsonl"))), ([], []))
+
+    def test_the_worker_view_lists_its_pages_and_the_provider(self):
+        w = deck_json(self.worker_wt, self.tools, "--worker", "--workspace", self.WS)["worker"]
+        self.assertEqual(([p["title"] for p in w["pages"]], w["pagesTo"]), (["after run", "before run, redone"], "acme-pages"))
+        exclude = subprocess.run(["git", "-C", self.worker_wt, "rev-parse", "--git-path", "info/exclude"], capture_output=True, text=True).stdout.strip()
+        self.assertIn(".boss-worker/", open(os.path.join(self.worker_wt, exclude)).read().split())
+        self.assertEqual(subprocess.run(["git", "-C", self.worker_wt, "status", "--porcelain"], capture_output=True, text=True).stdout, "")
+
+    def test_the_boss_deck_lists_each_workers_pages_and_its_own(self):
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace\n")
+        bdir = os.path.join(self.home, "widgets", "bosses", self.BOSS)
+        os.makedirs(bdir)
+        open(os.path.join(bdir, "pages.jsonl"), "w").write(json.dumps({"url": "https://pages.example.com/p/review", "title": "review 2026-01-02", "at": 5}) + "\n")
+        d = deck_json(self.wt, {**self.tools, "BOSS_PROJECT": "widgets", "FAKE_SESSION": self.BOSS})
+        self.assertEqual(d["pagesTo"], "acme-pages")
+        w = d["workers"][0]
+        self.assertEqual([p["title"] for p in w["pages"]], ["after run", "before run, redone"])
+        self.assertEqual([p["url"] for p in w["proof"]], ["https://pages.example.com/p/after", "https://pages.example.com/p/ledger"])  # the pane dedupes
+        self.assertEqual([p["title"] for p in next(b for b in d["bosses"] if b["me"])["pages"]], ["review 2026-01-02"])
+        os.remove(os.path.join(self.home, "org.json"))
+        self.assertEqual(deck_json(self.wt, {**self.tools, "BOSS_PROJECT": "widgets", "FAKE_SESSION": self.BOSS})["pagesTo"], "")
+
+
+class LedgerCells(Home):
+    """Ledger rows: an escaped pipe stays in its cell; a Boss cell with this boss's 8-character prefix is this boss; a malformed
+    one counts as any boss, never as another boss."""
+
+    BOSS = "bbbbbbbb-0000-4000-8000-000000000009"
+
+    def setUp(self):
+        super().setUp()
+        self.deck = load_script("boss-deck-data.py")
+        self.led = os.path.join(self.home, "widgets", "ledger.md")
+
+    def rows(self, *rows):
+        open(self.led, "w").write("| Date | Task | Workspace | Model | Status | Proof | Boss |\n|---|---|---|---|---|---|---|\n" + "".join(rows))
+        return self.deck.ledger_tasks(self.led)
+
+    def test_an_escaped_pipe_stays_inside_its_cell(self):
+        got = self.rows("| 2026-01-02 | fix-1: split a \\| b | 1a2b3c4d / 5e6f | mid | DISPATCHED | https://pages.example.com/p/1 | boss-b |\n")
+        self.assertEqual(got["1a2b3c4d"][5], "fix-1: split a | b")
+        self.assertEqual((got["1a2b3c4d"][1], got["1a2b3c4d"][4]), ("DISPATCHED", "boss-b"))
+        self.assertEqual(self.deck.ledger_terms(self.led, "1a2b3c4d"), {"5e6f": "fix-1: split a | b"})
+        self.assertEqual(self.deck.cells("| a \\| b | c |"), ["", "a | b", "c", ""])
+
+    def test_boss_cells_prefix_and_malformed(self):
+        self.assertTrue(self.deck.is_mine("bbbbbbbb", self.BOSS) and self.deck.is_mine(self.BOSS, self.BOSS) and self.deck.is_mine("", self.BOSS))
+        self.assertFalse(self.deck.is_mine("cccccccc", self.BOSS))
+        got = self.rows(*(f"| 2026-01-02 | fix-{i}: x | {ws} | mid | DISPATCHED | | {boss} |\n"
+                          for i, (ws, boss) in enumerate((("11111111", "—"), ("22222222", "see notes"), ("33333333", "?"), ("44444444", "boss-b")))))
+        self.assertEqual({ws: row[4] for ws, row in got.items()}, {"11111111": "", "22222222": "", "33333333": "", "44444444": "boss-b"})
+        reg = {self.BOSS: {"project": "widgets", "heartbeat": time.time()}}
+        self.assertEqual(self.deck.worker_boss(reg, "widgets", "bbbbbbbb"), self.BOSS)  # a worker finds its boss by the prefix too
+
+    def test_the_boss_deck_keeps_prefix_and_malformed_rows_and_drops_another_bosses(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace\n")
+        ids = {n: f"{n * 8}-0000-4000-8000-00000000000{i}" for i, n in enumerate("acd", 1)}
+        self.rows("| 2026-01-02 | fix-1: mine by prefix | aaaaaaaa | mid | DISPATCHED | | bbbbbbbb |\n"
+                  "| 2026-01-02 | fix-2: malformed boss | cccccccc | mid | DISPATCHED | | — |\n"
+                  "| 2026-01-02 | fix-3: another boss | dddddddd | mid | DISPATCHED | | eeeeeeee |\n")
+        json.dump({"workspaces": [{"id": i, "name": f"ws-{n}", "branch": f"fix/{n}", "terminals": [{"id": "t", "agent": {"state": "working"}}]}
+                                  for n, i in ids.items()]}, open(os.path.join(self.fixdir, "snapshot.json"), "w"))
+        json.dump([], open(os.path.join(self.fixdir, "prs.json"), "w"))
+        d = deck_json(self.wt, {**stub_tools(self.tmp, self.fixdir), "FAKE_SESSION": self.BOSS})
+        self.assertEqual(sorted(w["name"] for w in d["workers"]), ["ws-a", "ws-c"])
+
+
+if __name__ == "__main__":
+    unittest.main()

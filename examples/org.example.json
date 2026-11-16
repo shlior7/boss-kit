@@ -1,0 +1,5 @@
+{
+  "proof_urls": ["^https://pages\\.example\\.com/"],
+  "pages": { "provider": "example-pages", "publish": "example-pages deploy <dir> --json" },
+  "models": { "strong": "opus" }
+}

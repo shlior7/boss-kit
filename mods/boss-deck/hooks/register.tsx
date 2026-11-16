@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Boss, Deck, Detail, Live, Pr, ProofLink, Worker, WorkerDeck } from '../types'
-import { KIT_STALE, ago, bossDetails, bossRow, footer, isActive, isBoss, kitStale, mailContext, prDetails, prRow, rank, workerDetails, workerRow } from './details'
+import { KIT_STALE, ago, bossDetails, bossRow, footer, isActive, isBoss, kitStale, mailContext, pageLinks, prDetails, prRow, rank, workerDetails, workerRow } from './details'
 import type { PrView, Row } from './details'
 import { activity, newMsgs, progress, prParts, stateParts, taskList, workerWarnings } from './worker'
 
@@ -23,9 +23,9 @@ const STALE_PR_DAYS = 10
 // Unread messages listed in the inbox before it folds the rest into "+N more".
 const INBOX_ROWS = 5
 // Change a tag when its value's fields change: it declines what an earlier version stored.
-const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-10' })
+const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-11' })
 const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-4' })
-const mine = atom({ plugin: 'boss-deck', key: 'mine' } as const, null, { shape: 'mine-2' })
+const mine = atom({ plugin: 'boss-deck', key: 'mine' } as const, null, { shape: 'mine-3' })
 const live = atom({ plugin: 'boss-deck', key: 'live' } as const, null, { shape: 'live-1' })
 // Which pane this session draws: the boss's, a dispatched worker's own, or none. session.start sets it again on a reload.
 let role: 'boss' | 'worker' | undefined
@@ -135,8 +135,7 @@ async function workerPeek($: EngineInterface, w: Worker) {
     w.pr ? prView($, w.pr).catch(() => [{ label: 'pr', value: 'could not load', color: 'error' }]) : [],
   ])
   const screen = read?.exitCode === 0 ? read.stdout : ''
-  const links = [...w.proof, ...(w.pr?.proof ?? [])].filter((l, i, all) => all.findIndex(m => m.url === l.url) === i)
-  return { rows: workerDetails(w, screen, pr), links }
+  return { rows: workerDetails(w, screen, pr), links: pageLinks(w.pages, w.proof, w.pr?.proof ?? []) }
 }
 
 export const register: Register = on => {
@@ -305,6 +304,7 @@ export const register: Register = on => {
               <Text dimColor>{`boss: ${v.project}`}</Text>
             </Box>
           </Box>
+          {v.pagesTo && text(`pages → ${v.pagesTo}`, true)}
           {field('goal', text(v.goal, false))}
           {v.pr && field('pr', parts(prParts(v.pr)))}
           {field('state', parts(stateParts(v, l, ago, now)))}
@@ -319,6 +319,9 @@ export const register: Register = on => {
 
           {v.delivered.length > 0 && section('delivered', `${v.delivered.length} newest`)}
           {v.delivered.map(r => field(r.hm, text(r.kind === 'commit' ? r.text : [r.kind, r.text].filter(Boolean).join('  '), true)))}
+
+          {(v.pages?.length ?? 0) > 0 && section('pages', '.boss-worker/pages.jsonl')}
+          {(v.pages ?? []).map((p, i) => field(ago(Math.max(0, now - p.at)), linkButton(`page-${p.url}-${i}`, `${p.title} ↗`, p.url)))}
 
           {v.notes.length > 0 && section('notes', '.boss-worker/notes.md')}
           {v.notes.map(n => text(n, true))}
@@ -368,7 +371,7 @@ export const register: Register = on => {
         .map(p => ({ key: `p-${p.repo}-${p.num}`, row: prRow(p, now), load: async () => ({ rows: await prView($, p), links: p.proof }), opens: openGh(p.url) })),
     ]
     const bosses: Item[] = (d.bosses ?? []).map((b: Boss) => ({
-      key: `b-${b.id}`, row: bossRow(b, now), load: async () => ({ rows: bossDetails(b, now) }), opens: openWs(b.workspace),
+      key: `b-${b.id}`, row: bossRow(b, now), load: async () => ({ rows: bossDetails(b, now), links: pageLinks(b.pages) }), opens: openWs(b.workspace),
     }))
 
     // One quiet line per row, never wrapping: the mark, then the whole row is a button that expands it.
@@ -407,6 +410,7 @@ export const register: Register = on => {
         <Text bold wrap="wrap">
           {d.next || 'Nothing needs you.'}
         </Text>
+        {d.pagesTo && text(`pages → ${d.pagesTo}`, true)}
         {kitStale(loadedKit, d.kit) && (
           <Box flexDirection="row">
             {cell(2, text('›', false, 'warning'))}
