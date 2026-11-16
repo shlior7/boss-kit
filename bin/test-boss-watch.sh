@@ -45,6 +45,18 @@ check "worker envelope above a boss message box still fires" "DONE|demo-task|did
                               │ SUPERSET_WORKER_BLOCKED task: other reason: x │
                               ╰─────────────────────────────╯
 X
+check "new token, two-line envelope" "DONE|demo-task|did it" <<'X'
+│   BOSS_WORKER_DONE
+│   task: demo-task
+│   summary: did it
+X
+check "new token, blocked" "BLOCKED|demo-task|" <<'X'
+│ ⏺ BOSS_WORKER_BLOCKED task: demo-task reason: needs a token ││ side
+X
+check "new token, prose false positive" "" <<'X'
+│ When finished, post the BOSS_WORKER_DONE
+│ envelope for task demo-task.
+X
 a=$("$S" --sig <<'X'
 │ SUPERSET_WORKER_DONE task: demo-task summary: first run checks: ok
 X
@@ -59,7 +71,8 @@ prs='[{"number":1,"state":"OPEN","isDraft":true,"comments":[{"body":"Proof: http
  {"number":3,"state":"OPEN","isDraft":true,"comments":[{"body":"SUPERSET_WORKER_DONE task: <id>"}]},
  {"number":4,"state":"OPEN","isDraft":true,"comments":[]},
  {"number":5,"state":"OPEN","isDraft":false,"comments":[]},
- {"number":6,"state":"MERGED","isDraft":false}]'
+ {"number":6,"state":"MERGED","isDraft":false},
+ {"number":7,"state":"OPEN","isDraft":true,"comments":[{"body":"BOSS_WORKER_DONE task: fix-7\nsummary: done"}]}]'
 got=$(echo "$prs" | "$S" --ready | tr '\n' ' ' | sed 's/ $//')
-if [ "$got" = "1 5 6" ]; then echo "ok   PR READY -> $got"; else echo "FAIL PR READY: want '1 5 6', got '$got'"; fail=1; fi
+if [ "$got" = "1 5 6 7" ]; then echo "ok   PR READY -> $got"; else echo "FAIL PR READY: want '1 5 6 7', got '$got'"; fail=1; fi
 exit $fail

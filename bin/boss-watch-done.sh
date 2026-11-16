@@ -3,11 +3,12 @@
 # The boss ALWAYS watches for done with this script, never `superset terminals wait --match`. Three facts about the screen:
 #  1. Claude Code draws the whole reply box at once, so the envelope's first line can land 48 rows above the bottom,
 #     outside a `--max-lines 30` window (a one-line regex timed out at 30 and matched at once at 60).
-#  2. Workers wrap the envelope: `SUPERSET_WORKER_DONE` on one line, `task: x` on the next, so a one-line regex never matches.
+#  2. Workers wrap the envelope: `BOSS_WORKER_DONE` on one line, `task: x` on the next, so a one-line regex never matches.
+#     (The older token SUPERSET_WORKER_DONE / _BLOCKED counts the same, everywhere below.)
 #  3. `terminals read` returns only the visible screen (64 rows) even with `--max-lines 600`; an envelope taller than the
 #     screen loses its first line before a 20 s poll sees it.
 # So: (a) `sig` strips the box and side pane, joins the token with the next non-empty line, and counts an envelope only when
-# the token is directly followed by `task: <id>` (prose like "the SUPERSET_WORKER_DONE envelope for task x" never fires;
+# the token is directly followed by `task: <id>` (prose like "the BOSS_WORKER_DONE envelope for task x" never fires;
 # templates whose field value is <placeholder> or literally "..." are skipped); (b) the optional <branch> adds a check that does not depend on the screen:
 # about every 3rd poll, `gh pr list --head <branch> --state all` fires "PR READY #n" when a PR gets a comment holding a DONE
 # envelope, becomes non-draft or merges, and was not so at start (run from the repo, or set GH_REPO). Workers keep their PR
@@ -15,13 +16,14 @@
 # Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen, 135 (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
 # On a fire it logs the stage to the boss's events.jsonl through bin/boss-event (DONE, BLOCKED, PR READY or merged), for the boss-deck stages.
 # Env: BOSS_HOST (default: first host). Poll 20 s, timeout 3 h. Needs superset CLI, jq (gh for <branch>).
+# Superset only: it reads the screen. On coderplex the worker sends its envelope as a message; bin/boss-watch-msg watches that.
 # `sig` ignores any line whose box border starts past column 20 (the boss's own message box, which may quote a done-message with real values).
 # `sig` is "DONE|<id>|<first 30 chars of summary>" (or BLOCKED), so a new envelope with an already-seen task id still differs from the
 # baseline (a dispatch message that quotes the done-message once poisoned it). `boss-watch-done.sh --sig < screen` prints it, nothing if none (bin/test-boss-watch.sh).
 sig(){ LC_ALL=C awk '/^ {21,}(│|╭|╰)/ { l[NR] = ""; next }   # the boss'\''s own message box is drawn past column 20: never an envelope
   { gsub(/││.*$/, ""); gsub(/│|─|╭|╮|╰|╯|⏺/, " "); l[NR]=$0 }
-  END { for (n = NR; n > 0; n--) if (match(l[n], /SUPERSET_WORKER_(DONE|BLOCKED)/)) {
-    k = substr(l[n], RSTART + 16, RLENGTH - 16); r = substr(l[n], RSTART + RLENGTH)
+  END { for (n = NR; n > 0; n--) if (match(l[n], /(BOSS|SUPERSET)_WORKER_(DONE|BLOCKED)/)) {
+    k = substr(l[n], RSTART, RLENGTH); sub(/^.*_WORKER_/, "", k); r = substr(l[n], RSTART + RLENGTH)
     for (m = n + 1; m <= NR && l[m] ~ /^[ \t]*$/; m++) ;
     if (m <= NR) r = r " " l[m]
     if (r !~ /^[ \t]*task:[ \t]*[A-Za-z0-9._-]/) continue
@@ -32,7 +34,7 @@ sig(){ LC_ALL=C awk '/^ {21,}(│|╭|╰)/ { l[NR] = ""; next }   # the boss'\'
     print k "|" r "|" su; exit } }'; }
 # PR numbers that count as done: merged, open non-draft, or carrying a comment whose line starts a DONE envelope
 pick(){ jq -r '.[] | select(.state == "MERGED" or (.state == "OPEN" and (.isDraft == false
-    or any((.comments // [])[]; .body | test("(^|\n)[ \t>`]*SUPERSET_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]"))))) | .number'; }
+    or any((.comments // [])[]; .body | test("(^|\n)[ \t>`]*(BOSS|SUPERSET)_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]"))))) | .number'; }
 [ "$1" = --sig ] && { sig; exit; }
 [ "$1" = --ready ] && { pick; exit; }
 W=$1; T=$2; B=$3
@@ -50,7 +52,7 @@ for i in $(seq 1 540); do
   txt=$(scr); [ -z "$txt" ] && { echo "TERMINAL GONE (session ended or host restarted)"; exit 0; }
   cur=$(echo "$txt" | sig)
   if [ -n "$cur" ] && [ "$cur" != "$base" ]; then
-    n=$(echo "$txt" | grep -n "SUPERSET_WORKER_" | tail -1 | cut -d: -f1)
+    n=$(echo "$txt" | grep -nE "(BOSS|SUPERSET)_WORKER_" | tail -1 | cut -d: -f1)
     ev "${cur%%|*}" "$(echo "${cur#*|}" | sed 's/|/: /')"
     echo "ENVELOPE $cur"; echo "$txt" | tail -n +$n | sed 's/││.*$//' | head -60; exit 0
   fi

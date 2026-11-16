@@ -910,6 +910,22 @@ class Hosts(Home):
         self.assertEqual(r.returncode, 2)
         self.assertIn("coderplex-ctl sessions archive", r.stdout)
 
+    def test_deck_counts_both_envelope_tokens_in_pr_comments(self):
+        deck = load_script("boss-deck-data.py")
+        for token in ("BOSS_WORKER_DONE", "SUPERSET_WORKER_DONE"):
+            p = {"number": 1, "title": "t", "comments": [{"body": f"{token} task: fix-1\nsummary: x", "createdAt": "2026-01-02T10:00:00Z"}]}
+            self.assertGreater(deck.pr_row("a/b", p, True)["doneAt"], 0, token)
+        p = {"number": 1, "title": "t", "comments": [{"body": "will post BOSS_WORKER_DONE when done", "createdAt": "2026-01-02T10:00:00Z"}]}
+        self.assertEqual(deck.pr_row("a/b", p, True)["doneAt"], 0)
+
+    def test_deck_sees_both_watchers(self):
+        deck = load_script("boss-deck-data.py")
+        ps = ("  101 05:00 /bin/bash /k/bin/boss-watch-done.sh 1a2b3c4d-0000-4000-8000-000000000001 5e6f0000-0000-4000-8000-000000000002 fix/a\n"
+              "  102 01:02:03 /usr/bin/python3 /k/bin/boss-watch-msg aaaa1111 fix/b\n"
+              "  103 00:10 vim bin/boss-watch-msg\n")
+        self.assertEqual([(w["ws"][:8], w["term"][:4], w["ageS"]) for w in deck.watchers(ps)],
+                         [("1a2b3c4d", "5e6f", 300), ("aaaa1111", "", 3723)])
+
     def test_kind_follows_bosskit(self):
         os.environ["CODERPLEX_SESSION_ID"] = "a19f77fa"
         self.assertEqual(self.host.get({}).kind, "coderplex")
