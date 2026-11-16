@@ -827,6 +827,80 @@ class HostKind(Home):
         self.assertFalse(bosskit.is_boss(bosskit.load(self.wt)))
 
 
+def fake_cli(tmp, name, cases):
+    """A stub *name* on a temp PATH dir that appends its argv to <tmp>/calls and prints cases[first two args] (else fails)."""
+    stubs = os.path.join(tmp, "stubs")
+    os.makedirs(stubs, exist_ok=True)
+    body = "".join(f'  "{k}"*) cat <<\'JSON\'\n{v}\nJSON\n;;\n' for k, v in cases.items())
+    path = os.path.join(stubs, name)
+    open(path, "w").write(f'#!/bin/sh\necho "{name} $*" >> "{tmp}/calls"\ncase "$*" in\n{body}  *) exit 0;;\nesac\n')
+    os.chmod(path, 0o755)
+    return stubs
+
+
+class Hosts(Home):
+    """bosshost: the superset adapter runs the kit's usual commands; the coderplex one maps sessions to workers."""
+
+    def setUp(self):
+        super().setUp()
+        self.host = load_script("bosshost.py")
+        self.calls = os.path.join(self.tmp, "calls")
+
+    def path(self, stubs):
+        return mock.patch.dict(os.environ, {"PATH": f"{stubs}:/usr/bin:/bin"})
+
+    def logged(self):
+        return bosskit._read(self.calls).splitlines()
+
+    def test_superset_runs_the_same_commands_as_before(self):
+        stubs = fake_cli(self.tmp, "superset", {
+            "snapshot --host h1": json.dumps({"workspaces": [{"id": "w1", "name": "cart", "branch": "fix/a", "terminals": [{"id": "t1", "agent": {"state": "idle"}}]}]}),
+            "workspaces list --host": json.dumps([{"id": "w1", "tags": "UI, Infra", "worktreePath": "/wt/w1"}]),
+            "workspaces list --local": json.dumps([{"id": "w1", "branch": "fix/a", "worktreePath": "/wt/w1"}])})
+        h = self.host.get({"superset_host": "h1"}, "superset")
+        with self.path(stubs):
+            ws = h.workers()
+            self.assertEqual((ws[0]["tags"], ws[0]["worktree"], ws[0]["terminals"][0]["agent"]["state"]), (["UI", "Infra"], "/wt/w1", "idle"))
+            self.assertEqual(h.by_branch("fix/a"), {"id": "w1", "worktree": "/wt/w1"})
+            h.send("w1", "hello", "t1")
+            h.rename("w1", "BOSS")
+        self.assertIn("superset terminals send --workspace w1 --terminal t1 --local --keys ctrl+u", self.logged())
+        self.assertIn("superset terminals send --workspace w1 --terminal t1 --local --text hello", self.logged())
+        self.assertIn("superset workspaces update w1 --host h1 --name BOSS", self.logged())
+        self.assertEqual(h.archive_cmd("w1"), "superset workspaces archive w1 --local")
+
+    def test_superset_host_defaults_to_the_first_host(self):
+        stubs = fake_cli(self.tmp, "superset", {"hosts list": json.dumps([{"id": "first"}, {"id": "second"}])})
+        with self.path(stubs):
+            self.assertEqual(self.host.get({}, "superset").host_id(), "first")
+
+    def test_coderplex_sessions_are_workers(self):
+        show = lambda sid, phase, mode="claude": json.dumps({"sessions": [{"id": sid, "title": f"t-{sid}", "branch": f"b-{sid}", "agentMode": mode,
+                                                                            "agentPhase": phase, "worktree": f"/wt/{sid}", "section": "UI" if sid == "aaaa1111" else None}]})
+        stubs = fake_cli(self.tmp, "coderplex-ctl", {
+            "sessions ls": json.dumps({"sessions": [{"id": "aaaa1111", "branch": "b-aaaa1111"}, {"id": "bbbb2222"}, {"id": "cccc3333"}]}),
+            "sessions show aaaa1111": show("aaaa1111", "working"), "sessions show bbbb2222": show("bbbb2222", "permission"),
+            "sessions show cccc3333": show("cccc3333", None, "shell")})
+        h = self.host.get({}, "coderplex")
+        with self.path(stubs):
+            ws = {w["id"]: w for w in h.workers(["aaaa1111", "bbbb2222", "cccc3333"])}
+            self.assertEqual(h.workers(["aaaa1111"])[0]["id"], "aaaa1111")  # only the dispatched ones are read in full
+            self.assertEqual(h.by_branch("b-aaaa1111"), {"id": "aaaa1111", "worktree": "/wt/aaaa1111"})
+            h.send("aaaa1111", "hi there")
+        self.assertEqual(ws["aaaa1111"]["terminals"][0]["agent"]["state"], "working")
+        self.assertEqual((ws["aaaa1111"]["tags"], ws["aaaa1111"]["worktree"]), (["UI"], "/wt/aaaa1111"))
+        self.assertEqual(ws["bbbb2222"]["terminals"][0]["agent"]["state"], "blocked")  # waiting on someone
+        self.assertEqual(ws["cccc3333"]["terminals"], [])  # a shell session has no agent
+        self.assertIn("coderplex-ctl sessions send aaaa1111 --text hi there", self.logged())
+        self.assertNotIn("--ttl", h.archive_cmd("aaaa1111"))
+        self.assertIsNone(h.screen("aaaa1111", "agent-1"))
+
+    def test_kind_follows_bosskit(self):
+        os.environ["CODERPLEX_SESSION_ID"] = "a19f77fa"
+        self.assertEqual(self.host.get({}).kind, "coderplex")
+        self.assertEqual(self.host.get({"host": "superset"}).kind, "superset")
+
+
 class StatusAsk(unittest.TestCase):
     def test_dry_run_text_has_all_six_questions_and_no_new_work(self):
         out = subprocess.run([os.path.join(BIN, "boss-status-ask"), "--dry-run", "--as", "Studio 2 boss"],
