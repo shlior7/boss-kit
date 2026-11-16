@@ -61,6 +61,7 @@ flowchart LR
 | `bin/boss-migrate` | Moves an older kit's project data into the data root |
 | `bin/boss-status-ask` | Sends the standard six-question status check to a worker session before a cleanup (the status layover) |
 | `bin/boss-close` | `boss-host close` and `close-dead` under their old name: closes a worker's terminals the way its host does |
+| `bin/boss-watch-done.sh` | `boss-host watch` under its old name and argument order (`<worker> <terminal> [<branch>]`), for bosses still on the old prompt |
 | `bin/boss-merge` | Squash-merges one PR only when it is safe: verified head, mergeable, review threads answered, checks green |
 | `bin/verify` | Runs the kit's own checks, one line each, plus a junk guard on committed files |
 | `bin/boss-event` | Logs a workspace's stage (sent, DONE, checked, ready, merged, retired) for the pane's stages and timeline |
