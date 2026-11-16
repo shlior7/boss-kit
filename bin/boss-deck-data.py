@@ -784,6 +784,7 @@ def main():
         "others": others(bosskit.registry(ctx.home), ctx.bid, workspace=ctx.workspace, wt=ctx.worktree), "mail": mail(ctx.inbox),
         "bosses": bosses(bosskit.registry(ctx.home), ctx.name, ctx.bid, ctx.pdir, workspace=ctx.workspace, wt=ctx.worktree, sessions=sessions),
         "lessonsNew": lessons_new(ctx.home, ctx.bdir, "--session-start" in sys.argv),
+        "buttons": cfg.get("deck_buttons", []), "workerButtons": cfg.get("deck_worker_buttons", []),
     }))
 
 

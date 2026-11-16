@@ -60,6 +60,26 @@ DEFAULTS = {
     # or {"provider": "<name>", "publish": "<command with <dir>>"}: every page goes there instead
     "pages": "auto",
     "boss_name": "BOSS",        # what the boss names its own workspace or session at session start; "" leaves it
+    # The boss pane's buttons: a click submits the prompt to the boss's own session, as if typed. A prompt only asks;
+    # section 3's gates still hold. Worker prompts fill {name}, {id}, {pr} and {branch} per worker.
+    "deck_buttons": [
+        {"label": "Status", "prompt": "Status: what needs me, the stack and the workers, in plain words."},
+        {"label": "Sweep PRs", "prompt": "Run the gh PR sweep, then verify any DONE or ready PR (section 7). Ask before merging."},
+        {"label": "Check workers", "prompt": "Read every worker's screen and re-arm any dead watcher."},
+        {"label": "Review page", "prompt": "Publish the review page now (section 12)."},
+        {"label": "Cleanup", "prompt": "Retire merged workspaces after the leftover check, and tidy junk. "
+                                       "Ask before merging, and before anything outward."},
+        {"label": "Mail", "prompt": "Read the boss-mail inbox and handle each message (section 13)."},
+        {"label": "Lessons", "prompt": "Record today's incidents as lessons (section 14)."},
+    ],
+    "deck_worker_buttons": [
+        {"label": "Status", "prompt": "Worker {name} ({id}): read its screen and its notes, then give me its state in one line."},
+        {"label": "Verify", "prompt": "Verify worker {name}'s PR {pr} on {branch} with the section 7 checks. Ask before merging."},
+        {"label": "Nudge", "prompt": "Nudge worker {name} ({id}): ask it for its completion envelope, or a one-line pending status."},
+        {"label": "Cleanup", "prompt": "Cleanup worker {name} ({id}): run the leftover check on its worktree; if its PRs are merged "
+                                       "and nothing is left over or queued, ask me to archive it (archive at once only under a "
+                                       "standing cleanup OK); close its dead panes."},
+    ],
     # What goes on GitHub; `instructions` states it in plain words (github_text). comments: the PR comments the boss and
     # its workers may post, any of COMMENT_KINDS ([] posts none); draft: workers open draft PRs; body: what the PR body
     # carries (tracker, proof); ready: who marks a verified PR ready (boss | never); merge: boss-merge's method

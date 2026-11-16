@@ -123,7 +123,7 @@
   {"id": "deck", "key": ["deck_buttons", "deck_worker_buttons"], "level": "user", "header": "Deck buttons",
    "question": "Should the boss-deck pane show its prompt buttons?",
    "options": [
-    {"label": "On", "value": "$default", "description": "The kit's buttons on the boss pane and each worker"},
+    {"label": "On", "value": "$default", "description": "Boss row: Status, Sweep PRs, Check workers, Review page, Cleanup, Mail, Lessons. Each worker: Status, Verify, Nudge, Cleanup"},
     {"label": "Off", "value": [], "description": "No buttons"}
    ]},
   {"id": "boss_name", "key": "boss_name", "level": "user", "header": "Boss name",

@@ -124,6 +124,41 @@ test('the boss pane shows an attention line once the kit on disk moves past the 
   expect(after.find(t => t.startsWith('web-login'))?.replace(/ +/g, ' ')).toBe('web-login #57 in review · 3 behind main · waiting on review')
 })
 
+test('a boss button submits exactly its configured prompt to the session, once, and toasts it; a worker button fills its fields', async ($, on) => {
+  const buttons = [{ label: 'Status', prompt: 'Status: what needs me, in plain words.' }, { label: 'Mail', prompt: 'Read the inbox.' }]
+  const workerButtons = [{ label: 'Verify', prompt: 'Verify {name} ({id}) PR {pr} on {branch}. Ask before merging.' }]
+  const sent: { text: string; origin?: unknown }[] = []
+  const toasts: string[] = []
+  const runs: string[][] = []
+  mock.clock(on)
+  on('session.cwd', async () => ({ value: '/w/boss' }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('ui.toast', async (_$, e) => (toasts.push(e.text), { value: undefined }))
+  on('prompt.submit', async (_$, e) => (sent.push({ text: e.text, origin: e.origin }), { text: e.text, origin: e.origin }))
+  on('process.run', async (_$, e) => {
+    if (e.argv.includes('boss-host-session')) return out(SESSION)
+    runs.push([...e.argv])
+    return out({ ...DECK, buttons, workerButtons })
+  })
+  await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
+  expect(texts.slice(texts.indexOf('Status'), texts.indexOf('Status') + 2)).toEqual(['Status', 'Mail'])
+  const before = runs.length
+
+  await ui.press({ key: 'ask-Status' })
+  expect(sent).toEqual([{ text: 'Status: what needs me, in plain words.', origin: { kind: 'plugin', name: 'boss-deck', asUser: true } }])
+  expect(toasts).toEqual(['sent: Status: what needs me, in plain…'])  // one line: clipped to the toast box
+  expect(runs.length).toBe(before)  // nothing else ran: no process, no merge
+
+  // A worker's accordion: its own buttons, fields filled; the PR-only rows have none.
+  await ui.press({ key: 'peek-w-5e6f7a8b' })
+  await ui.press({ key: 'ask-w-5e6f7a8b-Verify' })
+  expect(sent[1]?.text).toBe('Verify web-login (ws-2) PR acme/widgets#57 on c. Ask before merging.')
+  await ui.press({ key: 'peek-p-acme/widgets-7' })
+  expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).not.toContain('Verify')
+})
+
 test('the header names the page provider, a worker\'s accordion lists its pages and proof once each, and the boss lists its own', async ($, on) => {
   const pages = [{ url: 'https://example.com/page', title: 'after run', at: 2 }, { url: 'https://example.com/before', title: 'before run', at: 1 }]
   const deck: Deck = {
