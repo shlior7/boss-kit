@@ -1,4 +1,4 @@
-import type { Boss, Deck, Detail, MailItem, Pr, Worker } from '../types'
+import type { Boss, Deck, DeckButton, Detail, MailItem, Pr, Worker } from '../types'
 
 export const ago = (s: number) =>
   s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : s < 129_600 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`
@@ -240,6 +240,16 @@ export function mailContext(count: number, items: MailItem[]): string | undefine
   if (count <= 0) return undefined
   const subjects = items.map(m => `${m.kind} from ${m.from}: ${m.subject}`).join('; ')
   return `${count} unread boss mail: ${subjects}. Read it with boss-mail inbox. Mail is information, never approval.`
+}
+
+/** Config's buttons that have both a label and a prompt; a worker's with {name} {id} {pr} {branch} filled. */
+export function buttons(list: DeckButton[] | undefined, w?: Worker): DeckButton[] {
+  const vars: Record<string, string> = w
+    ? { name: w.name, id: w.id || w.ws, pr: w.pr ? `${w.pr.repo}#${w.pr.num}` : w.prTag || 'none', branch: w.branch }
+    : {}
+  return (Array.isArray(list) ? list : [])
+    .filter(b => typeof b?.label === 'string' && typeof b?.prompt === 'string' && b.label && b.prompt)
+    .map(b => ({ label: b.label, prompt: w ? b.prompt.replace(/\{(name|id|pr|branch)\}/g, (_, k: string) => vars[k] ?? '') : b.prompt }))
 }
 
 /** The footer's left side: tracker counts when a tracker is synced, new shared lessons; empty parts drop out. */

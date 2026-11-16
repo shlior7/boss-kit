@@ -790,6 +790,18 @@ class ConfigLayers(Home):
         self.assertEqual(src["wake"], (False, "boss"))
         self.assertEqual(bosshost.get(ctx.cfg).cfg, {"region": "us"})  # a plugin sees its own section over its defaults
 
+    def test_a_projects_deck_buttons_replace_the_kits(self):
+        ctx = bosskit.load(self.wt)
+        self.assertEqual([b["label"] for b in ctx.cfg["deck_buttons"]][:2], ["Status", "Sweep PRs"])  # the kit's
+        mine = [{"label": "Deploy check", "prompt": "Is staging green? Ask before merging."}]
+        bosskit.set_config(ctx.layers, "project", {"deck_buttons": mine}, apply=True)
+        ctx = bosskit.load(self.wt)
+        self.assertEqual(ctx.cfg["deck_buttons"], mine)  # a list replaces, never merges
+        self.assertEqual(bosskit.sources(ctx.layers)["deck_buttons"], (mine, "project"))
+        self.assertEqual([b["label"] for b in ctx.cfg["deck_worker_buttons"]], ["Status", "Verify", "Nudge"])  # still the kit's
+        for b in bosskit.DEFAULTS["deck_buttons"] + bosskit.DEFAULTS["deck_worker_buttons"]:
+            self.assertTrue(b["label"] and b["prompt"], b)
+
     def test_a_scalar_and_a_dict_replace_each_other(self):
         layers = [("kit", "", {"tracker": {"type": "none"}}), ("user", "", {"tracker": "off"}), ("project", "", {"tracker": {"url": "u"}})]
         self.assertEqual(bosskit.merged(layers), {"tracker": {"url": "u"}})
@@ -800,7 +812,7 @@ class ConfigLayers(Home):
         path = os.path.join(self.home, "widgets", "config.json")
         out = bosskit.set_config(ctx.layers, "project", bosskit.parse_sets(["host=other", "models.cheap=haiku-4", "wake=false"]))
         self.assertIn("dry run", out)
-        self.assertIn('host               "other"  (project)', out)
+        self.assertRegex(out, r'\nhost +"other"  \(project\)')
         self.assertNotIn("host", json.load(open(path)))
         bosskit.set_config(ctx.layers, "project", bosskit.parse_sets(["host=other", "wake=false"]), apply=True, now=7)
         cfg = json.load(open(path))
