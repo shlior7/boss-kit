@@ -629,11 +629,12 @@ def worker_view(home, ws, cwd, status=None, fresh=False):
     found = find_dispatch(home, ws)
     if not found:
         return None
-    project, cfg, (task, ledger, date, proof, named, text) = found
-    pdir = os.path.join(home, project)
-    cfg = bosskit.config_for(home, project)
+    cfg = bosskit.config_for(home, found[0])
     host = bosshost.get(cfg)
     use_host(host)
+    # Read the row again: its page links (the host's and config's proof_urls) count as proof only now.
+    project, _, (task, ledger, date, proof, named, text) = find_dispatch(home, ws)
+    pdir = os.path.join(home, project)
     wt = bosskit.worktree(cwd)
     exclude_boss_dir(wt)
     if status:

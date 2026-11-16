@@ -1411,6 +1411,7 @@ class PagesFiles(Home):
     def test_the_worker_view_lists_its_pages_and_the_provider(self):
         w = deck_json(self.worker_wt, self.tools, "--worker", "--workspace", self.WS)["worker"]
         self.assertEqual(([p["title"] for p in w["pages"]], w["pagesTo"]), (["after run", "before run, redone"], "acme-pages"))
+        self.assertEqual([p["url"] for p in w["proof"]], ["https://pages.example.com/p/after", "https://pages.example.com/p/ledger"])  # the host's pages
         exclude = subprocess.run(["git", "-C", self.worker_wt, "rev-parse", "--git-path", "info/exclude"], capture_output=True, text=True).stdout.strip()
         self.assertIn(".boss-worker/", open(os.path.join(self.worker_wt, exclude)).read().split())
         self.assertEqual(subprocess.run(["git", "-C", self.worker_wt, "status", "--porcelain"], capture_output=True, text=True).stdout, "")

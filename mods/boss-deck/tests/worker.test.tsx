@@ -166,7 +166,8 @@ test('a worker pane warns once the kit on disk moves past the one it loaded', as
 })
 
 test('a worker view lists the pages it published, newest first, under the provider line', async ($, on) => {
-  const deck: WorkerDeck = { at: 0, worker: view({ pagesTo: 'acme-pages', pages: [{ url: 'https://example.com/after', title: 'after run', at: 0 }, { url: 'https://example.com/before', title: 'before run', at: 0 }] }) }
+  const pages = [{ url: 'https://example.com/after', title: 'after run', at: 0 }, { url: 'https://example.com/before', title: 'before run', at: 0 }]
+  const deck: WorkerDeck = { at: 0, worker: view({ pagesTo: 'acme-pages', pages, proof: [{ label: 'page', url: 'https://example.com/after' }, { label: 'demo', url: 'https://example.com/run.mp4' }] }) }
   session(on, deck, [], [])
   await $.session.start({ cwd: '/w/worker', surface: 'terminal', isInteractive: true })
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
@@ -174,5 +175,5 @@ test('a worker view lists the pages it published, newest first, under the provid
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
   expect(texts).toContain('pages → acme-pages')
   expect(texts.filter(t => /^[A-Z ]+$/.test(t))).toContain('PAGES')
-  expect(texts.filter(t => t.endsWith('↗'))).toEqual(['after run ↗', 'before run ↗', 'PR ↗', 'boss ↗'])
+  expect(texts.filter(t => t.endsWith('↗'))).toEqual(['after run ↗', 'before run ↗', 'demo ↗', 'PR ↗', 'boss ↗'])  // a listed page is not repeated
 })

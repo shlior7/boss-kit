@@ -291,7 +291,8 @@ export const register: Register = on => {
           {rest(child)}
         </Box>
       )
-      const links = [...(v.pr?.proof ?? []), ...v.proof].filter((x, i, all) => all.findIndex(y => y.url === x.url) === i)
+      // Proof links not already listed under PAGES.
+      const links = pageLinks(undefined, v.pr?.proof ?? [], v.proof).filter(x => !(v.pages ?? []).some(p => p.url === x.url))
       const MARK = { completed: ['✓', 'success'], in_progress: ['●', 'suggestion'], pending: ['○', undefined] } as const
       return (
         <Box flexDirection="column" paddingX={1}>
