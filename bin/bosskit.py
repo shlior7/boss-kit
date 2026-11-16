@@ -122,7 +122,8 @@ def host_kind(cfg=None):
         return "superset"
     if os.environ.get("CODERPLEX_SESSION_ID"):
         return "coderplex"
-    return "coderplex" if not shutil.which("superset") and shutil.which("coderplex-ctl") else "superset"
+    has_superset = shutil.which("superset") or os.path.exists(os.path.expanduser("~/.superset/bin/superset"))
+    return "coderplex" if not has_superset and shutil.which("coderplex-ctl") else "superset"
 
 
 def boss_id(cwd=None, h=None):
@@ -429,17 +430,18 @@ def _read(path):
 
 def instructions(ctx):
     parts = [("BOSS-template.md", _read(os.path.join(KIT, "BOSS-template.md"))),
+             (f"hosts/{ctx.host}.md (host commands)", _read(os.path.join(KIT, "hosts", f"{ctx.host}.md"))),
              (f"{ctx.name}/BOSS.md", _read(os.path.join(ctx.pdir, "BOSS.md"))),
              (f"{ctx.name}/lessons.md (project lessons)", _read(os.path.join(ctx.pdir, "lessons.md"))),
              ("lessons.md (shared lessons)", shared_view(_read(os.path.join(ctx.home, "lessons.md"))))]
     domain = boss_domain(ctx.worktree)
     if domain:
         ddir = os.path.join(ctx.pdir, "domains")
-        parts.insert(2, (f"{ctx.name}/domains/{domain}.md (domain charter)", _read(os.path.join(ddir, f"{domain}.md"))))
-        parts.insert(3, (f"{ctx.name}/domains/{domain}-state.md (domain state, you keep it current)", _read(os.path.join(ddir, f"{domain}-state.md"))))
-    head = f"# Boss session: project {ctx.name}, boss {ctx.bid}" + (f", domain {domain}" if domain else "") + "\n"
+        parts.insert(3, (f"{ctx.name}/domains/{domain}.md (domain charter)", _read(os.path.join(ddir, f"{domain}.md"))))
+        parts.insert(4, (f"{ctx.name}/domains/{domain}-state.md (domain state, you keep it current)", _read(os.path.join(ddir, f"{domain}-state.md"))))
+    head = f"# Boss session: project {ctx.name}, boss {ctx.bid}, host {ctx.host}" + (f", domain {domain}" if domain else "") + "\n"
     if domain:
-        head += (f"\nYour folder: Paradev workspaces tagged '{boss_folder(ctx.worktree)}'. Tag every workspace you create with it, and read, "
+        head += (f"\nYour folder: workspaces tagged '{boss_folder(ctx.worktree)}' (a Paradev tag or a coderplex section). Tag every workspace you create with it, and read, "
                  "message, verify and archive only workspaces in it; anything else goes to the main boss by boss-mail.\n")
     return head + "".join(f"\n\n<!-- {name} -->\n\n{body.strip()}\n" for name, body in parts if body.strip())
 

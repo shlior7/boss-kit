@@ -1,0 +1,24 @@
+# Host commands: Paradev (Superset) CLI, --local
+
+Loaded after the boss prompt when this boss's host is `superset` (`bosskit.py show` prints `host`). A worker is a Paradev workspace: a git worktree with terminals; its agent runs in one of them. This boss's id is `$SUPERSET_WORKSPACE_ID`.
+
+## Control surface
+- `superset workspaces list --local --json`; `terminals list --workspace <id>`; `terminals read --max-lines N`; `terminals send --text "..."` (submits by default; `--no-submit` stages only). Clear a staged input line first with `--keys ctrl+u`: an idle session often shows an auto-suggestion that is not yours. Use the FULL terminal UUID, never the short id.
+- `superset agents create --workspace <id> --agent <preset id> [--model <m>] --prompt "..." --json` (keep `sessionId`). New agents start in the user's default permission mode; a permission prompt reads as agent state `blocked`. Answer a read-only command prompt with the option that stops asking in the mode the user runs (auto, or bypass when that is their default); anything that writes, ask me. `superset snapshot --host <id> --json` shows every worker's state in one call.
+- Presets: claude (default), codex, gemini, antigravity/agy, amp, copilot, opencode (`superset agents list --local --json`). Drive codex as a terminal agent.
+- Reports are Superset pages: `superset pages publish scratch/pages/<f>.html --title ... --description ...` (self-contained HTML, no remote scripts/fetch/eval).
+- A session in an existing workspace (research, ops, reviews, checks; in the boss's own workspace when it changes no files): `superset agents create --workspace <id> --agent claude --model <m> --prompt "..."`.
+- Tag and name: `--tag <group>` at `superset workspaces create`, or `superset workspaces update <id> --local --tag <group> --name <name>`. Each tag is a sidebar folder.
+- A domain boss's new workspace: `superset workspaces create ... --tag "<folder>" --base-branch origin/<main>`. `workspaces create` has ignored `--base-branch` before, so check the new worktree as section 15 says.
+- Archive a finished worker: `superset workspaces archive <id> --local`, which removes the worktree folder (the branch stays on GitHub).
+- Status layover inventory: `superset workspaces list`, `terminals list`. The status check: `bin/boss-status-ask <workspace> <terminal> ...` (clears the input line, sends the six questions, logs the event).
+- **Closing a terminal = closing its pane**: `bin/boss-close <workspace> <terminal>...`, never a bare `superset terminals close`, which ends the session but leaves a dead "Session ended" tab in the user's app. Every sweep also runs `bin/boss-close --dead <each workspace in your folder>` to remove tabs whose session already ended (watchers' exited workers, crashed sessions). `--dry-run` first when unsure; `--dead --all` covers other bosses' folders, so only the main boss runs it.
+- Messages: the boss-deck pane logs each message you send a worker with `superset terminals send --text` as that workspace's `msg` event itself (key-only sends are not logged); the worker's own pane shows them under FROM BOSS.
+
+## Completion: the worker ends with its envelope on screen
+The worker ends its final message with the envelope, and posts the same envelope as a PR comment.
+
+## Watcher
+In the SAME turn as the dispatch, arm a background watcher, `bin/boss-watch-done.sh <workspace> <terminal> <branch>` (`run_in_background`, never `&`, run from the repo; always pass the worker's branch, or it never looks at GitHub): every 20 s read the terminal (--max-lines 600), strip the reply box and side pane, take the latest envelope with its `task:` value (skipping `<placeholder>` templates), fire when it differs from the one at start, when the agent state is `blocked`, or after 9 idle polls (3 min) with an unchanged screen (18 while a background shell or monitor runs). It also fires when the terminal is gone. Timeout ~3 h.
+Lessons: don't count envelope lines (old ones scroll out); don't match the envelope name anywhere (matches your own prompt); never edit the script while watchers run (write a new versioned file, re-arm); idle detection misfires during long CI waits, so on a fire without an envelope read the screen and GitHub first. A session restart kills every watcher: on resume, read each worker's screen for an envelope that landed meanwhile, then re-arm.
+Use this script for every done-watch. Never swap it for `superset terminals wait --match`. That command sees only the last `--max-lines` rows, and Claude Code draws a reply box all at once, so the envelope's first line can land above the window. It also misses an envelope split over two lines and has no idle fallback. `terminals read` returns only the visible screen (about 64 rows) even with `--max-lines 600`. If the script misfires, fix the script; don't replace it.

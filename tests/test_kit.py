@@ -267,9 +267,18 @@ class Lessons(Home):
         open(os.path.join(self.home, "widgets", "BOSS.md"), "w").write("widgets facts")
         open(os.path.join(self.home, "widgets", "lessons.md"), "w").write("## 1. widgets lesson (2026-01-01)")
         open(os.path.join(self.home, "lessons.md"), "w").write(long)
+        os.environ["BOSS_HOST_KIND"] = "superset"
         text = bosskit.instructions(bosskit.load(self.wt))
         for part in ("BOSS — orchestrator", "widgets facts", "widgets lesson", "over the 150-line budget"):
             self.assertIn(part, text)
+        self.assertLess(text.index("hosts/superset.md (host commands)"), text.index("widgets facts"))
+        self.assertIn("bin/boss-watch-done.sh", text)
+        del os.environ["BOSS_HOST_KIND"]
+        os.environ["CODERPLEX_SESSION_ID"] = "a19f77fa"
+        text = bosskit.instructions(bosskit.load(self.wt))
+        self.assertIn("hosts/coderplex.md (host commands)", text)
+        self.assertIn("bin/boss-watch-msg", text)
+        self.assertNotIn("bin/boss-watch-done.sh", text)
 
 
 class DomainBoss(Home):
@@ -675,7 +684,7 @@ class Folders(Home):
         self.assertEqual(bosskit.boss_folder(self.wt), "checkout")
         self.local("# Boss workspace\nDomain: checkout\nFolder:  Checkout Flow  \n")
         self.assertEqual(bosskit.boss_folder(self.wt), "Checkout Flow")
-        self.assertIn("Paradev workspaces tagged 'Checkout Flow'", bosskit.instructions(bosskit.load(self.wt)))
+        self.assertIn("workspaces tagged 'Checkout Flow'", bosskit.instructions(bosskit.load(self.wt)))
 
     def test_domain_boss_sees_only_its_folder(self):
         self.local("# Boss workspace\nDomain: checkout\nFolder: checkout flow\n")
