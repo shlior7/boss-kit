@@ -977,12 +977,12 @@ class WatchMsg(Home):
         self.ctx = bosskit.load(self.wt)
         self.out = []
 
-    def run_watch(self, inbound, states, prs=None, branch=""):
+    def run_watch(self, inbound, states, prs=None, branch="", since=0):
         """inbound / states / prs: one value per poll (the first inbound and prs are the baseline)."""
         inb, st, pr = iter(inbound), iter(states), iter(prs or [])
         host = mock.Mock(self_id=lambda: "b0550000")
         host.worker = lambda sid: (lambda s: {} if s == "gone" else {"terminals": [{"agent": {"state": s}}]})(next(st))
-        with mock.patch.object(self.w, "inbound", lambda boss, session: next(inb)), \
+        with mock.patch.object(self.w, "inbound", lambda boss, session: next(inb)), mock.patch.object(self.w, "dispatched_at", lambda b, s: since), \
              mock.patch.object(self.w, "pr_list", lambda b: next(pr)), mock.patch.object(self.w.time, "sleep", lambda s: None):
             self.w.watch(self.ctx, host, "aaaa1111", branch, polls=20, out=self.out.append)
         return self.out[0]
@@ -1004,9 +1004,19 @@ class WatchMsg(Home):
         self.assertEqual(self.stages(), [("aaaa1111", "DONE", "fix-1: did it")])
 
     def test_an_envelope_sent_before_the_watcher_was_armed_still_fires(self):
-        bosskit.add_event(self.ctx, "aaaa1111", "sent", "fix-1", now=1000)
-        msgs = [("m0", "BOSS_WORKER_DONE\ntask: fix-0\nsummary: last dispatch", 900), ("m1", "BOSS_WORKER_DONE\ntask: fix-1\nsummary: quick", 1010)]
-        self.assertEqual(self.run_watch([msgs, msgs], ["idle"]), "ENVELOPE DONE|fix-1|quick")
+        # dispatched at 1000 (the session's creation or the boss's last message); the boss logged `sent` later, at 1003
+        bosskit.add_event(self.ctx, "aaaa1111", "sent", "fix-1", now=1003)
+        msgs = [("m0", "BOSS_WORKER_DONE\ntask: fix-0\nsummary: last dispatch", 900), ("m1", "BOSS_WORKER_DONE\ntask: fix-1\nsummary: quick", 1001)]
+        self.assertEqual(self.run_watch([msgs, msgs], ["idle"], since=1000), "ENVELOPE DONE|fix-1|quick")
+
+    def test_dispatched_at_is_the_last_boss_message_or_the_session_creation(self):
+        msgs = [{"messageId": "a", "from": {"session": "b0550000"}, "to": {"session": "aaaa1111"}, "createdAt": 5_000_000},
+                {"messageId": "b", "from": {"session": "aaaa1111"}, "to": {"session": "b0550000"}, "createdAt": 9_000_000}]
+        show = {"createdAt": "1970-01-01T00:00:02Z"}
+        with mock.patch.object(self.w, "_messages", lambda boss: msgs), mock.patch.object(self.w.bosshost.Coderplex, "_show", lambda self, sid: show):
+            self.assertEqual(self.w.dispatched_at("b0550000", "aaaa1111"), 5000)
+            msgs.pop(0)
+            self.assertEqual(self.w.dispatched_at("b0550000", "aaaa1111"), 2)
 
     def test_blocked_idle_and_gone(self):
         self.assertTrue(self.run_watch([[]] * 3, ["working", "blocked"]).startswith("AGENT BLOCKED"))

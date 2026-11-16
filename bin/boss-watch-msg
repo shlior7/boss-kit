@@ -6,8 +6,9 @@ arrives as a new prompt in the boss's pane once its turn ends: the push wakes th
 is the safety net and the stage log. Every 20 s, for up to 3 h, it exits (which also wakes the boss) when:
   - a NEW message from <session> to this boss holds an envelope: a line starting BOSS_WORKER_DONE or BOSS_WORKER_BLOCKED
     (or the older SUPERSET_ token) directly followed by `task: <id>`; templates with <placeholder> fields are skipped.
-    New means sent after the dispatch (this boss's last `sent` event for the session), so an envelope that lands before
-    the watcher is armed still fires; with no `sent` event, every message already there is old;
+    New means sent after the latest dispatch: the session's creation (`sessions create --prompt`) or this boss's last
+    message to it, both as coderplex records them, so an envelope that lands before the watcher is armed (or before the
+    boss logs `sent`) still fires;
   - with <branch>, about every 3rd poll, a PR on it gets a DONE-envelope comment, leaves draft or merges (PR READY #n),
     the same rule as boss-watch-done.sh's `pick` (run from the repo, or set GH_REPO);
   - the session's agent waits on someone (agent state blocked: a permission prompt or a question);
@@ -21,6 +22,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bosshost  # noqa: E402
@@ -57,12 +59,28 @@ def body(m):
     return b.get("text") or bosskit._read(b.get("file") or "")
 
 
+def _messages(boss):
+    d = bosshost._json(bosshost.run(["coderplex-ctl", "sessions", "messages", boss, "--json"]), {})
+    return d.get("messages", []) if isinstance(d, dict) else []
+
+
+def _between(m, a, b):
+    return (m.get("from") or {}).get("session", "").startswith(a[:8]) and (m.get("to") or {}).get("session", "").startswith(b[:8])
+
+
 def inbound(boss, session):
     """[(messageId, text, sent at in seconds)] of messages from *session* to *boss*, oldest first."""
-    d = bosshost._json(bosshost.run(["coderplex-ctl", "sessions", "messages", boss, "--json"]), {})
-    msgs = d.get("messages", []) if isinstance(d, dict) else []
-    return [(m.get("messageId"), body(m), (m.get("createdAt") or 0) / 1000) for m in msgs
-            if (m.get("from") or {}).get("session", "").startswith(session[:8]) and (m.get("to") or {}).get("session") == boss]
+    return [(m.get("messageId"), body(m), (m.get("createdAt") or 0) / 1000) for m in _messages(boss) if _between(m, session, boss)]
+
+
+def dispatched_at(boss, session):
+    """When the latest dispatch went out, in seconds: the boss's last message to the session, else the session's creation."""
+    sent = [(m.get("createdAt") or 0) / 1000 for m in _messages(boss) if _between(m, boss, session)]
+    try:
+        created = datetime.fromisoformat(bosshost.Coderplex()._show(session).get("createdAt", "").replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        created = 0
+    return max(sent + [created])
 
 
 def pr_list(branch):
@@ -73,8 +91,8 @@ def pr_list(branch):
 def watch(ctx, host, session, branch="", poll_s=20, polls=540, out=print):
     boss = host.self_id()
     ev = lambda stage, note: bosskit.add_event(ctx, session, stage, note)
-    sent = max((e["at"] for e in bosskit.events(ctx.bdir) if e["ws"][:8] == session[:8] and e["stage"].lower() == "sent"), default=0)
-    seen = {i for i, _, at in inbound(boss, session) if not sent or at < sent}
+    since = dispatched_at(boss, session)
+    seen = {i for i, _, at in inbound(boss, session) if not since or at < since}
     prs = pr_list(branch) if branch else None
     pr_base = ready(prs) if prs is not None else None
     idle = 0
