@@ -36,6 +36,7 @@ test('the pane passes its workspace, and draws its inbox, its bosses, one WORKER
   // The engine stamps origin and presentation.
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
   expect(runs[0]?.slice(-4)).toEqual(['--cwd', '/w/boss', '--workspace', 'ws-me'])
+  expect(runs[0]?.slice(-6, -4)).toEqual(['--host-kind', 'superset'])
 
   const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)

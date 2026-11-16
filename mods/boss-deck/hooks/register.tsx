@@ -11,8 +11,10 @@ const TITLE = 'Boss'
 const WORKER_TITLE = 'Worker'
 // The kit root: $BOSS_KIT_HOME, else ~/.claude/boss-kit. A shell expands it so the mod needs no env access.
 const DATA_CMD = ['sh', '-c', 'exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/boss-deck-data.py" "$@"', 'boss-deck-data']
-// Logs one stage event for a workspace as this boss: its workspace id first, then boss-event's own arguments.
-const EVENT_CMD = ['sh', '-c', 'SUPERSET_WORKSPACE_ID="$1"; shift; export SUPERSET_WORKSPACE_ID; exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/boss-event" "$@"', 'boss-event']
+// Logs one stage event for a workspace as this boss: the variable that carries its id and the id, then boss-event's own arguments.
+const EVENT_CMD = ['sh', '-c', 'export "$1=$2"; shift 2; exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/boss-event" "$@"', 'boss-event']
+// The host adapter (bin/bosshost.py) for this session's host kind, then its own arguments: open, screen.
+const HOST_CMD = ['sh', '-c', 'BOSS_HOST_KIND="$1"; export BOSS_HOST_KIND; shift; exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/bosshost.py" "$@"', 'bosshost']
 const REFRESH_MS = 60_000
 // The worker view's FROM BOSS rows.
 const MSG_ROWS = 3
@@ -33,12 +35,23 @@ let loadedKit: string | undefined
 
 // Quiet by design: grey text, color only where it means something: stage marks and what needs attention.
 
-async function refresh($: EngineInterface, sessionStart = false, skipCache = false) {
-  // The session's own workspace and directory, so the script resolves the boss the session's shell does.
+type Self = { id?: string; kind?: 'superset' | 'coderplex'; idVar?: string; term?: string }
+/** This session on its host: a Paradev workspace, else a coderplex session; its own terminal (or agent tab), and the variable carrying its id. */
+async function self($: EngineInterface): Promise<Self> {
   const ws = await $.env.get('SUPERSET_WORKSPACE_ID')
-  // Its own terminal, so the boss's sessions list leaves it out.
-  const term = await $.env.get('SUPERSET_TERMINAL_ID')
-  const argv = [...DATA_CMD, ...(term ? ['--terminal', term] : []), '--cwd', await $.session.cwd(), ...(ws ? ['--workspace', ws] : []), ...(sessionStart ? ['--session-start'] : []), ...(skipCache ? ['--fresh'] : [])]
+  if (ws) return { id: ws, kind: 'superset', idVar: 'SUPERSET_WORKSPACE_ID', term: (await $.env.get('SUPERSET_TERMINAL_ID')) ?? undefined }
+  const cx = await $.env.get('CODERPLEX_SESSION_ID')
+  if (cx) return { id: cx, kind: 'coderplex', idVar: 'CODERPLEX_SESSION_ID', term: (await $.env.get('CODERPLEX_AGENT_PANE_KEY')) ?? undefined }
+  return {}
+}
+const kindArgs = (s: Self) => (s.kind ? ['--host-kind', s.kind] : [])
+const idArgs = (s: Self) => (s.id ? ['--workspace', s.id] : [])
+
+async function refresh($: EngineInterface, sessionStart = false, skipCache = false) {
+  // The session's own workspace (or session) and directory, so the script resolves the boss the session's shell does,
+  // and its own terminal, so the boss's sessions list leaves it out.
+  const me = await self($)
+  const argv = [...DATA_CMD, ...(me.term ? ['--terminal', me.term] : []), ...kindArgs(me), '--cwd', await $.session.cwd(), ...idArgs(me), ...(sessionStart ? ['--session-start'] : []), ...(skipCache ? ['--fresh'] : [])]
   const { exitCode, stdout, stderr } = await $.process.run(argv, { timeoutMs: 90_000 })
   const at = Math.floor((await $.clock.now()) / 1000)
   const fresh: Deck =
@@ -59,11 +72,11 @@ async function track($: EngineInterface, patch: Partial<Live> = {}) {
 
 /** The worker view's data; its task progress goes along for the boss to read. Opens the pane once a dispatch row exists. */
 async function workerRefresh($: EngineInterface, patch: Partial<Live> = {}) {
-  const ws = await $.env.get('SUPERSET_WORKSPACE_ID')
-  if (!ws) return
+  const me = await self($)
+  if (!me.id) return
   await track($, patch)
   const status = JSON.stringify(progress((await read($, live))?.tasks ?? []))
-  const argv = [...DATA_CMD, '--worker', '--workspace', ws, '--cwd', await $.session.cwd(), '--status', status]
+  const argv = [...DATA_CMD, ...kindArgs(me), '--worker', ...idArgs(me), '--cwd', await $.session.cwd(), '--status', status]
   const { exitCode, stdout, stderr } = await $.process.run(argv, { timeoutMs: 90_000 })
   const got: WorkerDeck | null = exitCode === 0 ? JSON.parse(stdout) : null
   loadedKit ??= got?.kit || undefined
@@ -76,8 +89,9 @@ async function workerRefresh($: EngineInterface, patch: Partial<Live> = {}) {
 
 /** Logs each message the boss just sent a worker as that workspace's "msg" event, for the worker's FROM BOSS. */
 async function logSent($: EngineInterface, command: string) {
-  const me = (await $.env.get('SUPERSET_WORKSPACE_ID')) ?? ''
-  for (const m of sentMessages(command)) await $.process.run([...EVENT_CMD, me, m.ws, 'msg', m.text], { cwd: await $.session.cwd(), timeoutMs: 20_000 })
+  const me = await self($)
+  for (const m of sentMessages(command))
+    await $.process.run([...EVENT_CMD, me.idVar ?? 'SUPERSET_WORKSPACE_ID', me.id ?? '', m.ws, 'msg', m.text], { cwd: await $.session.cwd(), timeoutMs: 20_000 })
 }
 
 async function openUrl($: EngineInterface, url: string) {
@@ -85,7 +99,7 @@ async function openUrl($: EngineInterface, url: string) {
 }
 
 async function openWorkspace($: EngineInterface, id: string) {
-  await $.process.run(['superset', 'workspaces', 'open', id, '--local'], { timeoutMs: 20_000 })
+  await $.process.run([...HOST_CMD, (await self($)).kind ?? '', 'open', id], { cwd: await $.session.cwd(), timeoutMs: 20_000 })
 }
 
 /** Unread mail now: the inbox dir only, so a prompt costs one listing. */
@@ -115,16 +129,12 @@ async function prView($: EngineInterface, p: Pr) {
 
 /** A workspace's details and its PR's, in one accordion; the proof links of both. */
 async function workerPeek($: EngineInterface, w: Worker) {
+  // The worker's screen where the host has one (superset); coderplex prints nothing, and its status file says what it is doing.
   const [read, pr] = await Promise.all([
-    w.id && w.term
-      ? $.process.run(['superset', 'terminals', 'read', '--workspace', w.id, '--terminal', w.term, '--max-lines', '400', '--json'], { timeoutMs: 20_000 })
-      : undefined,
+    w.id && w.term ? $.process.run([...HOST_CMD, (await self($)).kind ?? '', 'screen', w.id, w.term], { cwd: await $.session.cwd(), timeoutMs: 20_000 }) : undefined,
     w.pr ? prView($, w.pr).catch(() => [{ label: 'pr', value: 'could not load', color: 'error' }]) : [],
   ])
-  let screen = ''
-  try {
-    screen = JSON.parse(read?.stdout ?? '').text ?? ''
-  } catch {}
+  const screen = read?.exitCode === 0 ? read.stdout : ''
   const links = [...w.proof, ...(w.pr?.proof ?? [])].filter((l, i, all) => all.findIndex(m => m.url === l.url) === i)
   return { rows: workerDetails(w, screen, pr), links }
 }
@@ -132,9 +142,9 @@ async function workerPeek($: EngineInterface, w: Worker) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const local = await $.fs.read('CLAUDE.local.md').catch(() => '')
-    const ws = await $.env.get('SUPERSET_WORKSPACE_ID')
+    const ws = (await self($)).id
     // Not the boss (a copy of its CLAUDE.local.md, another workspace on its checkout, any other session): a Paradev
-    // workspace gets the worker view once a boss's ledger has its dispatch row; anything else stays quiet.
+    // workspace or coderplex session gets the worker view once a boss's ledger has its dispatch row; anything else stays quiet.
     if (!isBoss(local, ws)) {
       if (!ws) return next(e)
       role = 'worker'
@@ -186,7 +196,7 @@ export const register: Register = on => {
     const ran = await next(e)
     if (role !== 'boss') return ran
     if (!('deny' in ran) && !ran.isError) await logSent($, e.command)
-    if (/superset (terminals send|agents create)|gh pr (merge|edit|comment)|boss-sync/.test(e.command)) void refresh($, false, true)
+    if (/superset (terminals send|agents create)|coderplex-ctl sessions (send|create)|gh pr (merge|edit|comment)|boss-sync/.test(e.command)) void refresh($, false, true)
 
     return ran
   })
