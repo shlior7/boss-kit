@@ -82,7 +82,8 @@ class Superset(unittest.TestCase):
     def test_a_repo_match_beats_a_project_name_match(self):
         h = self.host({}, {"projects list": json.dumps([{"id": "p-fork", "name": "widgets", "repo": "https://github.com/jane/widgets"},
                                                         {"id": "p-w", "name": "acme-widgets", "repo": "git@github.com:acme/widgets.git"},
-                                                        {"id": "p-bare", "name": "gizmos", "repo": "-"}]),
+                                                        {"id": "p-scp", "name": "gadgets", "repo": "git@example.com:other.git"},
+                                                        {"id": "p-bare", "name": "gizmos", "repo": None}]),
                            "workspaces create": json.dumps({"id": "ws-new"})})
         h.create("acme/widgets", "fix/a", "do it")
         h.create("acme/gizmos", "fix/b", "do it")  # a project without a repo still matches by name
@@ -91,6 +92,12 @@ class Superset(unittest.TestCase):
         self.assertIn("--project p-bare ", made[1])
         with self.assertRaises(bosshost.Unsupported):
             h.create("acme/fork-of-nothing", "fix/c", "do it")
+        with self.assertRaises(bosshost.Unsupported):  # a repo that names something else never falls back to the name
+            h.create("acme/gadgets", "fix/d", "do it")
+        slug = h.slug
+        self.assertEqual([slug("https://github.com/acme/widgets.git/"), slug("git@github.com:acme/widgets.git"),
+                          slug("ssh://git@github.com/acme/widgets"), slug("acme/widgets"), slug("git@example.com:other.git"), slug("")],
+                         ["acme/widgets"] * 4 + ["", ""])
 
 
 if __name__ == "__main__":
