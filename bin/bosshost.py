@@ -1,27 +1,45 @@
 #!/usr/bin/env python3
-"""boss-kit host adapters: the one place scripts and the boss-deck mod talk to the host that runs the workers.
+"""boss-kit host plugins: what runs the workers is a plugin; the kit itself names none.
 
-Two hosts, same methods; get(cfg) picks one by bosskit.host_kind(cfg):
-  superset   Paradev (formerly Superset) CLI 2.x: workspaces with terminals; the commands are the ones the kit always ran
-  coderplex  coderplex-ctl: one session per worker (worktree + agent); messages queue until the agent is idle and wake it
+A host plugin is a folder with a host.json manifest, found in (first wins on a name clash):
+  $BOSS_HOST_PATH (os.pathsep-separated folders of plugins), $BOSS_HOME/hosts/, the kit's hosts/
 
-A worker is {id, name, branch, worktree, tags, terminals: [{id, title, agent: {state}}]}, agent state working | idle |
-blocked. A coderplex session has one agent, shown as one terminal, so every reader treats both hosts alike.
+  host.json    {"name", "description", "priority" (lower is tried first when detecting),
+                "session_env": [vars that hold this session's id on the host], "terminal_env": [the session's own terminal],
+                "cli": [commands or paths that show the host is installed, ~ expanded],
+                "queues": does a message wait for the agent to go idle (true) or can text sent mid-turn be dropped (false),
+                "prompt": the boss's host commands (default prompt.md), "watch": an own watcher script (optional),
+                "envelope_aliases": older envelope token prefixes this host's workers may still write (BOSS_ always counts),
+                "proof_links": [{"label", "pattern"}] proof URLs this host publishes, "defaults": the plugin's config,
+                "keywords": [words that name this host in text]; with its name, CLIs and env vars they keep it out of other hosts' bosses}
+  adapter.py   class Host(bosshost.Host), overriding what the host can do; the rest raises Unsupported
+  prompt.md    the commands the boss uses on this host, loaded after the boss prompt
+A boss uses exactly one host: config's "host" (the plugin name), else the session's (the pane passes $BOSS_HOST_KIND),
+else the first plugin, by priority, whose session_env is set, then whose cli is installed. Only that plugin's prompt,
+adapter, envelope aliases and proof links are used. A plugin's own settings live in config under hosts.<name>.
 
-usage: bosshost.py kind | self | host-id | workers [ID...] | send ID TEXT [TERMINAL] | rename ID NAME | open ID
-       bosshost.py screen ID TERMINAL     the terminal's screen text (superset); nothing on coderplex
+A worker is {id, name, branch, worktree, tags, terminals: [{id, title, agent: {state}}]}, agent state working | idle | blocked.
 """
+import importlib.machinery
+import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bosskit  # noqa: E402
 
+MANIFEST = "host.json"
+
+
+class Unsupported(Exception):
+    """The host cannot do this; the message says what to do instead."""
+
 
 def run(argv, timeout=40):
-    """stdout of a host command, '' when it fails or the CLI is missing."""
+    """stdout of a command, '' when it fails or is missing."""
     try:
         out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         return out.stdout if out.returncode == 0 else ""
@@ -36,174 +54,191 @@ def _json(raw, default):
         return default
 
 
-class Superset:
-    kind = "superset"
-    queues = False  # text sent mid-turn can be dropped: wake only an idle terminal
+def _list(v):
+    return [v] if isinstance(v, str) else list(v or [])
 
-    def __init__(self, cfg=None):
-        self.cfg = cfg or {}
-        self._host = None
+
+def plugin_dirs():
+    return [p for p in os.environ.get("BOSS_HOST_PATH", "").split(os.pathsep) if p] + \
+           [os.path.join(bosskit.home(), "hosts"), os.path.join(bosskit.KIT, "hosts")]
+
+
+def plugins():
+    """{name: manifest} of every installed host plugin, by priority; each manifest carries its folder as "dir"."""
+    found = {}
+    for root in plugin_dirs():
+        for d in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+            path = os.path.join(root, d, MANIFEST)
+            m = _json(bosskit._read(path), None)
+            if isinstance(m, dict) and m.get("name") and m["name"] not in found:
+                found[m["name"]] = {**m, "dir": os.path.join(root, d), "session_env": _list(m.get("session_env")),
+                                    "terminal_env": _list(m.get("terminal_env")), "cli": _list(m.get("cli"))}
+    return dict(sorted(found.items(), key=lambda kv: (kv[1].get("priority", 100), kv[0])))
+
+
+def keywords(manifest):
+    """Lower-case words that identify a host in text: its name, keywords, CLI names, env vars and envelope aliases."""
+    words = [manifest["name"], *_list(manifest.get("keywords")), *(os.path.basename(c) for c in manifest["cli"]),
+             *manifest["session_env"], *manifest["terminal_env"], *(f"{a}_WORKER_" for a in _list(manifest.get("envelope_aliases")))]
+    return {w.lower() for w in words if w}
+
+
+def foreign(name, text):
+    """The other installed hosts' keywords that *text* mentions (none of host *name*'s own): what would leak into its boss."""
+    ps = plugins()
+    own = keywords(ps[name]) if name in ps else set()
+    low = (text or "").lower()
+    return sorted({w for n, m in ps.items() if n != name for w in keywords(m) - own if w in low})
+
+
+def installed(manifest):
+    """The first of the plugin's CLIs found on PATH or on disk, else ''."""
+    for c in manifest["cli"]:
+        hit = shutil.which(c) or (os.path.expanduser(c) if os.path.sep in c and os.path.exists(os.path.expanduser(c)) else "")
+        if hit:
+            return hit
+    return ""
+
+
+def session_ids():
+    """[(plugin name, session id, terminal id)] of every plugin whose session_env is set, by priority."""
+    out = []
+    for name, m in plugins().items():
+        sid = next((os.environ[v] for v in m["session_env"] if os.environ.get(v)), "")
+        if sid:
+            out.append((name, sid, next((os.environ[v] for v in m["terminal_env"] if os.environ.get(v)), "")))
+    return out
+
+
+def self_id():
+    """This session's id on its host: $BOSS_SESSION_ID (the pane sets it), else the first plugin's session_env; '' outside any."""
+    if os.environ.get("BOSS_SESSION_ID"):
+        return os.environ["BOSS_SESSION_ID"]
+    ids = session_ids()
+    return ids[0][1] if ids else ""
+
+
+def kind(cfg=None):
+    """The one host this boss uses. A host named in config or by the pane must be installed: no silent fallback."""
+    ps = plugins()
+    for source, k in (("config's host", (cfg or {}).get("host")), ("$BOSS_HOST_KIND", os.environ.get("BOSS_HOST_KIND"))):
+        if k:
+            if k not in ps:
+                sys.exit(f"bosshost: {source} is {k!r}, but no host plugin has that name (installed: {', '.join(ps) or 'none'})")
+            return k
+    ids = session_ids()
+    if ids:
+        return ids[0][0]
+    hit = next((n for n, m in ps.items() if installed(m)), None)
+    if hit or ps:
+        return hit or next(iter(ps))
+    sys.exit(f"bosshost: no host plugin installed (looked in {', '.join(plugin_dirs())})")
+
+
+def load(manifest):
+    """The plugin's Host class."""
+    path = os.path.join(manifest["dir"], "adapter.py")
+    loader = importlib.machinery.SourceFileLoader(f"bosshost_{manifest['name']}", path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod.Host
+
+
+def get(cfg=None, name=None):
+    """The resolved host, ready to use."""
+    m = plugins()[name or kind(cfg)]
+    return load(m)(cfg or {}, m)
+
+
+class Host:
+    """What a host can do. Override what yours supports; the rest raises Unsupported with a hint."""
+
+    def __init__(self, cfg, manifest):
+        self.manifest = manifest
+        self.name = manifest["name"]
+        self.queues = bool(manifest.get("queues"))
+        self.root = cfg or {}
+        self.cfg = bosskit.deep_merge(manifest.get("defaults") or {}, (self.root.get("hosts") or {}).get(self.name) or {})
+
+    def _no(self, what, hint=""):
+        raise Unsupported(f"{self.name}: {what} is not supported" + (f"; {hint}" if hint else ""))
 
     def self_id(self):
-        return os.environ.get("SUPERSET_WORKSPACE_ID", "")
+        return next((os.environ[v] for v in self.manifest["session_env"] if os.environ.get(v)), "") or os.environ.get("BOSS_SESSION_ID", "")
+
+    def terminal_id(self):
+        return next((os.environ[v] for v in self.manifest["terminal_env"] if os.environ.get(v)), "")
 
     def host_id(self):
-        if self._host is None:
-            self._host = os.environ.get("BOSS_HOST") or self.cfg.get("superset_host") or ""
-            if not self._host:
-                d = _json(run(["superset", "hosts", "list", "--json"]), [])
-                d = d if isinstance(d, list) else d.get("hosts", [])
-                self._host = d[0].get("id", "") if d and isinstance(d[0], dict) else ""
-        return self._host
+        return ""
 
+    def prompt(self):
+        return bosskit._read(os.path.join(self.manifest["dir"], self.manifest.get("prompt") or "prompt.md"))
+
+    def watch_script(self):
+        w = self.manifest.get("watch")
+        return os.path.join(self.manifest["dir"], w) if w else ""
+
+    def envelope_prefixes(self):
+        return ["BOSS"] + [p for p in _list(self.manifest.get("envelope_aliases")) if p.isidentifier()]
+
+    def proof_links(self):
+        return [(p["label"], p["pattern"]) for p in self.manifest.get("proof_links") or [] if p.get("label") and p.get("pattern")]
+
+    def detect(self):
+        """What onboarding shows for this host: installed CLI, whether it answers, this session's id on it."""
+        return {"cli": installed(self.manifest), "ok": bool(installed(self.manifest)), "session": self.self_id() if self.manifest["session_env"] and any(os.environ.get(v) for v in self.manifest["session_env"]) else ""}
+
+    # ---- workers -------------------------------------------------------------------------
     def workers(self, ids=None):
-        """Every workspace on the host (the snapshot), with its tags and worktree from `workspaces list`."""
-        spaces = _json(run(["superset", "snapshot", "--host", self.host_id(), "--json"]), {})
-        spaces = spaces.get("workspaces", []) if isinstance(spaces, dict) else []
-        rows = _json(run(["superset", "workspaces", "list", "--host", self.host_id(), "--json"]), [])
-        listed = {w["id"]: w for w in rows if isinstance(w, dict) and w.get("id")} if isinstance(rows, list) else {}
-        out = []
-        for w in spaces:
-            info = listed.get(w.get("id"), {})
-            out.append({**w, "tags": [t.strip() for t in (info.get("tags") or "").split(",") if t.strip()],
-                        "worktree": info.get("worktreePath") or "", "terminals": w.get("terminals") or []})
-        return out
+        self._no("listing workers")
 
-    def worker(self, ws):
-        """One workspace from its own snapshot (cheaper than the host's), or {}."""
-        spaces = _json(run(["superset", "snapshot", "--workspace", ws, "--json"], timeout=20), {})
-        spaces = spaces.get("workspaces", []) if isinstance(spaces, dict) else []
-        return next((w for w in spaces if w.get("id") == ws), {})
+    def worker(self, wid):
+        return next((w for w in self.workers([wid]) if w.get("id", "").startswith(wid[:8]) or wid.startswith(w.get("id", "\0"))), {})
 
     def by_branch(self, branch):
-        """The local workspace on *branch*, {id, worktree}, or None."""
-        rows = _json(run(["superset", "workspaces", "list", "--local", "--json"]), [])
-        rows = rows if isinstance(rows, list) else rows.get("workspaces", [])
-        w = next((w for w in rows if w.get("branch") == branch and not w.get("archivedAt")), None)
-        return {"id": w["id"], "worktree": w.get("worktreePath") or ""} if w else None
+        w = next((w for w in self.workers() if w.get("branch") == branch), None)
+        return {"id": w["id"], "worktree": w.get("worktree") or ""} if w else None
 
-    def send(self, ws, text, terminal=None):
-        """Clear the input line (an idle session often shows an auto-suggestion), then submit *text*."""
-        base = ["superset", "terminals", "send", "--workspace", ws, "--terminal", terminal or "", "--local"]
-        subprocess.run(base + ["--keys", "ctrl+u"], check=True, capture_output=True)
-        subprocess.run(base + ["--text", text], check=True, capture_output=True)
+    def create(self, repo, branch, prompt, model="", effort="", name="", folder=""):
+        """Start a worker on a new branch with *prompt*; returns its id."""
+        self._no("creating a worker")
 
-    def rename(self, ws, name):
-        run(["superset", "workspaces", "update", ws, "--host", self.host_id(), "--name", name], timeout=20)
+    def send(self, wid, text, terminal=None):
+        self._no("sending a message")
 
-    def open(self, ws):
-        run(["superset", "workspaces", "open", ws, "--local"], timeout=20)
+    def rename(self, wid, name):
+        self._no("renaming")
 
-    def screen(self, ws, terminal):
-        out = _json(run(["superset", "terminals", "read", "--workspace", ws, "--terminal", terminal, "--max-lines", "400", "--json"], timeout=20), {})
-        return out.get("text", "") if isinstance(out, dict) else ""
+    def move(self, wid, folder):
+        self._no("folders")
 
-    def archive_cmd(self, ws):
-        return f"superset workspaces archive {ws} --local"
+    def open(self, wid):
+        self._no("opening a worker")
 
+    def archive(self, wid):
+        self._no("archiving")
 
-class Coderplex:
-    kind = "coderplex"
-    queues = True  # `sessions send` waits for the agent to go idle and wakes a stopped one
+    def archive_cmd(self, wid):
+        return f"boss-host archive {wid}"
 
-    def __init__(self, cfg=None):
-        self.cfg = cfg or {}
+    def screen(self, wid, terminal):
+        """The worker's screen text, or None when the host cannot read it."""
+        return None
 
-    def self_id(self):
-        return os.environ.get("CODERPLEX_SESSION_ID", "")
+    def messages(self, boss, wid):
+        """[(message id, text, sent at in seconds)] from the worker to the boss, or None when the host has no messages."""
+        return None
 
-    def host_id(self):
-        return "local"
+    def dispatched_at(self, boss, wid):
+        """When the latest dispatch to the worker went out, in seconds (0 = unknown): messages before it are old."""
+        return 0
 
-    def _ls(self):
-        d = _json(run(["coderplex-ctl", "sessions", "ls", "--json"]), {})
-        return d.get("sessions", []) if isinstance(d, dict) else []
+    def close(self, wid, terminals, dry=False):
+        """Close these terminals of the worker; returns what it did, one line each."""
+        self._no("closing terminals", "archive the worker instead")
 
-    def _show(self, sid):
-        d = _json(run(["coderplex-ctl", "sessions", "show", sid, "--json"], timeout=20), {})
-        s = (d.get("sessions") or [{}])[0] if isinstance(d, dict) else {}
-        return s if isinstance(s, dict) else {}
-
-    @staticmethod
-    def state(phase):
-        """agentPhase as an agent state: working; idle (no phase, or "review": its turn ended and it waits for a reader);
-        anything else is waiting on someone: blocked."""
-        # ponytail: seen working, review and null (daemon 0.522.0); a permission prompt's phase is assumed to be none of them
-        return "working" if phase == "working" else "idle" if phase in (None, "", "idle", "review", "ready", "done") else "blocked"
-
-    def _worker(self, s):
-        """A session as a worker: its one agent is its one terminal (none for a shell session)."""
-        mode = s.get("agentMode") or s.get("agent") or ""
-        agent = mode and mode != "shell"
-        return {"id": s.get("id", ""), "name": s.get("title") or s.get("customName") or "", "branch": s.get("branch") or "",
-                "worktree": s.get("worktree") or "", "tags": [s["section"]] if s.get("section") else [],
-                "link": s.get("link") or "",
-                "terminals": [{"id": f"agent-1:{mode}", "title": s.get("title") or "", "agent": {"state": self.state(s.get("agentPhase"))}}] if agent else []}
-
-    def workers(self, ids=None):
-        """The sessions whose id starts with one of *ids* (all when None), each read in full for its agent phase."""
-        keep = [s["id"] for s in self._ls() if s.get("id") and (ids is None or any(s["id"].startswith(i[:8]) or i.startswith(s["id"]) for i in ids))]
-        return [self._worker(s) for s in map(self._show, keep) if s.get("id")]
-
-    def worker(self, sid):
-        s = self._show(sid)
-        return self._worker(s) if s.get("id") else {}
-
-    def by_branch(self, branch):
-        s = next((s for s in self._ls() if s.get("branch") == branch), None)
-        return {"id": s["id"], "worktree": self._show(s["id"]).get("worktree") or ""} if s else None
-
-    def send(self, sid, text, terminal=None):
-        """Queue *text* for the session's agent; it arrives as a prompt once the agent is idle. *terminal* is a tab id."""
-        subprocess.run(["coderplex-ctl", "sessions", "send", sid, "--text", text] + (["--tab", terminal.split(":")[0]] if terminal else []),
-                       check=True, capture_output=True)
-
-    def rename(self, sid, name):
-        run(["coderplex-ctl", "sessions", "rename", sid, "--name", name], timeout=20)
-
-    def open(self, sid):
-        run(["open", f"coderplex://session/local/{sid}"], timeout=10)
-
-    def screen(self, sid, terminal):
-        return None  # no screen read on coderplex: the worker's own .boss-worker/status.json says what it is doing
-
-    def archive_cmd(self, sid):
-        return f"coderplex-ctl sessions archive {sid}"  # never --ttl without the user's OK: it deletes the session
-
-
-def get(cfg=None, kind=None):
-    return {"superset": Superset, "coderplex": Coderplex}[kind or bosskit.host_kind(cfg)](cfg)
-
-
-def _cfg():
-    try:
-        return bosskit.load().cfg
-    except SystemExit:  # no project here: the host still resolves from the session
-        return {}
-
-
-def main(argv):
-    cmd, args = (argv[0], argv[1:]) if argv else ("kind", [])
-    host = get(_cfg())
-    if cmd == "kind":
-        print(host.kind)
-    elif cmd == "self":
-        print(host.self_id())
-    elif cmd == "host-id":
-        print(host.host_id())
-    elif cmd == "workers":
-        print(json.dumps(host.workers(args or None), indent=1))
-    elif cmd == "send" and len(args) in (2, 3):
-        host.send(*args)
-    elif cmd == "rename" and len(args) == 2:
-        host.rename(*args)
-    elif cmd == "open" and len(args) == 1:
-        host.open(args[0])
-    elif cmd == "screen" and len(args) == 2:
-        print(host.screen(*args) or "")
-    else:
-        sys.exit(__doc__)
-
-
-if __name__ == "__main__":
-    main(sys.argv[1:])
+    def close_dead(self, wids, dry=False):
+        """Close the leftovers of ended sessions in these workers (all when None); returns lines."""
+        self._no("closing ended sessions")

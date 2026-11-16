@@ -1,6 +1,6 @@
 #!/bin/bash
-# Feeds `boss-watch-done.sh --sig` fixture screens: fire, fire, no fire, no fire, no fire (quoted done-message), then same-task-new-summary must differ.
-S="$(cd "$(dirname "$0")" && pwd)/boss-watch-done.sh"; fail=0
+# Feeds `watch.sh --sig` fixture screens: fire, fire, no fire, no fire, no fire (quoted done-message), then same-task-new-summary must differ.
+S="$(cd "$(dirname "$0")/.." && pwd)/watch.sh"; fail=0
 check(){ local name=$1 want=$2 got; got=$("$S" --sig)
   if [ "$got" = "$want" ]; then echo "ok   $name -> ${got:-no fire}"; else echo "FAIL $name: want '${want:-no fire}', got '${got:-no fire}'"; fail=1; fi; }
 check "one-line envelope in a box with a side pane" "DONE|demo-task|did it files: a.sh checks" <<'X'

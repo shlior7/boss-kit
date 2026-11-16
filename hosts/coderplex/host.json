@@ -1,0 +1,25 @@
+{
+  "name": "coderplex",
+  "description": "coderplex-ctl: a worker is a session (its own worktree and agent); messages queue until the agent is idle",
+  "priority": 20,
+  "keywords": [
+    "coderplex"
+  ],
+  "session_env": [
+    "CODERPLEX_SESSION_ID"
+  ],
+  "terminal_env": [
+    "CODERPLEX_AGENT_PANE_KEY"
+  ],
+  "cli": [
+    "coderplex-ctl"
+  ],
+  "queues": true,
+  "prompt": "prompt.md",
+  "envelope_aliases": [],
+  "proof_links": [],
+  "defaults": {
+    "target": "local",
+    "agent": "claude"
+  }
+}

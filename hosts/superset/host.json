@@ -1,0 +1,35 @@
+{
+  "name": "superset",
+  "description": "Paradev (formerly Superset) CLI 2.x: a worker is a workspace (a worktree with terminals)",
+  "priority": 10,
+  "keywords": [
+    "superset",
+    "paradev"
+  ],
+  "session_env": [
+    "SUPERSET_WORKSPACE_ID"
+  ],
+  "terminal_env": [
+    "SUPERSET_TERMINAL_ID"
+  ],
+  "cli": [
+    "superset",
+    "~/.superset/bin/superset"
+  ],
+  "queues": false,
+  "prompt": "prompt.md",
+  "watch": "watch.sh",
+  "envelope_aliases": [
+    "SUPERSET"
+  ],
+  "proof_links": [
+    {
+      "label": "page",
+      "pattern": "^https://app\\.superset\\.sh/page/"
+    }
+  ],
+  "defaults": {
+    "host_id": "",
+    "project": ""
+  }
+}

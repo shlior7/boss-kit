@@ -1,5 +1,6 @@
 #!/bin/bash
-# boss-watch-done.sh <workspaceId> <terminalId> [<branch>]   (run with run_in_background; never edit while one runs)
+# watch.sh <workspaceId> <terminalId> [<branch>]   the superset host plugin's watcher, started by `boss-host watch`
+# (run with run_in_background; never edit while one runs)
 # The boss ALWAYS watches for done with this script, never `superset terminals wait --match`. Three facts about the screen:
 #  1. Claude Code draws the whole reply box at once, so the envelope's first line can land 48 rows above the bottom,
 #     outside a `--max-lines 30` window (a one-line regex timed out at 30 and matched at once at 60).
@@ -12,14 +13,14 @@
 # templates whose field value is <placeholder> or literally "..." are skipped); (b) the optional <branch> adds a check that does not depend on the screen:
 # about every 3rd poll, `gh pr list --head <branch> --state all` fires "PR READY #n" when a PR gets a comment holding a DONE
 # envelope, becomes non-draft or merges, and was not so at start (run from the repo, or set GH_REPO). Workers keep their PR
-# draft and post the envelope there; the boss marks it ready. `--ready < pr-list.json` prints the numbers (bin/test-boss-watch.sh).
+# draft and post the envelope there; the boss marks it ready. `--ready < pr-list.json` prints the numbers (tests/test-watch.sh).
 # Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen, 135 (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
 # On a fire it logs the stage to the boss's events.jsonl through bin/boss-event (DONE, BLOCKED, PR READY or merged), for the boss-deck stages.
 # Env: BOSS_HOST (default: first host). Poll 20 s, timeout 3 h. Needs superset CLI, jq (gh for <branch>).
-# Superset only: it reads the screen. On coderplex the worker sends its envelope as a message; bin/boss-watch-msg watches that.
+# It reads the screen: this host's workers leave the envelope there.
 # `sig` ignores any line whose box border starts past column 20 (the boss's own message box, which may quote a done-message with real values).
 # `sig` is "DONE|<id>|<first 30 chars of summary>" (or BLOCKED), so a new envelope with an already-seen task id still differs from the
-# baseline (a dispatch message that quotes the done-message once poisoned it). `boss-watch-done.sh --sig < screen` prints it, nothing if none (bin/test-boss-watch.sh).
+# baseline (a dispatch message that quotes the done-message once poisoned it). `watch.sh --sig < screen` prints it, nothing if none (tests/test-watch.sh).
 sig(){ LC_ALL=C awk '/^ {21,}(│|╭|╰)/ { l[NR] = ""; next }   # the boss'\''s own message box is drawn past column 20: never an envelope
   { gsub(/││.*$/, ""); gsub(/│|─|╭|╮|╰|╯|⏺/, " "); l[NR]=$0 }
   END { for (n = NR; n > 0; n--) if (match(l[n], /(BOSS|SUPERSET)_WORKER_(DONE|BLOCKED)/)) {
@@ -39,7 +40,7 @@ pick(){ jq -r '.[] | select(.state == "MERGED" or (.state == "OPEN" and (.isDraf
 [ "$1" = --ready ] && { pick; exit; }
 W=$1; T=$2; B=$3
 # log a stage for the boss-deck; a failure here never stops the watcher
-ev(){ "$(dirname "$0")/boss-event" "$W" "$@" >/dev/null 2>&1 || true; }
+ev(){ "${BOSS_BIN:-$(dirname "$0")/../../bin}/boss-event" "$W" "$@" >/dev/null 2>&1 || true; }
 H=${BOSS_HOST:-$(superset hosts list --json | jq -r 'if type=="array" then .[0].id else .hosts[0].id end')}
 scr(){ superset terminals read --workspace "$W" --host "$H" --terminal "$T" --max-lines 600 --json 2>/dev/null | jq -r '.text // empty'; }
 # numbers of this branch's PRs that count as done (pick); fails when gh does
