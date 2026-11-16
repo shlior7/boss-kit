@@ -7,6 +7,7 @@ still counts as host_id.
 """
 import json
 import os
+import re
 import subprocess
 
 import bosshost
@@ -60,16 +61,20 @@ class Host(bosshost.Host):
     def _project(self, repo):
         if self.cfg.get("project"):
             return self.cfg["project"]
-        norm = lambda u: (u or "").lower().rstrip("/").removesuffix(".git")
-        want = norm(repo)
+        want = self.slug(repo) or repo.lower()
         ps = [p for p in _json(self.sh("projects", "list", "--json"), []) if isinstance(p, dict) and p.get("id")]
-        url = lambda p: norm(p.get("repo"))
-        # its repo first; a name match only for a project that has no repo to tell it apart
-        hit = next((p for p in ps if url(p) == want or url(p).endswith(("/" + want, ":" + want))), None) or \
-            next((p for p in ps if "/" not in url(p) and p.get("name", "").lower() == want.rsplit("/", 1)[-1]), None)
+        # its repo first; a name match only for a project that has no repository at all
+        hit = next((p for p in ps if p.get("repo") and self.slug(p["repo"]) == want), None) or \
+            next((p for p in ps if not p.get("repo") and p.get("name", "").lower() == want.rsplit("/", 1)[-1]), None)
         if hit:
             return hit["id"]
         self._no(f"creating a workspace for {repo!r}", "no Paradev project has that repo: set hosts.superset.project")
+
+    @staticmethod
+    def slug(remote):
+        """owner/repo of an https, ssh or scp-style remote, or of owner/repo itself; '' when it names none."""
+        m = re.search(r"([^/:@\s]+)/([^/:\s]+?)(?:\.git)?/?$", (remote or "").strip().lower())
+        return f"{m.group(1)}/{m.group(2)}" if m else ""
 
     def create(self, repo, branch, prompt, model="", effort="", name="", folder=""):
         argv = [self.cli, "workspaces", "create", "--local", "--project", self._project(repo), "--branch", branch,
