@@ -2,7 +2,9 @@
 # boss-init <project> [--repo owner/repo] [--base main] [--me github-login] [--host PLUGIN] [--worktree DIR]
 # Scaffolds $BOSS_HOME/<project>/ (default ~/.claude/boss) from the kit's projects/_template:
 # BOSS.md, config.json, ledger.md, lessons.md, prompts/. Seeds $BOSS_HOME/lessons.md (shared
-# lessons) on first use. --worktree writes DIR/.boss so that worktree resolves to this project.
+# lessons) on first use. --worktree writes DIR/.boss so that worktree resolves to this project, and adds the host
+# plugin's prompt import after the template line of DIR/CLAUDE.local.md when that file imports the template without it.
+# It prints the CLAUDE.local.md that makes a worktree the boss (imports form, the host's prompt right after the template).
 # Project data is local: it lives outside the kit and is never pushed anywhere.
 set -euo pipefail
 KIT=${BOSS_KIT_HOME:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -34,12 +36,29 @@ c.update({k: v for k, v in (("repo", repo), ("base_branch", base), ("me", me), (
 json.dump(c, open(p, "w"), indent=2); open(p, "a").write("\n")
 PY
 [ -n "$WT" ] && printf 'project: %s\n' "$NAME" > "$WT/.boss"
+LOCAL_MD=$(python3 - "$KIT" "$HOME_DIR" "$NAME" "$HOST" "$WT" <<'PY'
+import os, sys
+kit, h, name, host, wt = sys.argv[1:]
+sys.path.insert(0, os.path.join(kit, "bin"))
+import bosshost, bosskit
+host = host or bosshost.kind({})
+path = os.path.join(wt, "CLAUDE.local.md") if wt else ""
+text = bosskit._read(path) if path else ""
+if text and bosskit.with_host_import(text, host) != text:
+    open(path, "w").write(bosskit.with_host_import(text, host))
+    print(f"(added the {host} host prompt import to {path})", file=sys.stderr)
+print(bosskit.boss_local_md(h, kit, name, host, "<its id: bin/boss-host self>"))
+PY
+)
 cat <<MSG
 Created $DEST
 Next:
   1. Fill in $DEST/BOSS.md and $DEST/config.json (repo, base_branch, me, host, tracker);
      \`bosskit.py config show\` prints the resolved config and where each value comes from.
-  2. In the worktree that will be the boss, add a gitignored CLAUDE.local.md headed
-     '# Boss workspace <its id: bin/boss-host self>' (see README: Make a worktree the boss).
+  2. In the worktree that will be the boss, add a gitignored CLAUDE.local.md (or run the /boss skill there instead of
+     the imports; see README: Make a worktree the boss):
+
+$(printf '%s\n' "$LOCAL_MD" | sed '/./s/^/     /')
+
   3. Project resolution: \$BOSS_PROJECT, then the worktree's .boss file, then its git remote vs config.repo.
 MSG

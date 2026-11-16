@@ -126,8 +126,9 @@ def boss_id(cwd=None, h=None):
     return max(known)[1] if known else "wt-" + hashlib.sha1(wt.encode()).hexdigest()[:8]
 
 
-def load(cwd=None, name=None, make=True):
-    """The resolved project and boss; make=False creates no folders (config show and set's dry run)."""
+def load(cwd=None, name=None, make=True, resolve_host=True):
+    """The resolved project and boss; make=False creates no folders (config show and set's dry run), resolve_host=False
+    leaves host '' (config set, which must repair a config naming a removed plugin)."""
     h = home()
     name = name or project_name(cwd, h)
     pdir = os.path.join(h, name)
@@ -138,7 +139,7 @@ def load(cwd=None, name=None, make=True):
         os.makedirs(os.path.join(bdir, d), exist_ok=True)
     layers = config_layers(h, name, bid)
     cfg = merged(layers)
-    return SimpleNamespace(home=h, name=name, cfg=cfg, layers=layers, host=host_kind(cfg), pdir=pdir, bid=bid, bdir=bdir,
+    return SimpleNamespace(home=h, name=name, cfg=cfg, layers=layers, host=host_kind(cfg) if resolve_host else "", pdir=pdir, bid=bid, bdir=bdir,
                            worktree=worktree(cwd), workspace="" if bid.startswith("wt-") else bid,
                            cache=os.path.join(bdir, "cache"), inbox=os.path.join(bdir, "inbox"))
 
@@ -196,7 +197,7 @@ def sources(layers):
     def walk(d, layer, prefix=""):
         for k, v in d.items():
             key = prefix + k
-            if isinstance(v, dict) and v:
+            if isinstance(v, dict) and (v or any(o.startswith(key + ".") for o in out)):  # {} over a dict changes nothing
                 for old in [o for o in out if o == key]:  # a dict replaces a scalar set lower down
                     del out[old]
                 walk(v, layer, key + ".")
@@ -244,6 +245,8 @@ def set_config(layers, level, change, apply=False, now=None):
     if not path:
         sys.exit(f"bosskit: no {level} layer here (boss needs a resolved boss, project a resolved project)")
     new = [(l, p, deep_merge(d, change) if l == level else d) for l, p, d in layers]
+    if merged(new).get("host"):
+        host_kind(merged(new))  # the proposed host must be installed: exits naming the installed ones
     body = next(d for l, _, d in new if l == level)
     text = show_config(new) + f"\n\n{'wrote' if apply else 'would write'} {path}:\n" + json.dumps(body, indent=1)
     if apply:
@@ -275,6 +278,24 @@ def boss_folder(wt):
     domain = boss_domain(wt)
     m = FOLDER.search(_read(os.path.join(wt, "CLAUDE.local.md"))) if domain else None
     return m.group(1) if m else domain
+
+
+def with_host_import(text, host):
+    """CLAUDE.local.md *text* with host plugin *host*'s prompt imported on the line after the template's (same kit path):
+    a boss that imports the template directly needs its host commands too. Unchanged without a template line, or with a
+    host prompt already imported."""
+    if re.search(r"^@\S*/hosts/[^/\s]+/prompt\.md[ \t]*$", text, re.M):
+        return text
+    m = re.search(r"^(@\S*/)BOSS-template\.md[ \t]*$", text, re.M)
+    return text[:m.end()] + f"\n{m.group(1)}hosts/{host}/prompt.md" + text[m.end():] if m else text
+
+
+def boss_local_md(h, kit, project, host, sid=""):
+    """A boss worktree's CLAUDE.local.md, imports form: the marker, the template, the host's prompt, the project's files."""
+    home_dir = os.path.expanduser("~")
+    t = lambda p: "~" + p[len(home_dir):] if p.startswith(home_dir + os.sep) else p
+    return with_host_import(f"# Boss workspace {sid}".rstrip() + f"\n\n@{t(kit)}/BOSS-template.md\n@{t(h)}/{project}/BOSS.md\n"
+                            f"@{t(h)}/{project}/lessons.md\n@{t(h)}/lessons.md\n", host)
 
 
 def is_boss(ctx):
@@ -438,9 +459,11 @@ def for_host(host, text, what):
         return (f"(Your host is {host}: {len(lines) - len(keep)} line(s) of {what} are about another host and are left out.)\n\n"
                 + "\n".join(keep) + "\n")
     keep = [e for _, _, e in entries if not bosshost.foreign(host, e)]
-    head = text[:text.index(entries[0][1])] if entries else ""
-    return (f"(Your host is {host}: {len(entries) - len(keep)} of {len(entries)} {what} are about another host and are left out.)\n\n"
-            + head + "\n\n".join(keep) + "\n")
+    lines = text[:text.index(entries[0][1])].splitlines()  # the preamble before the first entry loses its lines
+    head = [l for l in lines if not bosshost.foreign(host, l)]
+    gone = f", and {len(lines) - len(head)} line(s) before them" if len(head) < len(lines) else ""
+    return (f"(Your host is {host}: {len(entries) - len(keep)} of {len(entries)} {what} are about another host and are left out{gone}.)\n\n"
+            + "".join(l + "\n" for l in head) + "\n\n".join(keep) + "\n")
 
 
 def instructions(ctx):
@@ -525,7 +548,7 @@ def config_cmd(args):
         if level == "user":  # needs no project: the user layer is shared by all of them
             layers = [("kit", "", DEFAULTS), ("user", layer_path(home(), "user"), _json_file(layer_path(home(), "user")))]
         else:
-            layers = load(make="--apply" in args).layers
+            layers = load(make="--apply" in args, resolve_host=False).layers
         return set_config(layers, level, parse_sets(pairs), "--apply" in args)
     sys.exit(config_cmd.__doc__)
 

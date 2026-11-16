@@ -72,5 +72,26 @@ class Superset(unittest.TestCase):
         self.assertEqual([l for l, _ in h.proof_links()], ["page"])
 
 
+    def test_config_host_id_beats_the_env_and_the_watcher_gets_what_the_adapter_resolved(self):
+        os.environ["BOSS_HOST"] = "env-host"
+        h = self.host({"hosts": {"superset": {"host_id": "cfg-host"}}}, {})
+        self.assertEqual(h.host_id(), "cfg-host")
+        self.assertEqual(h.watch_env(), {"BOSS_HOST": "cfg-host", "BOSS_HOST_CLI": os.path.join(self.tmp, "stubs", "superset")})
+        self.assertEqual(bosshost.get({}, "superset").host_id(), "env-host")  # no host_id: the env, as before
+
+    def test_a_repo_match_beats_a_project_name_match(self):
+        h = self.host({}, {"projects list": json.dumps([{"id": "p-fork", "name": "widgets", "repo": "https://github.com/jane/widgets"},
+                                                        {"id": "p-w", "name": "acme-widgets", "repo": "git@github.com:acme/widgets.git"},
+                                                        {"id": "p-bare", "name": "gizmos", "repo": "-"}]),
+                           "workspaces create": json.dumps({"id": "ws-new"})})
+        h.create("acme/widgets", "fix/a", "do it")
+        h.create("acme/gizmos", "fix/b", "do it")  # a project without a repo still matches by name
+        made = [c for c in self.logged() if "workspaces create" in c]
+        self.assertIn("--project p-w ", made[0])
+        self.assertIn("--project p-bare ", made[1])
+        with self.assertRaises(bosshost.Unsupported):
+            h.create("acme/fork-of-nothing", "fix/c", "do it")
+
+
 if __name__ == "__main__":
     unittest.main()

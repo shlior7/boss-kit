@@ -23,8 +23,8 @@ class Coderplex(unittest.TestCase):
     def tearDown(self):
         self.env.stop()
 
-    def ctl(self, cases):
-        stubs = fake_cli(self.tmp, "coderplex-ctl", cases)
+    def ctl(self, cases, fails=()):
+        stubs = fake_cli(self.tmp, "coderplex-ctl", cases, fails)
         p = mock.patch.dict(os.environ, {"PATH": f"{stubs}:/usr/bin:/bin"})
         p.start()
         self.addCleanup(p.stop)
@@ -69,6 +69,22 @@ class Coderplex(unittest.TestCase):
             "sessions show aaaa1111": json.dumps({"sessions": [{"id": "aaaa1111", "createdAt": "1970-01-01T00:00:02Z"}]})})
         self.assertEqual(h.messages("b0550000", "aaaa1111"), [("m3", "BOSS_WORKER_DONE\ntask: fix-1\nsummary: ok", 9000)])
         self.assertEqual(h.dispatched_at("b0550000", "aaaa1111"), 5000)  # the boss's last message, not the session's creation
+
+    def test_a_failed_read_is_not_a_gone_session(self):
+        ls = lambda *ids: json.dumps({"sessions": [{"id": i} for i in ids]})
+        self.assertIsNone(self.ctl({"sessions ls": ls("aaaa1111")}).worker("aaaa1111"))  # show failed, the list still has it
+        self.assertEqual(self.ctl({"sessions ls": ls("bbbb2222")}).worker("aaaa1111"), {})  # show failed, the list confirms it is gone
+        self.assertIsNone(self.ctl({}).worker("aaaa1111"))  # neither answered
+        self.assertEqual(self.ctl({"sessions show": json.dumps({"sessions": []})}).worker("aaaa1111"), {})  # show answered: none
+
+    def test_a_failed_move_fails_create_and_names_the_session(self):
+        h = self.ctl({"sessions create": json.dumps({"created": {"id": "f00d0001"}})}, fails=("sessions move", "sessions rename"))
+        with self.assertRaises(bosshost.Unsupported) as e:
+            h.create("acme/widgets", "probe", "do it", folder="Ops")
+        self.assertIn("sessions move failed: error: sessions move failed", str(e.exception))
+        self.assertIn("session f00d0001 was created; file it with: boss-host move f00d0001 Ops", str(e.exception))
+        with self.assertRaises(bosshost.Unsupported):
+            h.rename("f00d0001", "probe")
 
 
 if __name__ == "__main__":
