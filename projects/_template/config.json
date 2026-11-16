@@ -3,6 +3,7 @@
   "base_branch": "main",
   "me": "your-github-login",
   "extra_prs": [],
+  "host": "",
   "superset_host": "",
   "tracker": {
     "type": "none",

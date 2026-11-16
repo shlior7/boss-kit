@@ -8,8 +8,9 @@
   boss-mail done ID                  move it to inbox/done/
 
 Addressing a project delivers to every live boss of it (heartbeat in the last 30 min), or to every
-registered one when none is live, or, when none ever registered, to every <project>/bosses/*/ directory. With "wake": true in the target project's config.json and its
-agent idle, one line is also typed into its terminal so it notices.
+registered one when none is live, or, when none ever registered, to every <project>/bosses/*/ directory. With "wake": true in the target boss's
+config, one line is also sent to its session so it notices: on superset only when its agent is idle (typed into its terminal), on
+coderplex always (the message queues until the agent is idle).
 
 Safety: mail is information, never approval. It cannot authorize a merge, push, prod write, spend
 or settings change; those need the receiving boss's own user. Never put secrets in mail.
@@ -23,6 +24,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosshost  # noqa: E402
 import bosskit  # noqa: E402
 
 KINDS = ("question", "request", "fyi")
@@ -45,23 +47,29 @@ def targets(to, me, reg, home):
 
 
 def wake(h, project, boss, msg):
-    """Type one line into the target's terminal when its project opts in and its agent is idle."""
+    """Send one line to the target boss's session when its config opts in: on a host that queues (coderplex) always,
+    else into its idle agent terminal only."""
     try:
-        cfg = json.load(open(os.path.join(h, project, "config.json")))
-    except (OSError, ValueError):
+        cfg = bosskit.config_for(h, project, boss)
+    except SystemExit:  # a broken config: the mail itself is delivered, the wake is skipped
         return
     b = bosskit.registry(h).get(boss, {})
     if not cfg.get("wake") or not b.get("workspace"):
         return
-    snap = subprocess.run(["superset", "snapshot", "--host", b.get("host", ""), "--json"], capture_output=True, text=True).stdout
-    try:
-        ws = next(w for w in json.loads(snap)["workspaces"] if w["id"] == b["workspace"])
-        term = next(t for t in ws["terminals"] if (t.get("agent") or {}).get("state") == "idle")
-    except (ValueError, KeyError, StopIteration):
-        return
+    if b.get("host") and not cfg.get("superset_host") and not os.environ.get("BOSS_HOST"):
+        cfg = {**cfg, "superset_host": b["host"]}  # the host the target boss last ran on
+    host = bosshost.get(cfg)
+    term = None
+    if not host.queues:
+        ws = next((w for w in host.workers([b["workspace"]]) if w.get("id") == b["workspace"]), {})
+        term = next((t["id"] for t in ws.get("terminals", []) if (t.get("agent") or {}).get("state") == "idle"), None)
+        if not term:
+            return
     line = f"[boss-mail] 1 new {msg['kind']} from {msg['from_project']}: {msg['subject']}. Run boss-mail inbox."
-    subprocess.run(["superset", "terminals", "send", "--workspace", ws["id"], "--terminal", term["id"], "--text", line],
-                   capture_output=True)
+    try:
+        host.send(b["workspace"], line, term)
+    except (OSError, subprocess.CalledProcessError):
+        pass
 
 
 def send(ctx, to, kind, subject, body, reply_to=None):

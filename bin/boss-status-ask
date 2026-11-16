@@ -5,15 +5,19 @@
 
 The boss runs this on EVERY workspace it owns before a cleanup, at each status report and at each DONE,
 so the user always has the layover: which workspaces and sessions exist, why each stays, which can go.
-It clears the input line (ctrl+u: idle sessions show auto-suggestions that are not the boss's), sends the
-questions (submitted), and logs a `msg` event. --dry-run prints the text only. Use the FULL workspace and
-terminal UUIDs. Only ask sessions your ledger dispatch rows name as yours; for another boss's, boss-mail.
+It sends the questions through the host (bin/bosshost.py: on superset it clears the input line first, ctrl+u,
+since idle sessions show auto-suggestions that are not the boss's; on coderplex the message queues until the
+agent is idle) and logs a `msg` event. --dry-run prints the text only. Use the FULL workspace and terminal
+UUIDs; on coderplex pass the session id and `-` as the terminal. Only ask sessions your ledger dispatch rows
+name as yours; for another boss's, boss-mail.
 """
 import os
 import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosshost  # noqa: E402
+import bosskit  # noqa: E402
 
 QUESTIONS = (
     "Status check from the {who} (Lior asked me to clean up finished work). Reply in <= 6 lines, "
@@ -32,9 +36,11 @@ def text(who="boss"):
 
 
 def send(ws, term, who):
-    base = ["superset", "terminals", "send", "--workspace", ws, "--terminal", term, "--local"]
-    subprocess.run(base + ["--keys", "ctrl+u"], check=True)
-    subprocess.run(base + ["--text", text(who)], check=True)
+    try:
+        cfg = bosskit.load().cfg
+    except SystemExit:
+        cfg = {}
+    bosshost.get(cfg).send(ws, text(who), None if term == "-" else term)
 
 
 def main(argv):

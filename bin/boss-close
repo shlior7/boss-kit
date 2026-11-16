@@ -10,10 +10,15 @@ what the user sees, so close the PANE (`superset panes close --pane P`), which a
 terminal with no pane (started headless) falls back to `terminals close`. Use FULL workspace UUIDs; terminal
 ids may be a unique prefix. Only close sessions your ledger names as yours and that answered the status
 check (bin/boss-status-ask) as done; --dead only touches panes whose terminal already ended.
+Superset only: a coderplex session has no panes to close; archive the session instead (`coderplex-ctl sessions archive <id>`).
 """
 import json
+import os
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosskit  # noqa: E402
 
 
 def sh(args):
@@ -64,6 +69,14 @@ def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         return 0 if argv else 2
+    try:
+        cfg = bosskit.load().cfg
+    except SystemExit:
+        cfg = {}
+    if bosskit.host_kind(cfg) == "coderplex":
+        print("boss-close: coderplex sessions have no panes to close; archive a finished session instead: "
+              "coderplex-ctl sessions archive <id> (never --ttl without the user's OK: it deletes the session)")
+        return 2
     if argv[0] == "--dead":
         targets = all_workspaces() if argv[1:] == ["--all"] else argv[1:]
         if not targets:

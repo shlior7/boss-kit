@@ -9,7 +9,7 @@ Finds, in the old kit (default: this kit):
   <name>/ with BOSS.md  (legacy: a folder at the kit root) -> $BOSS_HOME/<name>/
 Each source is replaced by a symlink to its new place, so bosses still running on the old paths keep
 working. Nothing that already exists in $BOSS_HOME is overwritten. Dry run unless --apply.
---boss names the boss that owned the old state (default: $SUPERSET_WORKSPACE_ID, else "migrated").
+--boss names the boss that owned the old state (default: this session's host id, else "migrated").
 """
 import argparse
 import os
@@ -45,7 +45,7 @@ def plan(kit, home, boss):
 def main():
     ap = argparse.ArgumentParser(prog="boss-migrate")
     ap.add_argument("--kit", default=bosskit.KIT)
-    ap.add_argument("--boss", default=os.environ.get("SUPERSET_WORKSPACE_ID") or "migrated")
+    ap.add_argument("--boss", default=bosskit.self_id() or "migrated")
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args()
     kit, home = os.path.abspath(args.kit), bosskit.home()

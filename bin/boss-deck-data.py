@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Boss deck data: one JSON snapshot of what the boss manages, for the boss-deck mod.
 
-Read-only. Sources: the project ledger's dispatch rows (task per workspace), `superset snapshot`
-(each worker's agent state), running `boss-watch-done*` processes (armed watchers), `gh` for my
+Read-only. Sources: the project ledger's dispatch rows (task per workspace), the host's workers (bin/bosshost.py:
+each worker's agent state, tags and worktree), running `boss-watch-done*` / `boss-watch-msg` processes (armed watchers), `gh` for my
 open PRs (cached 5 min so a 60 s refresh stays cheap), this boss's events.jsonl (each workspace's
 stage log, from bin/boss-event and the watcher), the tracker snapshot boss-tasks.py writes,
 this boss's inbox, and the registry of bosses (this project's: the main boss and its domain
@@ -16,14 +16,16 @@ Worker mode (--worker): the same pane in a dispatched worker's own session. It f
 dispatch row across every project's ledger, its boss, its PR (the boss's fetch and cache), pushed commits, its
 events and the messages the boss sent it, and keeps the worktree's .boss-worker/ (notes.md, status.json) git-ignored.
 
-usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--terminal ID] [--cwd DIR] [--selftest]
-       boss-deck-data.py --worker --workspace ID [--cwd DIR] [--status JSON]
+usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--host-kind K] [--terminal ID] [--cwd DIR] [--selftest]
+       boss-deck-data.py --worker --workspace ID [--host-kind K] [--cwd DIR] [--status JSON]
   --fresh: skip the PR cache (the pane passes it right after the boss merges, comments or dispatches)
   --session-start: also mark this boss's new session (the base for "N new shared lessons"), and
-                   rename this boss's own Paradev workspace to BOSS
-  --workspace, --cwd: the session's workspace id and directory, which the mod passes so its process
-                      resolves the same boss as the session's shell
-  --terminal: the session's own terminal id (else $SUPERSET_TERMINAL_ID), left out of this boss's sessions list
+                   rename this boss's own workspace or session to config's boss_name (BOSS)
+  --workspace, --cwd: the session's workspace (or coderplex session) id and directory, which the mod passes so its
+                      process resolves the same boss as the session's shell
+  --host-kind: superset | coderplex, the host the session runs in (the mod passes it; config's host still wins)
+  --terminal: the session's own terminal id (else $SUPERSET_TERMINAL_ID, or coderplex's $CODERPLEX_AGENT_PANE_KEY),
+              left out of this boss's sessions list
   --status: the worker pane's task progress, {tasks_done, tasks_total, current}, written to .boss-worker/status.json
 """
 import json
@@ -35,6 +37,7 @@ import time
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosshost  # noqa: E402
 import bosskit  # noqa: E402
 
 PR_TTL_S = 300
@@ -49,9 +52,7 @@ CHECKED_EVENTS = {"checked", "ready"}
 VERIFIED_LEDGER = {"VERIFIED", "CHECKED", "READY", "MERGED", "ARCHIVED"}
 DONE_LEDGER = {"DONE"}
 # A PR comment that starts a DONE envelope (bin/boss-watch-done.sh's pick() uses the same test).
-DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*SUPERSET_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]")
-# What a boss names its own Paradev workspace at session start.
-BOSS_NAME = "BOSS"
+DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*(?:BOSS|SUPERSET)_WORKER_DONE[ \t]+task:[ \t]*[A-Za-z0-9._-]")
 # A boss refreshes every minute; past this its heartbeat age shows (bosskit.live drops it after STALE_S).
 BOSS_STALE_S = 300
 STATE_LINES = 3  # a domain boss's state file, in its details
@@ -167,13 +168,18 @@ def repo_tag(repo, aliases=None):
     return "".join(w[0] for w in words if w).lower() or repo
 
 
-def watchers():
-    out = run(["ps", "-axo", "pid=,etime=,command="])
+def watchers(out=None):
+    """Armed watchers from the process list: superset's boss-watch-done.sh <ws> <term>, coderplex's boss-watch-msg <session>."""
+    out = run(["ps", "-axo", "pid=,etime=,command="]) if out is None else out
     found = []
     for line in out.splitlines():
         m = re.search(r"^\s*\d+\s+(\S+)\s+\S*bash\s+\S*boss-watch-done\S*\s+([0-9a-f-]{36})\s+([0-9a-f-]{36})", line)
         if m:
             found.append({"ws": m.group(2), "term": m.group(3), "ageS": etime_s(m.group(1))})
+            continue
+        m = re.search(r"^\s*\d+\s+(\S+)\s+\S*python\S*\s+\S*boss-watch-msg\s+([0-9a-f]{8}[0-9a-f-]*)(?:\s|$)", line)
+        if m:
+            found.append({"ws": m.group(2), "term": "", "ageS": etime_s(m.group(1))})
     return found
 
 
@@ -186,33 +192,11 @@ def etime_s(etime):
     return (int(days) if days else 0) * 86400 + h * 3600 + m * 60 + s
 
 
-def host(cfg):
-    h = os.environ.get("BOSS_HOST") or cfg.get("superset_host")
-    if h:
-        return h
-    try:
-        d = json.loads(run(["superset", "hosts", "list", "--json"]) or "[]")
-        d = d if isinstance(d, list) else d.get("hosts", [])
-        return d[0]["id"] if d else ""
-    except (ValueError, KeyError, IndexError):
-        return ""
-
-
-def name_boss_workspace(cfg):
-    """Names this boss's own Paradev workspace BOSS, so it stands out in the sidebar. Every session, so a rename back heals."""
-    ws = os.environ.get("SUPERSET_WORKSPACE_ID")
-    if ws:
-        run(["superset", "workspaces", "update", ws, "--host", host(cfg), "--name", BOSS_NAME], timeout=20)
-
-
-def workspaces(cfg):
-    """Workspace id -> its tags (sidebar folders) and worktree, from `superset workspaces list`: the snapshot has neither."""
-    try:
-        rows = json.loads(run(["superset", "workspaces", "list", "--host", host(cfg), "--json"]) or "[]")
-    except ValueError:
-        return {}
-    return {w["id"]: {"tags": [t.strip() for t in (w.get("tags") or "").split(",") if t.strip()], "worktree": w.get("worktreePath") or ""}
-            for w in rows if isinstance(w, dict) and w.get("id")} if isinstance(rows, list) else {}
+def name_boss_workspace(host, cfg):
+    """Names this boss's own workspace or session after config's boss_name (BOSS), so it stands out in the sidebar.
+    Every session, so a rename back heals; boss_name "" leaves it alone."""
+    if host.self_id() and cfg.get("boss_name"):
+        host.rename(host.self_id(), cfg["boss_name"])
 
 
 def in_folder(tags, folder):
@@ -249,14 +233,6 @@ def exclude_boss_dir(wt):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a") as f:
             f.write("\n.boss-worker/\n")
-
-
-def snapshot(cfg):
-    raw = run(["superset", "snapshot", "--host", host(cfg), "--json"])
-    try:
-        return json.loads(raw).get("workspaces", [])
-    except ValueError:
-        return []
 
 
 def ci_summary(rollup):
@@ -605,6 +581,7 @@ def worker_view(home, ws, cwd, status=None, fresh=False):
         return None
     project, cfg, (task, ledger, date, proof, named, text) = found
     pdir = os.path.join(home, project)
+    cfg = bosskit.config_for(home, project)
     wt = bosskit.worktree(cwd)
     exclude_boss_dir(wt)
     if status:
@@ -620,11 +597,7 @@ def worker_view(home, ws, cwd, status=None, fresh=False):
     base = (pr or {}).get("base") or cfg.get("base_branch") or "main"
     behind = bosskit._git(wt, "rev-list", "--count", f"HEAD..origin/{base}")
     evs = project_events(pdir, ws)
-    try:
-        spaces = json.loads(run(["superset", "snapshot", "--workspace", ws, "--json"], timeout=20) or "{}").get("workspaces", [])
-    except (ValueError, AttributeError):
-        spaces = []
-    me = next((w for w in spaces if w.get("id") == ws), {})
+    me = bosshost.get(cfg).worker(ws)
     msgs = [e for e in evs if e["stage"].lower() == "msg"]
     stages = [e for e in evs if e["stage"].lower() != "msg"]
     return {
@@ -644,10 +617,13 @@ def arg(name):
 
 
 def main():
-    if arg("--workspace"):
-        os.environ["SUPERSET_WORKSPACE_ID"] = arg("--workspace")
+    kind = arg("--host-kind")
+    if kind in bosskit.HOSTS:
+        os.environ["BOSS_HOST_KIND"] = kind
+    if arg("--workspace"):  # the session's id, in the variable its host sets
+        os.environ["CODERPLEX_SESSION_ID" if kind == "coderplex" else "SUPERSET_WORKSPACE_ID"] = arg("--workspace")
     if "--worker" in sys.argv:
-        ws = os.environ.get("SUPERSET_WORKSPACE_ID", "")
+        ws = bosskit.self_id()
         view = worker_view(bosskit.home(), ws, arg("--cwd"), arg("--status"), "--fresh" in sys.argv) if ws else None
         print(json.dumps({"at": int(time.time()), "worker": view, "kit": kit_head()}))
         return
@@ -655,13 +631,13 @@ def main():
     if not bosskit.is_boss(ctx):
         sys.exit(bosskit.not_boss_note(ctx))  # no heartbeat, no rename: another workspace is the boss
     cfg = ctx.cfg
+    host = bosshost.get(cfg)
     tasks = ledger_tasks(os.path.join(ctx.pdir, cfg.get("ledger", "ledger.md")))
     # Watchers are host-wide; keep the ones on this boss's dispatches (rows without a Boss belong to every boss).
     mine = {p for p, row in tasks.items() if not row[4] or row[4] == ctx.bid}
     armed = [w for w in watchers() if w["ws"][:8] in mine]
-    spaces = snapshot(cfg)
+    spaces = host.workers(list(tasks) + ([ctx.workspace] if ctx.workspace else []))
     by_prefix = {w["id"][:8]: w for w in spaces}
-    listed = workspaces(cfg)
     # A domain boss covers only the workspaces in its sidebar folder; the main boss ('' folder) covers all.
     folder = bosskit.boss_folder(ctx.worktree)
     watched = {w["ws"][:8] for w in armed}
@@ -691,8 +667,8 @@ def main():
         if not archived and len(workers) >= MAX_WORKERS and prefix not in watched:
             continue
         old = seen.get(prefix, {})
-        info = listed.get((w or {}).get("id", ""), {})
-        tags = info.get("tags", old.get("tags", []))
+        info = w or {}
+        tags = info["tags"] if w else old.get("tags", [])
         if not in_folder(tags, folder):
             continue  # another folder's workspace: its domain boss's, or the main boss's
         agents = [t for t in (w or {}).get("terminals", []) if t.get("agent")]
@@ -720,7 +696,7 @@ def main():
     except (OSError, ValueError):
         first_seen = {}
     sessions = boss_sessions(next((w for w in spaces if w.get("id") == ctx.workspace), None) if ctx.workspace else None,
-                             arg("--terminal") or os.environ.get("SUPERSET_TERMINAL_ID", ""),
+                             arg("--terminal") or os.environ.get("SUPERSET_TERMINAL_ID") or os.environ.get("CODERPLEX_AGENT_PANE_KEY", ""),
                              ledger_terms(os.path.join(ctx.pdir, cfg.get("ledger", "ledger.md")), ctx.workspace[:8]) if ctx.workspace else {},
                              first_seen, time.time())
     bosskit.save_json(sessions_path, first_seen)
@@ -742,10 +718,10 @@ def main():
     todo = attention([w for w in workers if w["stage"] != "done"], armed, pr_rows)
     working = sum(w["state"] == "working" for w in workers)
     for_you = sum(a["level"] == "act" for a in todo)
-    bosskit.heartbeat(ctx, host(cfg), {"working": working, "forYou": for_you,
+    bosskit.heartbeat(ctx, host.host_id(), {"working": working, "forYou": for_you,
                                        "domain": bosskit.boss_domain(ctx.worktree), "next": now_line})
     if "--session-start" in sys.argv:
-        name_boss_workspace(cfg)
+        name_boss_workspace(host, cfg)
     print(json.dumps({
         "at": int(time.time()), "kit": kit_head(), "me": {"id": ctx.bid, "project": ctx.name}, "next": now_line, "review": review,
         "attention": todo, "workers": workers, "watchers": armed, "prs": pr_rows, "board": board(cfg, bosskit.tracker_snapshot(ctx)),

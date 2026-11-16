@@ -895,6 +895,21 @@ class Hosts(Home):
         self.assertNotIn("--ttl", h.archive_cmd("aaaa1111"))
         self.assertIsNone(h.screen("aaaa1111", "agent-1"))
 
+    def test_mail_wake_on_coderplex_queues_a_message_even_while_busy(self):
+        mail = load_script("boss-mail")
+        json.dump({"repo": "acme/widgets", "wake": True, "host": "coderplex"}, open(os.path.join(self.home, "widgets", "config.json"), "w"))
+        bosskit.save_json(os.path.join(self.home, "bosses.json"), {"a19f77fa": {"project": "widgets", "workspace": "a19f77fa", "host": "local", "heartbeat": time.time()}})
+        stubs = fake_cli(self.tmp, "coderplex-ctl", {})
+        with self.path(stubs):
+            mail.wake(self.home, "widgets", "a19f77fa", {"kind": "question", "from_project": "gadgets", "subject": "is #42 safe?"})
+        self.assertEqual(self.logged(), ["coderplex-ctl sessions send a19f77fa --text [boss-mail] 1 new question from gadgets: is #42 safe?. Run boss-mail inbox."])
+
+    def test_boss_close_refuses_on_coderplex(self):
+        r = subprocess.run([os.path.join(BIN, "boss-close"), "--dead", "--all"], capture_output=True, text=True,
+                           env={**os.environ, "CODERPLEX_SESSION_ID": "a19f77fa", "BOSS_PROJECT": "widgets"})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("coderplex-ctl sessions archive", r.stdout)
+
     def test_kind_follows_bosskit(self):
         os.environ["CODERPLEX_SESSION_ID"] = "a19f77fa"
         self.assertEqual(self.host.get({}).kind, "coderplex")

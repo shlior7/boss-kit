@@ -1,5 +1,5 @@
 #!/bin/bash
-# boss-init <project> [--repo owner/repo] [--base main] [--me github-login] [--worktree DIR]
+# boss-init <project> [--repo owner/repo] [--base main] [--me github-login] [--host superset|coderplex] [--worktree DIR]
 # Scaffolds $BOSS_HOME/<project>/ (default ~/.claude/boss) from the kit's projects/_template:
 # BOSS.md, config.json, ledger.md, lessons.md, prompts/. Seeds $BOSS_HOME/lessons.md (shared
 # lessons) on first use. --worktree writes DIR/.boss so that worktree resolves to this project.
@@ -7,17 +7,17 @@
 set -euo pipefail
 KIT=${BOSS_KIT_HOME:-$(cd "$(dirname "$0")/.." && pwd)}
 HOME_DIR=${BOSS_HOME:-$HOME/.claude/boss}
-USAGE="usage: boss-init <project> [--repo owner/repo] [--base main] [--me login] [--worktree DIR]"
+USAGE="usage: boss-init <project> [--repo owner/repo] [--base main] [--me login] [--host superset|coderplex] [--worktree DIR]"
 NAME=${1:?$USAGE}; shift
 # A flag where the name goes ("boss-init --help") once scaffolded a project named after it.
 case "$NAME" in -h|--help) echo "$USAGE"; exit 0;; esac
 case "$NAME" in -*|_*|*/*|.*|bosses.json|lessons.md) echo "boss-init: bad project name: $NAME" >&2; echo "$USAGE" >&2; exit 2;; esac
 DEST="$HOME_DIR/$NAME"
 [ -e "$DEST" ] && { echo "boss-init: $DEST already exists" >&2; exit 1; }
-REPO=""; BASE=""; ME=""; WT=""
+REPO=""; BASE=""; ME=""; HOST=""; WT=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo) REPO=$2; shift 2;; --base) BASE=$2; shift 2;; --me) ME=$2; shift 2;; --worktree) WT=$2; shift 2;;
+    --repo) REPO=$2; shift 2;; --base) BASE=$2; shift 2;; --me) ME=$2; shift 2;; --host) HOST=$2; shift 2;; --worktree) WT=$2; shift 2;;
     *) echo "boss-init: unknown option $1" >&2; exit 2;;
   esac
 done
@@ -26,19 +26,20 @@ cp -R "$KIT/projects/_template" "$DEST"
 rm -f "$DEST/prompts/.gitkeep"
 for f in BOSS.md ledger.md lessons.md; do sed -i.bak "s/{{PROJECT}}/$NAME/g" "$DEST/$f" && rm "$DEST/$f.bak"; done
 [ -e "$HOME_DIR/lessons.md" ] || cp "$KIT/shared-lessons.example.md" "$HOME_DIR/lessons.md"
-python3 - "$DEST/config.json" "$REPO" "$BASE" "$ME" <<'PY'
+python3 - "$DEST/config.json" "$REPO" "$BASE" "$ME" "$HOST" <<'PY'
 import json, sys
-p, repo, base, me = sys.argv[1:]
+p, repo, base, me, host = sys.argv[1:]
 c = json.load(open(p))
-c.update({k: v for k, v in (("repo", repo), ("base_branch", base), ("me", me)) if v})
+c.update({k: v for k, v in (("repo", repo), ("base_branch", base), ("me", me), ("host", host)) if v})
 json.dump(c, open(p, "w"), indent=2); open(p, "a").write("\n")
 PY
 [ -n "$WT" ] && printf 'project: %s\n' "$NAME" > "$WT/.boss"
 cat <<MSG
 Created $DEST
 Next:
-  1. Fill in $DEST/BOSS.md and $DEST/config.json (repo, base_branch, me, superset_host, tracker).
+  1. Fill in $DEST/BOSS.md and $DEST/config.json (repo, base_branch, me, host, tracker);
+     \`bosskit.py config show\` prints the resolved config and where each value comes from.
   2. In the worktree that will be the boss, add a gitignored CLAUDE.local.md headed
-     '# Boss workspace <its \$SUPERSET_WORKSPACE_ID>' (see README: Make a worktree the boss).
+     '# Boss workspace <its \$SUPERSET_WORKSPACE_ID or \$CODERPLEX_SESSION_ID>' (see README: Make a worktree the boss).
   3. Project resolution: \$BOSS_PROJECT, then the worktree's .boss file, then its git remote vs config.repo.
 MSG
