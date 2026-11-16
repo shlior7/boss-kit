@@ -47,7 +47,7 @@ class Home(unittest.TestCase):
             json.dump({"repo": repo, "me": "octocat"}, open(os.path.join(self.home, name, "config.json"), "w"))
         self.env = mock.patch.dict(os.environ, {"BOSS_HOME": self.home}, clear=False)
         self.env.start()
-        for k in ("BOSS_PROJECT", "SUPERSET_WORKSPACE_ID"):
+        for k in ("BOSS_PROJECT", "SUPERSET_WORKSPACE_ID", "CODERPLEX_SESSION_ID", "BOSS_HOST_KIND"):
             os.environ.pop(k, None)
 
     def tearDown(self):
@@ -747,6 +747,84 @@ class BossSessions(Home):
                          [("api research", "idle", "research-1: map the api"), ("ops: deploy check", "working", "")])
         self.assertTrue(all(s["ageS"] >= 0 for s in me["sessions"]))
         self.assertEqual(d["workers"][0]["ws"], "aaaaaaaa")
+
+
+class ConfigLayers(Home):
+    """kit defaults < user < project < boss, deep-merged; config show names each value's layer; set writes only with --apply."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["BOSS_PROJECT"] = "widgets"
+        os.environ["SUPERSET_WORKSPACE_ID"] = "ws-1"
+        json.dump({"models": {"mid": "sonnet-x"}, "wake": True}, open(os.path.join(self.home, "config.json"), "w"))
+        json.dump({"repo": "acme/widgets", "me": "octocat", "superset_host": "h1", "tracker": {"type": "http"}},
+                  open(os.path.join(self.home, "widgets", "config.json"), "w"))
+
+    def test_later_layers_win_and_dicts_merge(self):
+        bdir = os.path.join(self.home, "widgets", "bosses", "ws-1")
+        os.makedirs(bdir)
+        json.dump({"models": {"strong": "fable"}, "wake": False}, open(os.path.join(bdir, "config.json"), "w"))
+        ctx = bosskit.load(self.wt)
+        self.assertEqual(ctx.cfg["models"], {"strong": "fable", "mid": "sonnet-x", "cheap": "haiku"})
+        self.assertEqual((ctx.cfg["wake"], ctx.cfg["ledger"], ctx.cfg["superset_host"]), (False, "ledger.md", "h1"))
+        src = bosskit.sources(ctx.layers)
+        self.assertEqual(src["models.strong"], ("fable", "boss"))
+        self.assertEqual(src["models.mid"], ("sonnet-x", "user"))
+        self.assertEqual(src["models.cheap"], ("haiku", "kit"))
+        self.assertEqual(src["tracker.type"], ("http", "project"))
+        self.assertEqual(src["wake"], (False, "boss"))
+
+    def test_a_scalar_and_a_dict_replace_each_other(self):
+        layers = [("kit", "", {"tracker": {"type": "none"}}), ("user", "", {"tracker": "off"}), ("project", "", {"tracker": {"url": "u"}})]
+        self.assertEqual(bosskit.merged(layers), {"tracker": {"url": "u"}})
+        self.assertEqual(bosskit.sources(layers), {"tracker.url": ("u", "project")})
+
+    def test_set_is_a_dry_run_until_apply_and_keeps_other_keys(self):
+        ctx = bosskit.load(self.wt)
+        path = os.path.join(self.home, "widgets", "config.json")
+        out = bosskit.set_config(ctx.layers, "project", bosskit.parse_sets(["host=coderplex", "models.cheap=haiku-4", "wake=false"]))
+        self.assertIn("dry run", out)
+        self.assertIn('host           "coderplex"  (project)', out)
+        self.assertNotIn("host", json.load(open(path)))
+        bosskit.set_config(ctx.layers, "project", bosskit.parse_sets(["host=coderplex", "wake=false"]), apply=True, now=7)
+        cfg = json.load(open(path))
+        self.assertEqual((cfg["host"], cfg["wake"], cfg["superset_host"], cfg["tracker"]), ("coderplex", False, "h1", {"type": "http"}))
+        self.assertTrue(os.path.exists(path + ".bak-7"))  # the file as it was
+        self.assertNotIn("host", json.load(open(path + ".bak-7")))
+
+    def test_set_writes_a_new_boss_layer(self):
+        ctx = bosskit.load(self.wt)
+        bosskit.set_config(ctx.layers, "boss", {"host": "coderplex"}, apply=True)
+        self.assertEqual(json.load(open(os.path.join(ctx.bdir, "config.json"))), {"host": "coderplex"})
+        self.assertEqual(bosskit.load(self.wt).host, "coderplex")
+
+    def test_config_cli_show_json(self):
+        out = subprocess.run([sys.executable, os.path.join(BIN, "bosskit.py"), "config", "show", "--json"], cwd=self.wt,
+                             capture_output=True, text=True, check=True).stdout
+        self.assertEqual(json.loads(out)["models.mid"], {"value": "sonnet-x", "from": "user"})
+
+
+class HostKind(Home):
+    def test_config_then_env_then_installed_cli(self):
+        self.assertEqual(bosskit.host_kind({"host": "coderplex"}), "coderplex")
+        os.environ["SUPERSET_WORKSPACE_ID"] = "ws-1"
+        self.assertEqual(bosskit.host_kind({}), "superset")  # a Paradev workspace with no host set: as before
+        self.assertEqual(bosskit.host_kind({"host": "coderplex"}), "coderplex")
+        del os.environ["SUPERSET_WORKSPACE_ID"]
+        os.environ["CODERPLEX_SESSION_ID"] = "a19f77fa"
+        self.assertEqual(bosskit.host_kind({}), "coderplex")
+        self.assertEqual(bosskit.self_id(), "a19f77fa")
+        self.assertEqual(bosskit.boss_id(self.wt), "a19f77fa")
+        os.environ["BOSS_HOST_KIND"] = "superset"  # what the pane passes wins over the env guess
+        self.assertEqual(bosskit.host_kind({}), "superset")
+
+    def test_coderplex_session_is_the_bound_boss(self):
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace a19f77fa\n")
+        os.environ["BOSS_PROJECT"] = "widgets"
+        os.environ["CODERPLEX_SESSION_ID"] = "a19f77fa"
+        self.assertTrue(bosskit.is_boss(bosskit.load(self.wt)))
+        os.environ["CODERPLEX_SESSION_ID"] = "0000beef"
+        self.assertFalse(bosskit.is_boss(bosskit.load(self.wt)))
 
 
 class StatusAsk(unittest.TestCase):

@@ -10,13 +10,21 @@ Code is the kit ($BOSS_KIT_HOME, else the folder above bin/). Data is $BOSS_HOME
   <project>/BOSS.md config.json ledger.md lessons.md prompts/      shared by the project's bosses
   <project>/bosses/<boss-id>/     next.txt review.txt notes.md events.jsonl cache/ inbox/ inbox/done/
 
+Config is layered, later wins (dicts deep-merged, lists replaced): the kit's DEFAULTS, $BOSS_HOME/config.json (user),
+<project>/config.json (project), <project>/bosses/<boss-id>/config.json (one boss).
+
 usage: bosskit.py show            the resolved paths, as JSON
-       bosskit.py instructions    template + project BOSS.md + project and shared lessons (the /boss loader)
+       bosskit.py instructions    template + host commands + project BOSS.md + project and shared lessons (the /boss loader)
+       bosskit.py config show [--json]                                 every config key, its value and the layer it came from
+       bosskit.py config set --level user|project|boss KEY=VALUE... [--apply]
+                                  shows the resolved config after the change; writes only with --apply
+       bosskit.py detect          the environment, as JSON: host CLIs, gh, git, $BOSS_HOME (for onboarding)
 """
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -31,6 +39,24 @@ MARKER = re.compile(r"^# Boss workspace(?:[ \t]+(\S+))?[ \t]*$", re.M)
 DOMAIN = re.compile(r"^Domain:[ \t]*([A-Za-z0-9._-]+)[ \t]*$", re.M)
 FOLDER = re.compile(r"^Folder:[ \t]*(\S(?:.*\S)?)[ \t]*$", re.M)
 HEADING = re.compile(r"^## (\d+)\. (.*)$", re.M)
+# The first line of a worker's completion envelope. BOSS_ is what dispatches ask for; SUPERSET_ is the older token.
+ENVELOPE = r"(?:BOSS|SUPERSET)_WORKER_(DONE|BLOCKED)"
+HOSTS = ("superset", "coderplex")
+LEVELS = ("user", "project", "boss")
+# The kit's config layer: every key a boss reads, with its default.
+DEFAULTS = {
+    "host": "",                 # superset | coderplex; "" detects it from the session (see host_kind)
+    "superset_host": "",        # superset only: the host id; "" = the first host
+    "base_branch": "main",
+    "ledger": "ledger.md",
+    "wake": False,              # mail to this boss also messages its session
+    "extra_prs": [],
+    "tracker": {"type": "none"},
+    "models": {"strong": "opus", "mid": "sonnet", "cheap": "haiku"},
+    "effort": "",
+    "pages": "auto",            # where proof and review pages go: auto (the host's pages, else a claude.ai artifact) | host | artifact
+    "boss_name": "BOSS",        # what the boss names its own workspace or session at session start; "" leaves it
+}
 
 
 def home():
@@ -81,11 +107,29 @@ def project_name(cwd=None, h=None):
              % (wt, ", ".join(names) or "none"))
 
 
-def boss_id(cwd=None, h=None):
-    """The Paradev workspace id when running inside one, else the workspace this worktree registered
-    under (a process started without the workspace's env, like a mod's), else a short hash of the path."""
+def self_id():
+    """This session's id on its host: the Paradev workspace, else the coderplex session; '' outside both."""
+    return os.environ.get("SUPERSET_WORKSPACE_ID") or os.environ.get("CODERPLEX_SESSION_ID") or ""
+
+
+def host_kind(cfg=None):
+    """Which host runs the workers: config's host, else the session's own (the pane passes it as $BOSS_HOST_KIND),
+    else whichever CLI is installed, else superset. No host set inside a Paradev workspace is superset, as before."""
+    for kind in ((cfg or {}).get("host"), os.environ.get("BOSS_HOST_KIND")):
+        if kind in HOSTS:
+            return kind
     if os.environ.get("SUPERSET_WORKSPACE_ID"):
-        return os.environ["SUPERSET_WORKSPACE_ID"]
+        return "superset"
+    if os.environ.get("CODERPLEX_SESSION_ID"):
+        return "coderplex"
+    return "coderplex" if not shutil.which("superset") and shutil.which("coderplex-ctl") else "superset"
+
+
+def boss_id(cwd=None, h=None):
+    """This session's host id (a Paradev workspace or coderplex session) when running inside one, else the workspace
+    this worktree registered under (a process started without the session's env, like a mod's), else a short hash of the path."""
+    if self_id():
+        return self_id()
     wt = worktree(cwd)
     known = [(b.get("heartbeat", 0), i) for i, b in registry(h).items() if b.get("worktree") == wt and b.get("workspace") == i]
     return max(known)[1] if known else "wt-" + hashlib.sha1(wt.encode()).hexdigest()[:8]
@@ -95,15 +139,129 @@ def load(cwd=None, name=None):
     h = home()
     name = name or project_name(cwd, h)
     pdir = os.path.join(h, name)
-    with open(os.path.join(pdir, "config.json")) as f:
-        cfg = json.load(f)
+    json.load(open(os.path.join(pdir, "config.json")))  # the project's own layer must parse
     bid = boss_id(cwd, h)
     bdir = os.path.join(pdir, "bosses", bid)
     for d in ("cache", "inbox/done"):
         os.makedirs(os.path.join(bdir, d), exist_ok=True)
-    return SimpleNamespace(home=h, name=name, cfg=cfg, pdir=pdir, bid=bid, bdir=bdir, worktree=worktree(cwd),
-                           workspace="" if bid.startswith("wt-") else bid,
+    layers = config_layers(h, name, bid)
+    cfg = merged(layers)
+    return SimpleNamespace(home=h, name=name, cfg=cfg, layers=layers, host=host_kind(cfg), pdir=pdir, bid=bid, bdir=bdir,
+                           worktree=worktree(cwd), workspace="" if bid.startswith("wt-") else bid,
                            cache=os.path.join(bdir, "cache"), inbox=os.path.join(bdir, "inbox"))
+
+
+# ---- config: kit defaults < user < project < boss --------------------------------------------
+
+def layer_path(h, level, project=None, bid=None):
+    return {"user": os.path.join(h, "config.json"), "project": os.path.join(h, project or "", "config.json"),
+            "boss": os.path.join(h, project or "", "bosses", bid or "", "config.json")}[level]
+
+
+def _json_file(path):
+    try:
+        d = json.load(open(path))
+        return d if isinstance(d, dict) else {}
+    except OSError:
+        return {}
+    except ValueError as e:
+        sys.exit(f"bosskit: {path} is not valid JSON: {e}")
+
+
+def config_layers(h, project, bid=None):
+    """[(layer, path, dict)], lowest first: kit, user, project, and the boss's own when bid is given."""
+    out = [("kit", "", DEFAULTS), ("user", layer_path(h, "user"), _json_file(layer_path(h, "user"))),
+           ("project", layer_path(h, "project", project), _json_file(layer_path(h, "project", project)))]
+    if bid:
+        out.append(("boss", layer_path(h, "boss", project, bid), _json_file(layer_path(h, "boss", project, bid))))
+    return out
+
+
+def deep_merge(a, b):
+    """b over a: dicts merge key by key, anything else (lists too) is replaced."""
+    out = dict(a)
+    for k, v in b.items():
+        out[k] = deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def merged(layers):
+    cfg = {}
+    for _, _, d in layers:
+        cfg = deep_merge(cfg, d)
+    return cfg
+
+
+def config_for(h, project, bid=None):
+    """A project's resolved config without loading a boss (worker mode, mail)."""
+    return merged(config_layers(h, project, bid))
+
+
+def sources(layers):
+    """{dotted leaf key: (value, layer)} of the merged config: the layer each value comes from."""
+    out = {}
+
+    def walk(d, layer, prefix=""):
+        for k, v in d.items():
+            key = prefix + k
+            if isinstance(v, dict) and v:
+                for old in [o for o in out if o == key]:  # a dict replaces a scalar set lower down
+                    del out[old]
+                walk(v, layer, key + ".")
+            else:
+                for old in [o for o in out if o.startswith(key + ".")]:  # a scalar replaces a whole dict
+                    del out[old]
+                out[key] = (v, layer)
+    for layer, _, d in layers:
+        walk(d, layer)
+    return dict(sorted(out.items()))
+
+
+def show_config(layers, as_json=False):
+    src = sources(layers)
+    if as_json:
+        return json.dumps({k: {"value": v, "from": l} for k, (v, l) in src.items()}, indent=1)
+    width = max(map(len, src), default=0)
+    files = "\n".join(f"  {l:<8} {p}{'' if os.path.exists(p) else '  (none)'}" for l, p, _ in layers if p)
+    return "\n".join(f"{k:<{width}}  {json.dumps(v)}  ({l})" for k, (v, l) in src.items()) + "\n\nlayers, later wins:\n  kit      DEFAULTS in bin/bosskit.py\n" + files
+
+
+def parse_sets(pairs):
+    """KEY=VALUE pairs (dotted keys nest) as one dict; a value is JSON when it parses, else a string."""
+    out = {}
+    for pair in pairs:
+        key, eq, raw = pair.partition("=")
+        if not eq or not key:
+            sys.exit(f"bosskit: expected KEY=VALUE, got {pair!r}")
+        try:
+            val = json.loads(raw)
+        except ValueError:
+            val = raw
+        d = out
+        *parents, leaf = key.split(".")
+        for p in parents:
+            d = d.setdefault(p, {})
+        d[leaf] = val
+    return out
+
+
+def set_config(layers, level, change, apply=False, now=None):
+    """The resolved config with *change* merged into *level*'s file, as text; with apply, writes that file
+    (merged into what is there, an existing file copied to <file>.bak-<time> first)."""
+    path = next((p for l, p, _ in layers if l == level), None)
+    if not path:
+        sys.exit(f"bosskit: no {level} layer here (boss needs a resolved boss, project a resolved project)")
+    new = [(l, p, deep_merge(d, change) if l == level else d) for l, p, d in layers]
+    body = next(d for l, _, d in new if l == level)
+    text = show_config(new) + f"\n\n{'wrote' if apply else 'would write'} {path}:\n" + json.dumps(body, indent=1)
+    if apply:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path):
+            shutil.copy2(path, f"{path}.bak-{int(now or time.time())}")
+        save_json(path, body)
+    else:
+        text += "\n\n(dry run: nothing written; add --apply to write)"
+    return text
 
 
 def boss_marker(wt):
@@ -131,7 +289,7 @@ def is_boss(ctx):
     """The marker is there and, when it names a workspace, this session is that workspace. A copy of the
     boss's CLAUDE.local.md in another worktree, or another workspace on the same checkout, is then no boss."""
     bound = boss_marker(ctx.worktree)
-    return bound is not None and bound in ("", os.environ.get("SUPERSET_WORKSPACE_ID", ""))
+    return bound is not None and bound in ("", self_id())
 
 
 def not_boss_note(ctx):
@@ -139,7 +297,7 @@ def not_boss_note(ctx):
     if bound is None:
         return f"Not a boss: {ctx.worktree}/CLAUDE.local.md has no '# Boss workspace' heading."
     return (f"Not the boss: CLAUDE.local.md binds the boss to workspace {bound}, and this session is "
-            f"{os.environ.get('SUPERSET_WORKSPACE_ID') or 'outside Paradev'}. Ignore the boss instructions and work as a normal session.")
+            f"{self_id() or 'outside a host session'}. Ignore the boss instructions and work as a normal session.")
 
 
 # ---- registry -------------------------------------------------------------------------------
@@ -286,15 +444,38 @@ def instructions(ctx):
     return head + "".join(f"\n\n<!-- {name} -->\n\n{body.strip()}\n" for name, body in parts if body.strip())
 
 
+def config_cmd(args):
+    """bosskit.py config show [--json] | set --level L KEY=VALUE... [--apply]"""
+    sub = args[0] if args else "show"
+    if sub == "show":
+        ctx = load()
+        return show_config(ctx.layers, "--json" in args) + ("" if "--json" in args else f"\n\nhost: {ctx.host}")
+    if sub == "set":
+        level = args[args.index("--level") + 1] if "--level" in args[:-1] else ""
+        if level not in LEVELS:
+            sys.exit(f"bosskit: config set needs --level {'|'.join(LEVELS)}")
+        pairs = [a for i, a in enumerate(args[1:], 1) if "=" in a and args[i - 1] != "--level"]
+        if level == "user":  # needs no project: the user layer is shared by all of them
+            layers = [("kit", "", DEFAULTS), ("user", layer_path(home(), "user"), _json_file(layer_path(home(), "user")))]
+        else:
+            layers = load().layers
+        return set_config(layers, level, parse_sets(pairs), "--apply" in args)
+    sys.exit(config_cmd.__doc__)
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "show"
+    if cmd == "config":
+        print(config_cmd(sys.argv[2:]))
+        return
     ctx = load()
     if cmd == "show":
         print(json.dumps({"kit": KIT, "home": ctx.home, "project": ctx.name, "boss": ctx.bid, "worktree": ctx.worktree,
                           "boss_md": os.path.join(ctx.pdir, "BOSS.md"), "ledger": os.path.join(ctx.pdir, ctx.cfg.get("ledger", "ledger.md")),
                           "lessons": os.path.join(ctx.pdir, "lessons.md"), "shared_lessons": os.path.join(ctx.home, "lessons.md"),
                           "boss_dir": ctx.bdir, "next": os.path.join(ctx.bdir, "next.txt"),
-                          "review": os.path.join(ctx.bdir, "review.txt"), "inbox": ctx.inbox, "is_boss": is_boss(ctx)}, indent=1))
+                          "review": os.path.join(ctx.bdir, "review.txt"), "inbox": ctx.inbox, "is_boss": is_boss(ctx),
+                          "host": ctx.host}, indent=1))
     elif cmd == "instructions":
         print(instructions(ctx) if is_boss(ctx) else not_boss_note(ctx))
     else:
