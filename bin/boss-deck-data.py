@@ -473,17 +473,56 @@ def attention(workers, armed, prs):
     return sorted(items, key=lambda i: order[i["level"]])
 
 
-def mail(inbox):
-    """This boss's unread mail: count plus the newest subjects. Reads the inbox dir only."""
-    items = []
+MAIL_STAMP = "%Y-%m-%dT%H:%M:%S%z"  # boss-mail's created_at / read_at
+MAIL_STALE_MIN = 10
+
+
+def mail_age(m, now=None):
+    """Minutes since a message was sent, 0 when its stamp does not parse."""
+    try:
+        return int(((now or time.time()) - datetime.strptime(m.get("created_at", ""), MAIL_STAMP).timestamp()) // 60)
+    except ValueError:
+        return 0
+
+
+def mail(inbox, now=None):
+    """This boss's unread mail: count plus the newest subjects, and how long the oldest has waited. Reads the inbox dir only."""
+    items, oldest = [], 0
     for f in sorted(os.listdir(inbox)) if os.path.isdir(inbox) else []:
         if f.endswith(".json"):
             try:
                 m = json.load(open(os.path.join(inbox, f)))
                 items.append({"id": m["id"], "kind": m.get("kind", ""), "from": m.get("from_project", ""), "subject": m.get("subject", "")})
+                oldest = max(oldest, mail_age(m, now))
             except (OSError, ValueError, KeyError):
                 continue
-    return {"count": len(items), "dir": inbox, "items": items[-5:]}
+    return {"count": len(items), "dir": inbox, "items": items[-5:], "oldestMin": oldest}
+
+
+def sent_unread(home, bdir, now=None):
+    """Minutes the oldest of this boss's last 20 sent messages (from the last day) has waited unread by a recipient, else 0."""
+    worst = 0
+    for line in bosskit._read(os.path.join(bdir, "sent.jsonl")).splitlines()[-20:]:
+        try:
+            r = json.loads(line)
+            for to in r["to"]:
+                project, boss = to.split("/", 1)
+                m = bosshost._json(bosskit._read(os.path.join(home, project, "bosses", boss, "inbox", r["id"] + ".json")), {})
+                age = mail_age(m, now) if m and not m.get("read_at") else 0
+                worst = max(worst, age if age < 24 * 60 else 0)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return worst
+
+
+def mail_lines(box, sent_min):
+    """The pane's quiet mail lines: mail waiting here, or mail this boss sent waiting there, 10 min or more."""
+    out = []
+    if box["count"] and box["oldestMin"] >= MAIL_STALE_MIN:
+        out.append({"level": "check", "text": f"mail unread {box['oldestMin']} min · boss-mail inbox"})
+    if sent_min >= MAIL_STALE_MIN:
+        out.append({"level": "check", "text": f"sent mail unread {sent_min} min · boss-mail sent"})
+    return out
 
 
 def lessons_new(home, bdir, session_start=False):
@@ -770,7 +809,8 @@ def main():
         review = {"url": url, "date": time.strftime("%Y-%m-%d", time.localtime(os.path.getmtime(rpath)))}
     except (OSError, IndexError):
         pass
-    todo = attention([w for w in workers if w["stage"] != "done"], armed, pr_rows)
+    box = mail(ctx.inbox)
+    todo = attention([w for w in workers if w["stage"] != "done"], armed, pr_rows) + mail_lines(box, sent_unread(ctx.home, ctx.bdir))
     working = sum(w["state"] == "working" for w in workers)
     for_you = sum(a["level"] == "act" for a in todo)
     bosskit.heartbeat(ctx, host.host_id(), {"working": working, "forYou": for_you,
@@ -781,7 +821,7 @@ def main():
         "at": int(time.time()), "kit": kit_head(), "me": {"id": ctx.bid, "project": ctx.name}, "next": now_line, "review": review,
         "pagesTo": page_provider(cfg),
         "attention": todo, "workers": workers, "watchers": armed, "prs": pr_rows, "board": board(cfg, bosskit.tracker_snapshot(ctx)),
-        "others": others(bosskit.registry(ctx.home), ctx.bid, workspace=ctx.workspace, wt=ctx.worktree), "mail": mail(ctx.inbox),
+        "others": others(bosskit.registry(ctx.home), ctx.bid, workspace=ctx.workspace, wt=ctx.worktree), "mail": box,
         "bosses": bosses(bosskit.registry(ctx.home), ctx.name, ctx.bid, ctx.pdir, workspace=ctx.workspace, wt=ctx.worktree, sessions=sessions),
         "lessonsNew": lessons_new(ctx.home, ctx.bdir, "--session-start" in sys.argv),
         "buttons": cfg.get("deck_buttons", []), "workerButtons": cfg.get("deck_worker_buttons", []),
@@ -839,6 +879,19 @@ if __name__ == "__main__":
         open(os.path.join(d, "junk.txt"), "w").write("x")
         got = mail(d)
         assert got["count"] == 2 and [m["subject"] for m in got["items"]] == ["s1", "s2"], got
+        # stale mail: here (unread 10 min+) and sent from here (a recipient has not read it); a read one is quiet
+        home = tempfile.mkdtemp()
+        sent_at = time.strftime(MAIL_STAMP, time.localtime(now - 16 * 60))
+        for b, extra in (("r1", {}), ("r2", {"read_at": sent_at})):
+            os.makedirs(os.path.join(home, "widgets", "bosses", b, "inbox"))
+            json.dump({"id": "m9", "created_at": sent_at, **extra}, open(os.path.join(home, "widgets", "bosses", b, "inbox", "m9.json"), "w"))
+        open(os.path.join(home, "sent.jsonl"), "w").write(json.dumps({"id": "m9", "to": ["widgets/r1"], "created_at": sent_at}) + "\nnot json\n")
+        assert sent_unread(home, home, now) == 16
+        open(os.path.join(home, "sent.jsonl"), "w").write(json.dumps({"id": "m9", "to": ["widgets/r2"], "created_at": sent_at}) + "\n")
+        assert sent_unread(home, home, now) == 0
+        box = mail(os.path.join(home, "widgets", "bosses", "r1", "inbox"), now)
+        assert [i["text"] for i in mail_lines(box, 12)] == ["mail unread 16 min · boss-mail inbox", "sent mail unread 12 min · boss-mail sent"], box
+        assert mail_lines({**box, "oldestMin": 9}, 0) == []
         # worker mode: the dispatch row in whichever project has it, DELIVERED newest first, .boss-worker/ files
         home = tempfile.mkdtemp()
         for name, row in (("gadgets", ""), ("widgets", "| 2026-01-02 | fix-42: retry webhooks | 1a2b3c4d | mid | DISPATCHED |\n")):
