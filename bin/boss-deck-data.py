@@ -136,7 +136,8 @@ def ledger_tasks(path):
         cols = cells(line)
         if len(cols) < 7 or not re.match(r"\d{4}-\d{2}-\d{2}", cols[1]):
             continue
-        ws = re.match(r"(?:NEW )?([0-9a-f]{8})", cols[3])
+        # Bosses write the cell as "<id>…", "NEW <id>" or "ws <id> term <id>, branch …".
+        ws = re.match(r"(?:NEW\s+|ws\s+)?([0-9a-f]{8})", cols[3], re.I)
         if not ws:
             continue
         text = cols[2].strip()
