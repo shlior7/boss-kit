@@ -178,7 +178,7 @@ class QuestionData(Home):
         by = {x["id"]: x for x in flat}
         self.assertEqual([o["label"] for o in by["comments_worker"]["options"]][:2], ["Status comment (current)", "Proof links"])
         self.assertIn("Verify note (current)", [o["label"] for o in by["comments_boss"]["options"]])
-        self.assertEqual(by["models_strong"]["options"][0]["label"], '"custom-1" (current)')
+        self.assertEqual(by["models_strong"]["options"][0]["label"], "custom-1 (current)")
         self.assertEqual(by["merge"]["options"][0]["label"], "Squash (current)")
         self.assertTrue(all(len(x["options"]) <= 4 for x in flat))
         self.assertNotIn("host", by)
@@ -202,7 +202,8 @@ class Answers(Home):
         self.assertEqual(ch, {"project": {"github": {"merge": "rebase"}}, "boss": {"wake": True},
                               "user": {"deck_buttons": [], "deck_worker_buttons": []}})  # opus is already the value
         _, ex = bosskit.onboard_changes({"domain": "Main boss (current)"}, ctx.layers)
-        self.assertEqual(ex["domain"], "")  # the main boss writes no Domain line
+        self.assertNotIn("domain", ex)  # kept as it is: the main boss writes no Domain line
+        self.assertEqual(bosskit.onboard_changes({"domain": "Main boss"}, ctx.layers)[1]["domain"], "")
         self.assertNotIn("Domain:", bosskit.onboard_apply({"domain": "Main boss"}, cwd=self.wt))
         self.assertEqual(bosskit.onboard_changes({"domain": "billing"}, ctx.layers)[1]["domain"], "billing")
         ch, _ = bosskit.onboard_changes({"merge": "rebase", "effort": "high"}, ctx.layers, level="boss")
@@ -262,3 +263,76 @@ class BossInitAnswers(Home):
         self.assertIn("## Expectations\n\n- Be careful: verify everything twice, ask when unsure.\n- Keep me informed:", md)
         self.assertIn("I'm a mere boss but you are the god.", r.stdout)
         self.assertNotEqual(self.init("gizmos", "--answers", path).returncode, 0)  # never over an existing project
+
+
+class CurrentMeansKeep(Home):
+    """Review round 1: a "(current)" choice always keeps the value, whatever its label; labels stay short; every question
+    has 2 to 4 options and says when Other must carry one that did not fit."""
+
+    PAGES = {"provider": "acme-pages", "publish": "acme-pages deploy <dir> --json --a-long-flag-that-makes-it-long"}
+
+    def setUp(self):
+        super().setUp()
+        os.environ["BOSS_PROJECT"] = "widgets"
+        os.environ["FAKE_SESSION"] = "ws-1"
+        json.dump({"pages": self.PAGES}, open(os.path.join(self.home, "org.json"), "w"))
+        json.dump({"repo": "acme/widgets", "me": "jane", "models": {"strong": "a-custom-model-id-that-is-long-1"}},
+                  open(os.path.join(self.home, "widgets", "config.json"), "w"))
+        bdir = os.path.join(self.home, "widgets", "bosses", "ws-1")
+        os.makedirs(bdir)
+        json.dump({"effort": "max"}, open(os.path.join(bdir, "config.json"), "w"))
+        self.det = {"project": "widgets", "hosts": {"fake": {"ok": True}, "other": {"ok": True}}, "detected_host": "fake",
+                    "git": {"repo": "acme/widgets", "default_branch": "main"}, "gh": {"login": "jane"}, "boss_home": {"projects": []}}
+
+    def asked(self, det=None):
+        cfg = bosskit.load(self.wt, make=False).cfg
+        return {x["id"]: x for call in bosskit.onboard_questions(cfg, det or self.det, self.wt)["calls"] for x in call}
+
+    def snapshot(self):
+        return {os.path.join(d, f): open(os.path.join(d, f)).read() for d, _, fs in os.walk(self.home) for f in fs}
+
+    def test_a_custom_current_value_gets_a_short_label_and_is_kept(self):
+        by = self.asked()
+        self.assertEqual(by["pages"]["options"][0]["label"], "acme-pages (current)")
+        self.assertEqual(by["models_strong"]["options"][0]["label"], "a-custom-model-id-that-is-lon… (current)")
+        before = self.snapshot()
+        out = bosskit.onboard_apply({"pages": "acme-pages (current)", "models_strong": by["models_strong"]["options"][0]["label"]},
+                                    apply=True, cwd=self.wt)
+        self.assertNotIn("wrote", out)
+        self.assertEqual(self.snapshot(), before)  # the org's provider stays, nothing restated in the user layer
+        self.assertEqual(bosskit.load(self.wt).cfg["pages"], self.PAGES)
+
+    def test_picking_every_current_option_writes_no_file(self):
+        by, before = self.asked(), self.snapshot()
+        answers = {}
+        for qid, x in by.items():
+            if x["multiSelect"]:
+                continue
+            cur = [o["label"] for o in x["options"] if o["label"].endswith("(current)")]
+            self.assertEqual(len(cur), 1, qid)  # every single-select question shows what is set now
+            answers[qid] = cur[0]
+        self.assertGreater(len(answers), 15)
+        out = bosskit.onboard_apply(answers, apply=True, cwd=self.wt)
+        self.assertNotIn("wrote", out)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_a_current_value_that_overflows_names_the_dropped_option(self):
+        e = self.asked()["effort"]
+        self.assertEqual([o["label"] for o in e["options"]], ["max (current)", "Agent's own", "medium", "high"])
+        self.assertIn("Other takes any value: xhigh", e["question"])
+        # typed in Other, it lands where the current value comes from (the boss layer), not under it in the user layer
+        self.assertEqual(bosskit.onboard_changes({"effort": "xhigh"}, bosskit.load(self.wt).layers)[0], {"boss": {"effort": "xhigh"}})
+
+    def test_host_options_fit_the_form(self):
+        one = {**self.det, "project": None, "detected_host": "", "hosts": {"fake": {"ok": True}, "other": {"ok": False}}}
+        q = bosskit.onboard_questions(bosskit.DEFAULTS, one, self.wt)
+        self.assertEqual(q["derived"]["host"], "fake")  # one installed plugin: derived, never a 1-option question
+        many = {**one, "hosts": {f"h{i}": {"ok": True} for i in range(6)}}
+        h = {x["id"]: x for c in bosskit.onboard_questions(bosskit.DEFAULTS, many, self.wt)["calls"] for x in c}["host"]
+        self.assertEqual(len(h["options"]), 4)
+        self.assertIn("Other: type a plugin name", h["question"])
+        none = {**one, "hosts": {}}
+        q = bosskit.onboard_questions(bosskit.DEFAULTS, none, self.wt)
+        self.assertIn("host", [p["id"] for p in q["plain"]])
+        for c in q["calls"]:
+            self.assertTrue(all(2 <= len(x["options"]) <= 4 for x in c))

@@ -374,6 +374,22 @@ def _label(o, cur):
     return o["label"] + (" (current)" if cur else "")
 
 
+CURRENT = re.compile(r"\s*\(current\)\s*$")
+
+
+def _short(v):
+    """A current value that is no option, as a short readable label: a pages provider's name, else the value."""
+    t = v["provider"] if isinstance(v, dict) and v.get("provider") else v if isinstance(v, str) else json.dumps(v)
+    return t if len(t) <= 30 else t[:29] + "…"
+
+
+def _host_options(det, cfg):
+    """The host question's options: the installed plugins (all of them when none answers), the current one first, at most 4."""
+    hosts = {n: h for n, h in det["hosts"].items() if h.get("ok")} or det["hosts"]
+    names = sorted(hosts, key=lambda n: n != (cfg.get("host") or det.get("detected_host")))
+    return [{"label": n, "value": n, "description": hosts[n].get("description", "")} for n in names], len(names) > 4
+
+
 def onboard_questions(cfg, det, wt):
     """The form as the skill asks it: AskUserQuestion calls of at most 4 questions (each current value first and marked),
     the free-text questions, and what detect answered."""
@@ -382,6 +398,9 @@ def onboard_questions(cfg, det, wt):
     for q in f["questions"]:
         if q.get("derive"):
             v = _derived(q, det, cfg)
+            if q.get("options_from") == "hosts" and v in (None, ""):
+                only = _host_options(det, cfg)[0]
+                v = only[0]["value"] if len(only) == 1 else v  # one plugin: nothing to ask
             if v not in (None, ""):
                 derived[q["id"]] = v
                 continue
@@ -389,16 +408,25 @@ def onboard_questions(cfg, det, wt):
         if q.get("free"):
             plain.append({"id": q["id"], "question": q["question"], "current": cur})
             continue
-        opts = q.get("options") or [{"label": n, "value": n, "description": h.get("description", "")} for n, h in det["hosts"].items()]
+        text, opts = q["question"], q.get("options")
+        if q.get("options_from") == "hosts":
+            opts, many = _host_options(det, cfg)
+            if len(opts) < 2:  # no plugin to pick from: typed in chat
+                plain.append({"id": q["id"], "question": text, "current": cur})
+                continue
+            text += " (Other: type a plugin name.)" if many else ""
         if q.get("multiSelect"):
             out = [{"label": _label(o, o["value"] in cur), "description": o["description"]} for o in opts]
         else:
             match = [o for o in opts if o["value"] == cur or (o["value"] == "$default" and cur == _dig(DEFAULTS, _keys(q)[0]))]
             rest = [o for o in opts if o not in match]
             first = [{**match[0], "label": _label(match[0], True)}] if match else \
-                [] if cur in (None, "") else [{"label": f"{json.dumps(cur)[:40]} (current)", "description": "the value set now"}]
-            out = [{"label": o["label"], "description": o["description"]} for o in first + rest][:4]
-        ask.append({"id": q["id"], "question": q["question"], "header": q["header"], "multiSelect": bool(q.get("multiSelect")), "options": out})
+                [] if cur in (None, "") else [{"label": f"{_short(cur)} (current)", "description": "keep the value set now"}]
+            out = [{"label": o["label"], "description": o["description"]} for o in first + rest]
+            if len(out) > 4:  # the last options make room for the current one; Other still takes them
+                text += " (Other takes any value: " + ", ".join(o["label"] for o in out[4:]) + ", or your own.)"
+                out = out[:4]
+        ask.append({"id": q["id"], "question": text, "header": q["header"], "multiSelect": bool(q.get("multiSelect")), "options": out})
     return {"calls": [ask[i:i + 4] for i in range(0, len(ask), 4)], "plain": plain, "derived": derived, "followups": f["followups"],
             "expectations": f["expectations"], "fixed": f["fixed"], "closing": f["closing"]}
 
@@ -426,7 +454,8 @@ def _values(q, a):
 
 def onboard_changes(answers, layers, level=None, wt=None):
     """The answers file as ({level: config change}, extras): extras holds name, domain, folder and expectations.
-    A question left out keeps its value; only values that differ from the resolved config are written."""
+    A question left out, or answered with its "(current)" choice, keeps its value: nothing is written for it, whatever
+    the label says. Only values that differ from the resolved config are written."""
     f, cfg = form(), merged(layers)
     qs = f["questions"] + f["followups"]
     extras, want = {}, {}
@@ -434,6 +463,8 @@ def onboard_changes(answers, layers, level=None, wt=None):
         if q["id"] not in answers:
             continue
         a = answers[q["id"]]
+        if not q.get("multiSelect") and isinstance(a, str) and CURRENT.search(a):
+            continue  # keep: a "(current)" label is a display, never a value
         if q["id"] in ("name", "domain", "folder"):
             extras.setdefault(q["id"], _value(q, a, parse=False))  # the question with options first: "Main boss" is ""
             continue
@@ -459,6 +490,9 @@ def onboard_changes(answers, layers, level=None, wt=None):
         if val is None or val == _dig(cfg, key):
             continue
         lvl = level or q["level"]
+        src = [LEVELS.index(l) for k, (_, l) in sources(layers).items() if (k == key or k.startswith(key + ".")) and l in LEVELS]
+        if not level and src and max(src) > LEVELS.index(lvl):
+            lvl = LEVELS[max(src)]  # set higher up: written lower, it would stay hidden
         if key == "host" and not level and _dig(next((d for l, _, d in layers if l == "project"), {}), "host") not in (None, "", val):
             lvl = "boss"  # the project's other bosses keep theirs
         changes[lvl] = deep_merge(changes.get(lvl, {}), _nest(key, val))
