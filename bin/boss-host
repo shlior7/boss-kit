@@ -53,11 +53,12 @@ def sig(host, text):
     return ""
 
 
-def ready(host, prs):
-    """PR numbers that count as done: merged, open non-draft, or carrying a comment that starts a DONE envelope or its marker."""
+def ready(host, prs, draft=True):
+    """PR numbers that count as done: merged, open non-draft (only when workers open drafts: config github.draft), or
+    carrying a comment that starts a DONE envelope or its marker."""
     rx = done_comment_re(host)
     return {p["number"] for p in prs if p.get("state") == "MERGED" or (p.get("state") == "OPEN" and (
-        not p.get("isDraft") or any(rx.search(c.get("body") or "") for c in p.get("comments") or [])))}
+        (draft and not p.get("isDraft")) or any(rx.search(c.get("body") or "") for c in p.get("comments") or [])))}
 
 
 def pr_list(branch):
@@ -80,8 +81,9 @@ def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print):
     since = host.dispatched_at(boss, wid) if boss else 0
     msgs = host.messages(boss, wid) if boss else None
     seen = {i for i, _, at in (msgs or []) if not since or at < since}
+    draft = (ctx.cfg.get("github") or {}).get("draft", True)
     prs = pr_list(branch) if branch else None
-    pr_base = ready(host, prs) if prs is not None else None
+    pr_base = ready(host, prs, draft) if prs is not None else None
     idle = unread = 0
     for i in range(1, polls + 1):
         time.sleep(poll_s)
@@ -99,7 +101,7 @@ def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print):
         if branch and i % 3 == 0:
             prs = pr_list(branch)
             if prs is not None:
-                now = ready(host, prs)
+                now = ready(host, prs, draft)
                 if pr_base is None:
                     pr_base = now  # the first successful read is the baseline
                 elif now - pr_base:
@@ -224,6 +226,7 @@ def main(argv):
                     term = next((t["id"] for t in (host.worker(wid) or {}).get("terminals", []) if t.get("agent")), "")
                 register_watcher(ctx, wid, term, branch)
                 os.environ["BOSS_BIN"] = os.path.dirname(os.path.abspath(__file__))
+                os.environ["BOSS_PR_DRAFT"] = "1" if (ctx.cfg.get("github") or {}).get("draft", True) else "0"
                 os.environ.update({k: v for k, v in host.watch_env().items() if v})
                 os.execv(script, [script, wid, term, *([branch] if branch else [])])
             path = register_watcher(ctx, wid, term, branch)

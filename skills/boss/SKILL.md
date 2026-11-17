@@ -9,24 +9,28 @@ Set `KIT="${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}"` in your head; every command
 
 **Onboard instead of loading** when the user said `/boss onboard` (optionally naming a level: `user`, `project` or `boss`), or when `python3 "$KIT/bin/bosskit.py" show` fails with "no project for …". Otherwise skip to "Load".
 
-## Onboard (writes nothing until the user approves)
+## Onboard: the form (writes nothing until the user approves)
 
-1. **Detect.** `python3 "$KIT/bin/bosskit.py" detect` prints JSON: each installed host plugin, whether its CLI is there and answers, and this session's id on it (`hosts`), this session's id (`session`), the host it resolves to (`detected_host`), the gh login, the git remote, branch and default branch, the projects in `$BOSS_HOME` with their repo and host, the project this worktree resolves to (`project`, or null), the three config files and whether they exist (`layers`), and the `CLAUDE.local.md` marker. If `project` resolves, also run `python3 "$KIT/bin/bosskit.py" config show` for the current values and their layers.
-2. **Propose**, deriving everything you can:
-   - host: `detected_host`, the plugin this session runs on (a plugin whose `session` is set, and `ok`). Propose only an installed plugin; never name a host `detect` did not list. If the project already exists with another host, put `host` in the **boss** layer, so the project's other bosses keep theirs. A new project gets it in the **project** layer. A plugin's own settings go under `hosts.<name>` (its `host.json` `defaults` list them).
-   - project name: the repo's name (`owner/widgets` → `widgets`), unless a project already has this repo; repo from `git.repo`; base branch from `git.default_branch`; `me` from `gh.login`.
-   - leave the rest at the kit defaults (`config show` lists them: `models`, `effort`, `wake`, `pages`, `boss_name`, `tracker`).
-   - the `CLAUDE.local.md` marker: `# Boss workspace <session.boss_id>` (gitignored; it is what makes this session, and only this one, the boss).
-   - on a re-run with a level named, propose changes for that level only.
-3. **Ask only what you cannot derive**, in one AskUserQuestion (at most 4 questions, recommended option first): the project name when it clashes, a tracker (default none), whether mail should wake this boss (`wake`), model or effort overrides, and the level when it is a re-run with no level named. Skip any question the environment already answered.
-4. **Show the full result before writing.** For each level you would change, run the dry run:
-   `python3 "$KIT/bin/bosskit.py" config set --level <user|project|boss> key=value ...`
-   (a dotted key nests: `models.strong=fable`; values are JSON when they parse). For a new project the project and boss layers don't exist yet: show the proposed `config.json` and say `bin/boss-init` creates it. Then show the user, in one message: every resolved key, its value and the layer it lands in (the dry run's table), each file that would be created or changed, the `boss-init` command for a new project, and the marker line. Ask once: write it?
-5. **Write only on yes**, in this order, and never overwrite:
-   - a new project: `"$KIT/bin/boss-init" <name> --repo <owner/repo> --base <branch> --me <login> --host <host> --worktree <this worktree>` (it refuses an existing project);
-   - each changed level: the same `config set` with `--apply` (it merges into the file, keeps every other key, and copies an existing file to `<file>.bak-<time>` first);
+The form's questions live in one place, `questions.json` next to this file; `bin/boss-init --questions` and `--answers` read the same file. Never invent questions or options beyond it.
+
+1. **Detect and load the form.** `python3 "$KIT/bin/bosskit.py" onboard questions` prints JSON: `calls` (the questions to ask, already packed into AskUserQuestion calls of at most 4, each one's current value first and marked `(current)`), `plain` (free-text questions nothing could answer), `derived` (what `detect` answered: host, project name, repo, base branch, login; never ask these), `followups`, `expectations`, `fixed` and `closing`. `python3 "$KIT/bin/bosskit.py" detect` has the raw environment if you need it; if a project resolves, `config show` has the current values and their layers.
+2. **Say first, in one short message:** what was derived (each `derived` value), and each `fixed` line, word for word. Merging is fixed: the boss never merges without the user's OK. State it; never ask it.
+3. **Ask each call in `calls`, in order,** with AskUserQuestion: pass each question's `question`, `header`, `multiSelect` and `options` (label and description) as given. The first call is **"What should be posted on the PR?"**, split over two checkbox questions; their text says how to choose none (leave every box unchecked, or Other and type `none`), and none is a valid answer. Record each answer under its `id`: the chosen label (a list of labels for a checkbox question, `[]` for none), or the Other text as typed. A `(current)` choice means keep: record its label as shown and nothing is written for it.
+4. **Then the plain questions and follow-ups**, as ordinary questions in chat: each `plain` question, then each `followups` entry whose `when` holds (`"domain"`: the domain answer is a name; `{"domain": "$ask"}`: the user picked Domain boss, so ask its name and record it as `domain`).
+5. **The open question, last:** ask `expectations.question` with AskUserQuestion (its options as starters, multiSelect, and say Other takes their own words), or as a plain question. Record the answer, the user's own words, under `expectations`. It is saved to the project's `BOSS.md` under `## Expectations`, which every later boss session loads.
+6. **Show the full result before writing.** Write the answers as JSON (`{"<id>": <answer>, ...}`, plus `derived` values the user didn't change) to a scratch file, then run the dry run:
+   `python3 "$KIT/bin/bosskit.py" onboard apply <answers.json> [--project <name>] [--level <user|project|boss>]`
+   It prints every resolved key, its value and the layer it comes from, each config file it would write and what, the `## Expectations` text and any `Domain:` lines. Only values that differ from today's are written; a question left out keeps its value. Pass `--level` only when the user named one (`/boss onboard project`): then every change lands there; otherwise each lands in its question's level (`host` in the **boss** layer when the project already has another host, so its other bosses keep theirs). For a new project add the `boss-init` command (step 7) and the marker line `# Boss workspace <session.boss_id>` (gitignored `CLAUDE.local.md`; it is what makes this session, and only this one, the boss). Ask once: write it?
+7. **Write only on yes**, in this order, and never overwrite:
+   - a new project: `"$KIT/bin/boss-init" <name> --worktree <this worktree> --answers <answers.json>` (it refuses an existing project, scaffolds it, and applies the answers: config, `BOSS.md`'s expectations);
+   - an existing project: the same `onboard apply` with `--apply` (it merges into each file, keeps every other key, and copies an existing file to `<file>.bak-<time>` first). A single key still works the old way: `bosskit.py config set --level <level> key=value --apply`;
    - the marker: append `# Boss workspace <id>` to `CLAUDE.local.md` only when the file has no `# Boss workspace` line; if it has one with another id, show it and ask.
-   Then run `config show` once and say where each file is. Continue with "Load".
+   Then run `config show` once and say where each file is.
+8. **End the form with exactly the `closing` line, as your own words:**
+   "I'm a mere boss but you are the god. I hope to please you and get things done. Always let me know how I can be better."
+   Then continue with "Load".
+
+`/boss onboard` re-runs the form any time (current values prefilled); `/boss onboard user|project|boss` lands every change in that level.
 
 ## Load
 

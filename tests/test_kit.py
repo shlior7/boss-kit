@@ -798,9 +798,12 @@ class ConfigLayers(Home):
         ctx = bosskit.load(self.wt)
         self.assertEqual(ctx.cfg["deck_buttons"], mine)  # a list replaces, never merges
         self.assertEqual(bosskit.sources(ctx.layers)["deck_buttons"], (mine, "project"))
-        self.assertEqual([b["label"] for b in ctx.cfg["deck_worker_buttons"]], ["Status", "Verify", "Nudge"])  # still the kit's
+        self.assertEqual([b["label"] for b in ctx.cfg["deck_worker_buttons"]], ["Status", "Verify", "Nudge", "Cleanup"])  # still the kit's
         for b in bosskit.DEFAULTS["deck_buttons"] + bosskit.DEFAULTS["deck_worker_buttons"]:
             self.assertTrue(b["label"] and b["prompt"], b)
+        cleanup = bosskit.DEFAULTS["deck_worker_buttons"][-1]["prompt"]
+        for word in ("{name}", "{id}", "leftover check", "ask me to archive", "standing cleanup OK", "dead panes"):
+            self.assertIn(word, cleanup)  # it asks before archiving, like section 8
 
     def test_a_scalar_and_a_dict_replace_each_other(self):
         layers = [("kit", "", {"tracker": {"type": "none"}}), ("user", "", {"tracker": "off"}), ("project", "", {"tracker": {"url": "u"}})]
@@ -1235,6 +1238,16 @@ class Merge(Home):
         self.assertEqual(self.merges(), [f"pr merge 7 --squash --match-head-commit {self.HEAD}"])
         self.assertIn("merged PR #7: " + "f" * 40, r.stdout)
         self.assertIn("leftovers: none", r.stdout)
+
+    def test_config_github_merge_picks_the_method(self):
+        cfg = os.path.join(self.home, "widgets", "config.json")
+        json.dump({**json.load(open(cfg)), "github": {"merge": "rebase"}}, open(cfg, "w"))
+        bosskit.add_event(self.ctx, self.WS, "checked", f"{self.HEAD[:10]} tests green")
+        r = self.merge()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.merges(), [f"pr merge 7 --rebase --match-head-commit {self.HEAD}"])
+        json.dump({**json.load(open(cfg)), "github": {"merge": "fast"}}, open(cfg, "w"))
+        self.assertIn("squash, merge or rebase", self.merge().stderr)
         self.assertIn(f"boss-host archive {self.WS}", r.stdout)
         self.assertEqual([(e["ws"], e["stage"], e["note"]) for e in bosskit.events(self.ctx.bdir)][-1], (self.WS, "merged", "PR #7"))
 
@@ -1317,9 +1330,10 @@ class OrgLayer(Home):
 
     def test_no_org_files_changes_no_output(self):
         ctx = bosskit.load(self.wt)
-        # the loader's output as it was built before the org layer: template, host commands, BOSS.md, nothing else
+        # the loader's output as it was built before the org layer: template, host commands, settings, BOSS.md, nothing else
         parts = [("BOSS-template.md", bosskit._read(os.path.join(bosskit.KIT, "BOSS-template.md"))),
                  ("host plugin fake (host commands)", bosskit._read(os.path.join(HOSTS, "fake", "prompt.md"))),
+                 ("settings in effect (config)", bosskit.github_text(ctx.cfg, bosshost.get(ctx.cfg, "fake"))),
                  ("widgets/BOSS.md", "# Facts\n| Repo | acme/widgets |\n")]
         before = "# Boss session: project widgets, boss ws-1, host fake\n" + "".join(f"\n\n<!-- {n} -->\n\n{b.strip()}\n" for n, b in parts)
         self.assertEqual(bosskit.instructions(ctx), before)
@@ -1373,7 +1387,8 @@ class PagesProvider(Home):
                 os.environ["BOSS_HOST_KIND"] = name
                 ctx = bosskit.load(self.wt)
                 plain = bosskit.host_prompt(ctx)
-                self.assertEqual(plain, bosshost.get(ctx.cfg, name).prompt())  # pages "auto": the host's own text
+                own = bosskit.HOST_PR_LINE.sub(lambda _: "GitHub: " + bosskit.worker_github_line(ctx.cfg), bosshost.get(ctx.cfg, name).prompt())
+                self.assertEqual(plain, own)  # pages "auto": the host's own text, its PR-comment line from config's github
                 ctx.cfg["pages"] = self.PAGES
                 got = bosskit.host_prompt(ctx)
                 self.assertEqual([l for l in got.splitlines() if l.startswith("- Pages:")], [line])

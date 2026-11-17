@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""boss-merge: squash-merge one PR, only when it is safe.
+"""boss-merge: merge one PR, only when it is safe (squash, or config's github.merge: merge | rebase).
 
   boss-merge <pr> [--sha <verified sha>]
 
 Refuses unless the PR is open and its head is the sha the boss verified (--sha, else the sha the boss's last `checked`
 event names for the workspace on the PR's branch), mergeable is MERGEABLE, every review thread is answered (resolved, or
-the PR author replied in it), and no check is failing or pending. Then `gh pr merge --squash --match-head-commit <sha>`;
+the PR author replied in it), and no check is failing or pending. Then `gh pr merge --<method> --match-head-commit <sha>`;
 when the base branch policy refuses and you can bypass every ruleset on the base, it retries with --admin and says so.
 Never --auto, never force. Once MERGED it prints the merge commit, logs `merged "PR #N"` for the workspace, and prints the
 leftover check of its worktree (BOSS-template.md section 8) and the archive command. It never archives: that needs the
@@ -111,6 +111,9 @@ def main(argv):
         ctx = bosskit.load()
     except SystemExit:
         ctx = None
+    method = ((ctx.cfg if ctx else {}).get("github") or {}).get("merge") or "squash"
+    if method not in ("squash", "merge", "rebase"):
+        sys.exit(f"boss-merge: config github.merge is {method!r}: squash, merge or rebase")
     host = bosshost.get(ctx.cfg if ctx else None)
     ws = workspace(host, branch)
     if not sha and ws and ctx:
@@ -134,7 +137,7 @@ def main(argv):
         print("\n".join(f"refused: {w}" for w in why))
         sys.exit(1)
 
-    cmd = ("pr", "merge", n, "--squash", "--match-head-commit", head)
+    cmd = ("pr", "merge", n, f"--{method}", "--match-head-commit", head)
     rc, out, err = gh(*cmd)
     if rc and "base branch policy" in err + out:
         if not can_bypass(base):
