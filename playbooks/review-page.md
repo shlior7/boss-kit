@@ -1,7 +1,8 @@
-# Review page layout (BOSS-template.md section 12)
+# Review pages (BOSS-template.md section 12, full wording)
 
-The layout section 12 asks for; read it before you build one. After a batch of merges, or when I ask, publish one overview page of the project's state:
+The template keeps each rule of section 12 as one short line; this is the full wording, with its examples and steps. Read it before you build a review page.
 
+After a batch of merges, or when I ask, publish one overview page of the project's state:
 1. **Stack:** the current PR stack and the merge order.
 2. **What merged:** each PR since the last review, with its sha.
 3. **What each PR proved:** links to its demo and evidence page, or "no proof" stated plainly.

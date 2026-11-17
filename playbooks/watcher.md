@@ -1,15 +1,15 @@
-# Watcher, PR sweep and stage log (BOSS-template.md section 6)
+# Completion envelope + watcher (mandatory on every dispatch) (BOSS-template.md section 6, full wording)
 
-How-to detail for section 6. The rules stay in the template; where this file and the template differ, the template wins. Read it when you arm your first watcher in a session, and when one fires oddly or misfires.
+The template keeps each rule of section 6 as one short line; this is the full wording, with its examples and steps. Read it when you arm your first watcher in a session, and when one fires oddly or misfires.
 
-## The envelope on screen
-The whole envelope stays under 15 rows because a poll reads only the bottom of the screen. A long envelope pushes its first line off the screen before a poll sees it.
+Workers end with exactly one of these, delivered as the host commands say (on screen, or sent to you as a message). The first line is literally `BOSS_WORKER_DONE task: <id>` (or `BOSS_WORKER_BLOCKED task: <id>`) on one line, and the whole envelope stays under 15 rows; details go in the PR body. The envelope never goes on the PR: there the worker posts its status comment with the hidden marker (section 5, rule 4). A long envelope pushes its first line off the screen before a poll sees it. The envelope is mandatory whatever `github.comments` says: with `status` and `marker` both off, nothing on GitHub says done, and the settings block names the done signal that is left (the screen or the worker's message; on a host with neither, only the idle fire).
+BOSS_WORKER_DONE / task / summary / files / checks / proof / handoff   (proof = demo video and page URLs, or "none: <why>")
+BOSS_WORKER_BLOCKED / task / reason / needs
 
-## What fires the watcher
-`bin/boss-host watch <workspace> <branch>` runs in the background until something happens. It fires on a new envelope, when the branch's PR gets a DONE comment, leaves draft or merges (PR READY), when the agent waits on someone (blocked), after a few idle minutes without an envelope, or when the workspace is gone, and logs the stage. The host commands say how it reads the envelope.
+In the SAME turn as the dispatch, arm the watcher in the background: `bin/boss-host watch <workspace> <branch>` (`run_in_background`, never `&`, run from the repo; always pass the branch). It fires on a new envelope, when the branch's PR gets a DONE comment, leaves draft or merges (PR READY), when the agent waits on someone (blocked), after a few idle minutes without an envelope, or when the workspace is gone, and logs the stage. The host commands say how it reads the envelope. Never say "I'll report back" without an armed watcher. A session restart kills every watcher: on resume, look for envelopes that landed meanwhile (host commands), then re-arm.
+PR sweep (does not depend on the screen): at every turn and every report, run `gh pr list --state open --json number,isDraft,mergeable,headRefName,comments`. A draft with a comment carrying the DONE marker (`<!-- BOSS_WORKER_DONE task: <id> -->`, or a whole envelope from an older worker; none when `github.comments` allows neither `status` nor `marker`) the ledger has not verified is finished work: verify it (section 7), then mark it ready or send it back. A non-draft PR the ledger does not show as handled needs the same check. While workers run, each watcher does this sweep for its own `<branch>` in the background: it fires `PR READY` when that branch's PR gets a DONE comment, leaves draft, or merges. A watcher covers only the branch it was given.
+Stage log: `boss-host create` and `boss-host send` log `sent` and `msg` themselves; for a dispatch made any other way, run `bin/boss-event <workspace> sent "<one line: what was sent>"` in the same turn. The pane reads `events.jsonl` for each workspace's stage (your move, boss checking, working, blocked, in review, idle, done today), its time in stage and its expanded timeline. The watcher logs DONE, BLOCKED, PR READY and merged itself when it fires; you log `sent`, `checked`, `ready` and `retired` (sections 7 and 8). Pass the workspace id, the same one you give the watcher. Each `boss-host send` is logged as that workspace's `msg` event; the worker's own pane shows them under FROM BOSS.
+On fire: verify independently, update the ledger, report unprompted.
 
-## PR sweep
-While workers run, each watcher does this sweep for its own `<branch>` in the background: it fires `PR READY` when that branch's PR gets a DONE comment, leaves draft, or merges. Your own sweep, at every turn and every report, covers every open PR, including those no watcher looks at.
-
-## Stage log
-The pane reads `events.jsonl` for each workspace's stage (your move, boss checking, working, blocked, in review, idle, done today), its time in stage and its expanded timeline. Each `boss-host send` is logged as that workspace's `msg` event; the worker's own pane shows them under FROM BOSS.
+## Self-improvement (every turn)
+See section 0, the golden rule. It applies here first: a missed envelope, or a false fire on a screen the watcher should have read correctly, is an incident. An idle-fallback fire during a documented long wait (CI, a long test run) is expected: check the screen and GitHub, then re-arm. It becomes an incident only if it hid a real envelope or keeps recurring after the wait ends.

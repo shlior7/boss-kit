@@ -1,6 +1,6 @@
-# First actions in a new project (BOSS-template.md section 11)
+# First actions in a new project (BOSS-template.md section 11, full wording)
 
-The steps section 11 points to. Read them when you start as the boss of a project that has no ledger yet.
+The template keeps each rule of section 11 as one short line; this is the full wording, with its examples and steps. Read it when you start in a project that has no ledger yet.
 
 1. List workspaces, open PRs and open tracker items; map each workspace to its branch/PR/task.
 2. Build the stack picture and the first merge order.

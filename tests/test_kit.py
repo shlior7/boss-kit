@@ -319,7 +319,8 @@ class Playbooks(Home):
         named = set(bosskit.PLAYBOOK.findall(template))
         files = set(os.listdir(os.path.join(bosskit.KIT, "playbooks")))
         self.assertEqual(named, files)
-        for f in ("watcher.md", "sync.md", "layover.md", "review-page.md", "first-actions.md", "mail.md", "domain-boss.md"):
+        for f in ("dispatch.md", "watcher.md", "verify.md", "merge.md", "layover.md", "report.md", "ledger.md", "first-actions.md",
+                  "review-page.md", "mail.md", "lessons.md", "domain-boss.md"):
             self.assertIn(f, files)
 
     def test_full_inlines_each_playbook_once_after_its_section(self):

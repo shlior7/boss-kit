@@ -4,11 +4,13 @@
   tests/rule_coverage.py [--base REF] [-v]     REF defaults to origin/main, else main
 
 Checks, each failing the run (exit 1):
-  - section 3 (hard rules) is word for word the base's;
-  - every heading on the base is still a heading;
-  - every rule sentence on the base (one saying never, always or only) is in the template or a playbook;
-  - every other sentence on the base is in the template or a playbook, verbatim.
-It prints where each rule sentence lives now (template, or playbooks only); -v lists them all.
+  - section 3 (hard rules) is in the template word for word as on the base;
+  - every heading on the base is still a heading in the template;
+  - every rule sentence on the base (one saying never, always or only) is in the template or a playbook, verbatim;
+  - every other sentence on the base is in the template or a playbook, verbatim;
+  - every playbooks/*.md is named in the template on a line that says when to read it (or that it is loaded), and every
+    playbook the template names exists.
+It counts where the rule sentences live now (template, or playbooks only); -v lists each one.
 Not part of the unittest suite on purpose: a PR that rewords a rule on purpose would fail it. Run it for any PR that
 moves template text.
 """
@@ -75,7 +77,7 @@ def main(argv):
     fails += bool(miss)
     print(f"{'FAIL' if miss else 'ok  '} rule sentences (never/always/only): {len(rules)} on {ref}, "
           f"{len(rules) - len(books_only) - len(miss)} in the template, {len(books_only)} in playbooks only, {len(miss)} missing")
-    for h, s, w in where if "-v" in argv else books_only + miss:
+    for h, s, w in where if "-v" in argv else miss:
         print(f"     [{w}] {h[:40]}: {s}")
 
     rest = [(h, s) for h, s in sentences(base) if not RULE.search(s)]
@@ -84,6 +86,17 @@ def main(argv):
     print(f"{'FAIL' if lost else 'ok  '} other sentences: {len(rest)} on {ref}, {len(rest) - len(lost)} kept verbatim, {len(lost)} missing")
     for h, s in lost:
         print(f"     [MISSING] {h[:40]}: {s}")
+
+    named = {}
+    for line in tmpl.splitlines():
+        for name in re.findall(r"`playbooks/([\w-]+\.md)`", line):
+            named[name] = named.get(name) or bool(re.search(r"\b(read|loads)\b", line, re.I))
+    files = {os.path.basename(p) for p in books}
+    bad = sorted(f"{f}: not named" for f in files - set(named)) + sorted(f"{f}: no such file" for f in set(named) - files)
+    bad += sorted(f"{f}: no line says when to read it" for f, when in named.items() if f in files and not when)
+    fails += bool(bad)
+    print(f"{'FAIL' if bad else 'ok  '} playbooks: {len(files)} files, {len(files) - len(bad)} named with when to read them"
+          + "".join(f"\n     {b}" for b in bad))
     sys.exit(1 if fails else 0)
 
 
