@@ -100,7 +100,7 @@ export type Boss = {
   pages?: Page[]
 }
 export type MailItem = { id: string; kind: string; from: string; subject: string }
-/** A pane button, from config's deck_buttons or deck_worker_buttons: a click submits its prompt to the boss's session. */
+/** A pane button, from config's deck_buttons or deck_worker_buttons with deck_prompts / deck_worker_prompts applied: a click submits its prompt to the boss's session. */
 export type DeckButton = { label: string; prompt: string }
 export type Deck = {
   at: number

@@ -299,6 +299,15 @@ class UrgentMail(Home):
         deck = deck_json(self.wt, stub_tools(self.tmp, self.fixdir), "--workspace", "me-ws", "--terminal", "me-t1", "--host-kind", "fake")
         self.assertEqual(bosskit.registry(self.home)[deck["me"]["id"]]["terminal"], "me-t1")
 
+    def test_the_pane_data_carries_the_buttons_with_the_overrides_applied(self):
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace\n")
+        json.dump({"deck_prompts": {"Mail": None, "Cleanup": "mine", "Extra": "e"}, "deck_worker_prompts": {"Nudge": None}},
+                  open(os.path.join(self.home, "config.json"), "w"))
+        deck = deck_json(self.wt, stub_tools(self.tmp, self.fixdir), "--workspace", "me-ws", "--terminal", "me-t1", "--host-kind", "fake")
+        buttons = {b["label"]: b["prompt"] for b in deck["buttons"]}
+        self.assertEqual((buttons["Cleanup"], buttons["Extra"], "Mail" in buttons), ("mine", "e", False))
+        self.assertNotIn("Nudge", [b["label"] for b in deck["workerButtons"]])
+
     def test_a_message_id_is_a_name_never_a_path(self):
         open(os.path.join(self.ctx.bdir, "outside.json"), "w").write("{}")
         for bad in ("../outside", "/etc/passwd", "20260101-000000-abcdef/../../outside"):
@@ -1025,6 +1034,158 @@ class ConfigLayers(Home):
         cleanup = bosskit.DEFAULTS["deck_worker_buttons"][-1]["prompt"]
         for word in ("{name}", "{id}", "leftover check", "ask me to archive", "standing cleanup OK", "dead panes"):
             self.assertIn(word, cleanup)  # it asks before archiving, like section 8
+
+    def labels(self, layers, kind="boss"):
+        return {b["label"]: b["prompt"] for b in bosskit.pane_buttons(layers, kind)}
+
+    def bcli(self, *args, **kw):
+        return subprocess.run([sys.executable, os.path.join(BIN, "bosskit.py"), "buttons", *args], cwd=self.wt, capture_output=True, text=True, **kw)
+
+    def test_the_default_cleanup_prompt_also_closes_finished_sessions_and_terminals(self):
+        cleanup = self.labels(bosskit.load(self.wt).layers)["Cleanup"]
+        self.assertTrue(cleanup.startswith("Cleanup: retire merged workspaces after the leftover check, close finished sessions and their terminals"))
+        for word in ("boss-host close / close-dead", "tidy junk", "Ask before merging, and before anything outward."):
+            self.assertIn(word, cleanup)
+
+    def test_a_boss_level_prompt_override_changes_only_that_boss(self):
+        ctx = bosskit.load(self.wt)
+        kit = self.labels(ctx.layers)
+        bosskit.set_config(ctx.layers, "boss", {"deck_prompts": {"Cleanup": "Mine: close everything."}}, apply=True)
+        mine = self.labels(bosskit.load(self.wt).layers)
+        self.assertEqual(list(mine), list(kit))  # same buttons, same order
+        self.assertEqual(mine.pop("Cleanup"), "Mine: close everything.")
+        self.assertEqual({k: v for k, v in kit.items() if k != "Cleanup"}, mine)  # nothing else moved
+        other = bosskit.config_layers(self.home, "widgets", "ws-2")  # another boss of the project
+        self.assertEqual(self.labels(other), kit)
+        self.assertEqual(self.labels(bosskit.config_layers(self.home, "widgets")), kit)  # and the project itself
+
+    def test_null_hides_a_button_and_an_unknown_label_adds_one(self):
+        ctx = bosskit.load(self.wt)
+        bosskit.set_config(ctx.layers, "user", {"deck_prompts": {"Mail": None, "Deploy check": "Is staging green? Ask before merging."}}, apply=True)
+        got = self.labels(bosskit.load(self.wt).layers)
+        self.assertNotIn("Mail", got)
+        self.assertEqual(list(got)[-1], "Deploy check")  # added after the list
+        self.assertEqual(got["Deploy check"], "Is staging green? Ask before merging.")
+        self.assertIn("Lessons", got)
+
+    def test_overrides_merge_per_layer_and_a_higher_layer_wins_per_label(self):
+        json.dump({"deck_prompts": {"Cleanup": "user cleanup", "Mail": "user mail"}}, open(os.path.join(self.home, "config.json"), "w"))
+        json.dump({"deck_prompts": {"Mail": None}, "deck_worker_prompts": {"Verify": "worker verify {pr}"}},
+                  open(os.path.join(self.home, "widgets", "config.json"), "w"))
+        ctx = bosskit.load(self.wt)
+        got = self.labels(ctx.layers)
+        self.assertEqual(got["Cleanup"], "user cleanup")  # the user's survives the project's other label
+        self.assertNotIn("Mail", got)  # the project's null beats the user's prompt
+        self.assertEqual(self.labels(ctx.layers, "worker")["Verify"], "worker verify {pr}")
+        self.assertEqual(self.labels(ctx.layers, "worker")["Nudge"], bosskit.DEFAULTS["deck_worker_buttons"][2]["prompt"])
+        self.assertEqual(self.labels(ctx.layers)["Status"], bosskit.DEFAULTS["deck_buttons"][0]["prompt"])  # worker overrides leave the boss row alone
+
+    def test_overrides_apply_on_top_of_a_layer_that_replaces_the_list(self):
+        json.dump({"deck_buttons": [{"label": "Deploy check", "prompt": "Is staging green?"}, {"label": "Mail", "prompt": "m"}]},
+                  open(os.path.join(self.home, "widgets", "config.json"), "w"))
+        json.dump({"deck_prompts": {"Deploy check": "Staging and prod green?"}}, open(os.path.join(self.home, "config.json"), "w"))
+        self.assertEqual(self.labels(bosskit.load(self.wt).layers), {"Deploy check": "Staging and prod green?", "Mail": "m"})
+
+    def test_the_deck_data_carries_the_resolved_buttons(self):
+        json.dump({"deck_prompts": {"Status": "mine", "Lessons": None}, "deck_worker_prompts": {"Nudge": None}},
+                  open(os.path.join(self.home, "config.json"), "w"))
+        layers = bosskit.load(self.wt).layers
+        self.assertEqual(self.labels(layers)["Status"], "mine")
+        self.assertNotIn("Lessons", self.labels(layers))
+        self.assertEqual(list(self.labels(layers, "worker")), ["Status", "Verify", "Cleanup"])
+
+    def test_buttons_cli_shows_the_layer_of_each_button(self):
+        ctx = bosskit.load(self.wt)
+        bosskit.set_config(ctx.layers, "project", {"deck_prompts": {"Cleanup": "p cleanup", "Mail": None, "Deploy check": "d"}}, apply=True)
+        out = self.bcli().stdout
+        self.assertRegex(out, r"(?m)^Status\s+kit\s+list\s+Status: ")
+        self.assertRegex(out, r"(?m)^Cleanup\s+project\s+override\s+p cleanup$")
+        self.assertRegex(out, r"(?m)^Deploy check\s+project\s+added\s+d$")
+        self.assertRegex(out, r"(?m)^Mail\s+project\s+hidden\s+\(hidden\)$")
+        rows = json.loads(self.bcli("--json").stdout)["buttons"]
+        self.assertEqual({r["label"]: r["from"] for r in rows}["Cleanup"], "project")
+        self.assertIn("Nudge", self.bcli("--worker").stdout)
+
+    def test_buttons_set_is_a_dry_run_until_apply_and_backs_the_file_up(self):
+        path = os.path.join(self.home, "widgets", "bosses", "ws-1", "config.json")
+        before = sorted(os.walk(self.home))
+        r = self.bcli("set", "--level", "boss", "Cleanup=Do it all", "Mail=null")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"(?m)^Cleanup\s+boss\s+override\s+Do it all$")
+        self.assertIn("dry run: nothing written", r.stdout)
+        self.assertEqual(sorted(os.walk(self.home)), before)
+        self.assertFalse(os.path.exists(path))
+        r = self.bcli("set", "--level", "boss", "Cleanup=Do it all", "Mail=null", "--apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.load(open(path)), {"deck_prompts": {"Cleanup": "Do it all", "Mail": None}})
+        self.assertIn(f"wrote {path}", r.stdout)
+        r = self.bcli("set", "--level", "boss", "--worker", "Verify=v", "--apply")  # a second write keeps the first and backs up
+        self.assertEqual(json.load(open(path))["deck_prompts"]["Cleanup"], "Do it all")
+        self.assertEqual(json.load(open(path))["deck_worker_prompts"], {"Verify": "v"})
+        self.assertIn("backup", r.stdout)
+        self.assertNotIn("Mail", self.labels(bosskit.load(self.wt).layers))
+
+    def test_malformed_labels_are_skipped_not_a_crash(self):
+        json.dump({"deck_buttons": [{"label": ["Cleanup"], "prompt": "x"}, {"label": 5, "prompt": "y"}, {"label": "", "prompt": "z"},
+                                    {"label": "Ok", "prompt": "fine"}]}, open(os.path.join(self.home, "widgets", "config.json"), "w"))
+        layers = bosskit.load(self.wt).layers
+        self.assertEqual(self.labels(layers), {"Ok": "fine"})
+        out = self.bcli().stdout
+        self.assertIn("Ok", out)
+        self.assertIn("deck_buttons[0] (project): skipped", out)
+
+    def test_an_override_applies_to_every_row_with_that_label(self):
+        json.dump({"deck_buttons": [{"label": "Cleanup", "prompt": "a"}, {"label": "Mail", "prompt": "m"}, {"label": "Cleanup", "prompt": "b"}],
+                   "deck_prompts": {"Cleanup": "new"}}, open(os.path.join(self.home, "widgets", "config.json"), "w"))
+        rows = bosskit.resolve_buttons(bosskit.load(self.wt).layers)
+        self.assertEqual([(r["label"], r["prompt"]) for r in rows], [("Cleanup", "new"), ("Mail", "m"), ("Cleanup", "new")])
+        json.dump({"deck_buttons": [{"label": "Cleanup", "prompt": "a"}, {"label": "Mail", "prompt": "m"}, {"label": "Cleanup", "prompt": "b"}],
+                   "deck_prompts": {"Cleanup": None}}, open(os.path.join(self.home, "widgets", "config.json"), "w"))
+        self.assertEqual(list(self.labels(bosskit.load(self.wt).layers)), ["Mail"])  # both hidden, not just the first
+
+    def test_the_pane_and_the_buttons_command_resolve_the_same_way_and_the_command_reports_what_it_ignores(self):
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace\n")
+        json.dump({"deck_prompts": {"Mail": None}}, open(os.path.join(self.home, "config.json"), "w"))
+        json.dump({"repo": "acme/widgets", "me": "octocat", "deck_prompts": {"Mail": False}}, open(os.path.join(self.home, "widgets", "config.json"), "w"))  # invalid: ignored
+        deck = deck_json(self.wt, stub_tools(self.tmp, self.fixdir), "--workspace", "me-ws", "--terminal", "me-t1", "--host-kind", "fake")
+        self.assertNotIn("Mail", [b["label"] for b in deck["buttons"]])  # the user's null still hides it
+        out = self.bcli().stdout
+        self.assertRegex(out, r"(?m)^Mail\s+user\s+hidden")
+        self.assertIn("ignored: deck_prompts.Mail = false (project)", out)
+        self.assertEqual([b["label"] for b in deck["buttons"]], [r["label"] for r in json.loads(self.bcli("--json").stdout)["buttons"] if r["prompt"] is not None])
+
+    def test_buttons_set_rejects_a_malformed_assignment_before_writing_anything(self):
+        path = os.path.join(self.home, "widgets", "bosses", "ws-1", "config.json")
+        r = self.bcli("set", "--level", "boss", "Cleanup=x", "Mail:null", "--apply")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Mail:null", r.stderr)
+        self.assertFalse(os.path.exists(path))  # Cleanup=x was not written either
+        r = self.bcli("set", "--level", "boss", "Cleanup=x", "--bogus", "--apply")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(os.path.exists(path))
+
+    def test_the_preview_says_when_a_higher_layer_shadows_the_edit(self):
+        json.dump({"deck_prompts": {"Cleanup": "project cleanup"}}, open(os.path.join(self.home, "widgets", "config.json"), "w"))
+        r = self.bcli("set", "--level", "user", "Cleanup=mine", "Mail=null")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Cleanup: shadowed by project", r.stdout)
+        self.assertNotIn("Mail: shadowed", r.stdout)
+        self.assertRegex(r.stdout, r"(?m)^Cleanup\s+project\s+override\s+project cleanup$")  # what the pane will show
+        r = self.bcli("set", "--level", "project", "Cleanup=p2")
+        self.assertNotIn("shadowed", r.stdout)
+
+    def test_outside_a_project_a_user_edit_still_works_and_says_it_saw_only_the_shared_layers(self):
+        elsewhere = os.path.join(self.tmp, "no-project")
+        os.makedirs(elsewhere)
+        env = {k: v for k, v in os.environ.items() if k != "BOSS_PROJECT"}
+        r = subprocess.run([sys.executable, os.path.join(BIN, "bosskit.py"), "buttons", "set", "--level", "user", "Mail=null"],
+                           cwd=elsewhere, capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("shared layers only", r.stdout)
+
+    def test_buttons_set_needs_a_level_and_a_label(self):
+        self.assertNotEqual(self.bcli("set", "Cleanup=x").returncode, 0)
+        self.assertNotEqual(self.bcli("set", "--level", "boss").returncode, 0)
 
     def test_a_scalar_and_a_dict_replace_each_other(self):
         layers = [("kit", "", {"tracker": {"type": "none"}}), ("user", "", {"tracker": "off"}), ("project", "", {"tracker": {"url": "u"}})]
