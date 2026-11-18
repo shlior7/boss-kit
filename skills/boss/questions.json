@@ -1,173 +1,25 @@
 {
- "about": "The /boss onboarding form, the one source for the skill (AskUserQuestion: at most 4 questions per call, 4 options each, Other always offered) and bin/boss-init (--questions, --answers). `bosskit.py onboard questions` adds each question's current value and packs the ones to ask into calls; `bosskit.py onboard apply <answers.json>` turns the answers into config and BOSS.md changes. Per question: id (the answers file's key), key (the dotted config key it sets; a list sets each), level (where its value lands unless a level is named), derive (a path into `bosskit.py detect`: when it gives a value, the question is not asked), free (asked as a plain question, no options), options [{label, value, description}] (value \"$default\" is the kit default; an answer is a label, a value or Other text, which is JSON when it parses), and multiSelect questions sharing a key add up.",
+ "about": "The /boss onboarding form, the one source for the skill (AskUserQuestion: at most 4 questions per call, 4 options each, Other always offered) and bin/boss-init (--questions, --answers). It asks at most four questions in one call (three after the first two are already set on this machine), then the expectations as an open question in chat; every other setting is derived (derive_only: never asked, listed as unset when nothing answers) or keeps its default, and changes later with `bosskit.py config set`. A question whose value is already set above the kit defaults is skipped (`onboard questions --all` asks everything). Answering is the consent: `bosskit.py onboard apply <answers.json> --apply` writes without a further prompt and prints one summary. An id the form no longer has is ignored, with a note. Per question: id (the answers file's key), key (the dotted config key it sets; a list sets each), level (where its value lands unless a level is named), derive (a path into `bosskit.py detect`: when it gives a value, the question is not asked), free (asked as a plain question, no options), options [{label, value, description}] (value \"$default\" is the kit default; an option's value may be a list, and its sets {key: value} sets several keys; an answer is a label, a value or Other text, which is JSON when it parses), and multiSelect options add up.",
  "questions": [
-  {"id": "comments_worker", "key": "github.comments", "level": "project", "multiSelect": true, "header": "Worker posts",
-   "question": "What should workers post on the PR? Check any, all or none. To choose none, leave every box unchecked, or pick Other and type none.",
-   "options": [
-    {"label": "Status comment", "value": "status", "description": "One short plain-English done or blocked note, ending with the hidden marker the watcher reads"},
-    {"label": "Proof links", "value": "proof", "description": "The pages and demo links, in that status note"},
-    {"label": "Demo video", "value": "demo", "description": "The recorded demo, attached to the PR"},
-    {"label": "Hidden marker only", "value": "marker", "description": "Instead of the status note: an otherwise empty comment holding only the hidden done marker"}
-   ]},
-  {"id": "comments_boss", "key": "github.comments", "level": "project", "multiSelect": true, "header": "More posts",
-   "question": "And these? Check any, all or none. To choose none, leave every box unchecked, or pick Other and type none.",
-   "options": [
-    {"label": "Review replies", "value": "review_replies", "description": "Workers reply on the PR's review threads themselves"},
-    {"label": "Verify note", "value": "verify", "description": "The boss posts what it verified when it marks the PR ready"},
-    {"label": "Merge note", "value": "merged", "description": "The boss posts a short note after it merges"}
-   ]},
-  {"id": "ready", "key": "github.ready", "level": "project", "header": "Ready",
-   "question": "Who marks a verified PR ready for review?",
-   "options": [
-    {"label": "The boss", "value": "boss", "description": "Once it verified head, CI and proof"},
-    {"label": "Never", "value": "never", "description": "PRs stay draft; the boss tells you when one is verified"}
-   ]},
-  {"id": "merge", "key": "github.merge", "level": "project", "header": "Merge",
-   "question": "How should bin/boss-merge merge? (It merges only after you say merge; that never changes.)",
-   "options": [
-    {"label": "Squash", "value": "squash", "description": "One commit per PR"},
-    {"label": "Merge commit", "value": "merge", "description": "Keep the branch's commits, plus a merge commit"},
-    {"label": "Rebase", "value": "rebase", "description": "Replay the branch's commits onto the base"}
-   ]},
-  {"id": "draft", "key": "github.draft", "level": "project", "header": "Draft PRs",
-   "question": "Should workers open their PR as a draft as soon as the first commit exists?",
-   "options": [
-    {"label": "Draft", "value": true, "description": "Visible work early; leaving draft means ready"},
-    {"label": "Not a draft", "value": false, "description": "Opened ready; leaving draft is then no done signal"}
-   ]},
-  {"id": "body", "key": "github.body", "level": "project", "multiSelect": true, "header": "PR body",
-   "question": "What should the PR body carry, besides what changed? Check any or none (none: leave unchecked, or Other and type none).",
-   "options": [
-    {"label": "Tracker link", "value": "tracker", "description": "The task's tracker link"},
-    {"label": "Proof links", "value": "proof", "description": "The pages and demo links"}
-   ]},
-  {"id": "style", "key": "github.style", "level": "project", "header": "Comment",
-   "question": "How long should a worker's status comment be?",
-   "options": [
-    {"label": "Short", "value": "short", "description": "What changed, checks, proof: a few lines"},
-    {"label": "Detailed", "value": "detailed", "description": "Adds a table of checks and the files changed"}
-   ]},
-  {"id": "proof", "key": "proof", "level": "project", "header": "UI proof",
-   "question": "What proof does UI work owe?",
-   "options": [
-    {"label": "Demo", "value": "demo", "description": "A recorded demo, mandatory for UI-heavy work"},
-    {"label": "Screenshots", "value": "screenshots", "description": "Screenshots of each step on a page are enough"}
-   ]},
-  {"id": "host", "key": "host", "level": "project", "derive": "detected_host", "header": "Host",
-   "question": "Which host plugin runs your workers?", "options_from": "hosts"},
-  {"id": "name", "level": "project", "derive": "name", "free": true, "header": "Project",
-   "question": "What should the project be called? (A short name; it is the folder under $BOSS_HOME.)"},
-  {"id": "repo", "key": "repo", "level": "project", "derive": "git.repo", "free": true, "header": "Repo",
-   "question": "Which GitHub repo is it (owner/repo)?"},
-  {"id": "base_branch", "key": "base_branch", "level": "project", "derive": "git.default_branch", "header": "Base",
-   "question": "What is the base branch PRs target?",
-   "options": [
-    {"label": "main", "value": "main", "description": "The usual default"},
-    {"label": "master", "value": "master", "description": "Older repos"}
-   ]},
-  {"id": "me", "key": "me", "level": "project", "derive": "gh.login", "free": true, "header": "GitHub login",
-   "question": "What is your GitHub login? (Only your PRs are the boss's to sync and push.)"},
-  {"id": "tracker", "key": "tracker.type", "level": "project", "header": "Tracker",
-   "question": "Is there a task tracker the boss should read?",
-   "options": [
-    {"label": "None", "value": "none", "description": "No tracker"},
-    {"label": "HTTP JSON", "value": "http", "description": "One JSON endpoint (see bin/boss-tasks.py); its URL and token come from env vars"}
-   ]},
-  {"id": "pages", "key": "pages", "level": "user", "header": "Pages",
-   "question": "Where should proof and review pages go? (A provider of your own: Other, as JSON {\"provider\", \"publish\"}.)",
-   "options": [
-    {"label": "Auto", "value": "auto", "description": "The host's pages, else a claude.ai artifact"},
-    {"label": "Host", "value": "host", "description": "Always the host's pages"},
-    {"label": "Artifact", "value": "artifact", "description": "Always a claude.ai artifact"}
-   ]},
-  {"id": "cleanup", "key": "cleanup", "level": "project", "header": "Cleanup",
-   "question": "When a worker's PR is merged and its worktree is clean, should the boss ask before archiving it?",
-   "options": [
-    {"label": "Ask each time", "value": "ask", "description": "Ask in the next message, one block per workspace"},
-    {"label": "Archive, then tell me", "value": "auto", "description": "A standing OK; it still asks for research workspaces and leftovers"}
-   ]},
-  {"id": "models_strong", "key": "models.strong", "level": "user", "header": "Strong model",
-   "question": "Which model takes the hardest work (architecture, migrations, security)?",
-   "options": [
-    {"label": "opus", "value": "opus", "description": "The kit default"},
-    {"label": "fable", "value": "fable", "description": "Larger and slower"},
-    {"label": "sonnet", "value": "sonnet", "description": "Cheaper"}
-   ]},
-  {"id": "models_mid", "key": "models.mid", "level": "user", "header": "Mid model",
-   "question": "Which model takes scoped edits, routine merges, docs and test fixes?",
-   "options": [
-    {"label": "sonnet", "value": "sonnet", "description": "The kit default"},
-    {"label": "opus", "value": "opus", "description": "Stronger, slower"},
-    {"label": "haiku", "value": "haiku", "description": "Cheaper"}
-   ]},
-  {"id": "models_cheap", "key": "models.cheap", "level": "user", "header": "Cheap model",
-   "question": "Which model takes read-only lookups?",
-   "options": [
-    {"label": "haiku", "value": "haiku", "description": "The kit default"},
-    {"label": "sonnet", "value": "sonnet", "description": "Stronger"}
-   ]},
-  {"id": "effort", "key": "effort", "level": "user", "header": "Effort",
-   "question": "What effort should a dispatch default to?",
-   "options": [
-    {"label": "Agent's own", "value": "", "description": "Leave it to the agent"},
-    {"label": "medium", "value": "medium", "description": ""},
-    {"label": "high", "value": "high", "description": ""},
-    {"label": "xhigh", "value": "xhigh", "description": ""}
-   ]},
-  {"id": "wake", "key": "wake", "level": "boss", "header": "Wake on mail",
-   "question": "Should mail from another boss also message this boss's session (wake it)?",
-   "options": [
-    {"label": "No", "value": false, "description": "Mail waits in the inbox; every prompt names it"},
-    {"label": "Yes", "value": true, "description": "The mail also lands in the session"}
-   ]},
-  {"id": "deck", "key": ["deck_buttons", "deck_worker_buttons"], "level": "user", "header": "Deck buttons",
-   "question": "Should the boss-deck pane show its prompt buttons?",
-   "options": [
-    {"label": "On", "value": "$default", "description": "Boss row: Status, Sweep PRs, Check workers, Review page, Cleanup, Mail, Lessons. Each worker: Status, Verify, Nudge, Cleanup"},
-    {"label": "Off", "value": [], "description": "No buttons"}
-   ]},
-  {"id": "boss_name", "key": "boss_name", "level": "user", "header": "Boss name",
-   "question": "What should the boss rename its own workspace or session to at session start?",
-   "options": [
-    {"label": "BOSS", "value": "BOSS", "description": "The kit default"},
-    {"label": "Leave it", "value": "", "description": "Keep the name it has"}
-   ]},
-  {"id": "domain", "level": "boss", "header": "Boss kind",
-   "question": "Is this the project's main boss, or a domain boss that owns one area of it?",
-   "options": [
-    {"label": "Main boss", "value": "", "description": "Covers every folder"},
-    {"label": "Domain boss", "value": "$ask", "description": "Owns one area; you name it next"}
-   ]},
-  {"id": "report_style", "key": "report.style", "level": "user", "header": "Reports",
-   "question": "How should the boss report?",
-   "options": [
-    {"label": "Action first", "value": "action-first", "description": "Your next action first, then URGENT / NEXT / CAN WAIT"},
-    {"label": "Voice", "value": "voice", "description": "Plain sentences, no tables or symbols"}
-   ]},
-  {"id": "report_verbosity", "key": "report.verbosity", "level": "user", "header": "Verbosity",
-   "question": "How much detail in a report?",
-   "options": [
-    {"label": "Short", "value": "short", "description": "The fewest lines that work"},
-    {"label": "Normal", "value": "normal", "description": "A few lines per item where it helps"},
-    {"label": "Detailed", "value": "detailed", "description": "Reasons and evidence for each item"}
-   ]}
+  {"id": "comments", "key": "github.comments", "level": "project", "multiSelect": true, "header": "PR posts", "question": "What should be posted on the PR? Check any, all or none. To choose none, leave every box unchecked, or pick Other and type none.", "options": [{"label": "Status note", "value": ["status", "proof"], "description": "A worker's one short plain-English done or blocked note, with the proof links, ending with the hidden marker the watcher reads"}, {"label": "Demo video", "value": "demo", "description": "The recorded demo, attached to the PR"}, {"label": "Review replies", "value": "review_replies", "description": "Workers reply on the PR's review threads themselves"}, {"label": "Boss notes", "value": ["verify", "merged"], "description": "The boss posts what it verified when it marks the PR ready, and a short note after it merges"}]},
+  {"id": "host", "key": "host", "level": "project", "derive": "detected_host", "header": "Host", "question": "Which host plugin runs your workers?", "options_from": "hosts", "derive_only": true},
+  {"id": "name", "level": "project", "derive": "name", "free": true, "header": "Project", "question": "What should the project be called? (A short name; it is the folder under $BOSS_HOME.)"},
+  {"id": "repo", "key": "repo", "level": "project", "derive": "git.repo", "free": true, "header": "Repo", "question": "Which GitHub repo is it (owner/repo)?", "derive_only": true},
+  {"id": "base_branch", "key": "base_branch", "level": "project", "derive": "git.default_branch", "header": "Base", "question": "What is the base branch PRs target?", "options": [{"label": "main", "value": "main", "description": "The usual default"}, {"label": "master", "value": "master", "description": "Older repos"}], "derive_only": true},
+  {"id": "me", "key": "me", "level": "project", "derive": "gh.login", "free": true, "header": "GitHub login", "question": "What is your GitHub login? (Only your PRs are the boss's to sync and push.)", "derive_only": true},
+  {"id": "pages", "key": "pages", "level": "user", "header": "Pages", "question": "Where should proof and review pages go? (A provider of your own: Other, as JSON {\"provider\", \"publish\"}.)", "options": [{"label": "Auto", "value": "auto", "description": "The host's pages, else a claude.ai artifact"}, {"label": "Host", "value": "host", "description": "Always the host's pages"}, {"label": "Artifact", "value": "artifact", "description": "Always a claude.ai artifact"}]},
+  {"id": "cleanup", "key": "cleanup", "level": "project", "header": "Cleanup", "question": "When a worker's PR is merged and its worktree is clean, should the boss ask before archiving it?", "options": [{"label": "Ask each time", "value": "ask", "description": "Ask in the next message, one block per workspace"}, {"label": "Archive, then tell me", "value": "auto", "description": "A standing OK; it still asks for research workspaces and leftovers"}]},
+  {"id": "report", "level": "user", "header": "Reports", "question": "How should the boss report?", "options": [{"label": "Short, action first", "value": "short", "sets": {"report.style": "action-first", "report.verbosity": "short"}, "description": "Your next action first, then URGENT / NEXT / CAN WAIT, in the fewest lines"}, {"label": "Detailed", "value": "detailed", "sets": {"report.style": "action-first", "report.verbosity": "detailed"}, "description": "Action first, with reasons and evidence for each item"}, {"label": "Voice", "value": "voice", "sets": {"report.style": "voice"}, "description": "Plain sentences, no tables or symbols"}]},
+  {"id": "domain", "level": "boss", "header": "Boss kind", "question": "Is this the project's main boss, or a domain boss that owns one area of it?", "options": [{"label": "Main boss", "value": "", "description": "Covers every folder"}, {"label": "Domain boss", "value": "$ask", "description": "Owns one area; you name it next"}]},
+  {"id": "proof", "key": "proof", "level": "project", "header": "UI proof", "question": "What proof does UI work owe?", "options": [{"label": "Demo", "value": "demo", "description": "A recorded demo, mandatory for UI-heavy work"}, {"label": "Screenshots", "value": "screenshots", "description": "Screenshots of each step on a page are enough"}]},
+  {"id": "wake", "key": "wake", "level": "boss", "header": "Wake on mail", "question": "Should mail from another boss also message this boss's session (wake it)?", "options": [{"label": "No", "value": false, "description": "Mail waits in the inbox; every prompt names it"}, {"label": "Yes", "value": true, "description": "The mail also lands in the session"}]}
  ],
  "followups": [
-  {"id": "domain", "when": {"domain": "$ask"}, "level": "boss", "free": true, "header": "Domain",
-   "question": "What is the domain's name? (Letters, digits, dot, dash or underscore.)"},
-  {"id": "folder", "when": "domain", "level": "boss", "free": true, "header": "Folder",
-   "question": "Which sidebar folder does this domain boss own? (Enter keeps the domain name.)"}
+  {"id": "domain", "when": {"domain": "$ask"}, "level": "boss", "free": true, "header": "Domain", "question": "What is the domain's name? (Letters, digits, dot, dash or underscore. It owns the sidebar folder of that name; say so if the folder differs.)"},
+  {"id": "folder", "when": "domain", "level": "boss", "free": true, "header": "Folder", "question": "Which sidebar folder does this domain boss own? (Enter keeps the domain name.)"}
  ],
- "fixed": [
-  "Merging: the boss never merges, closes a PR or pushes to the base branch without your OK in the conversation. That is fixed, not a setting."
- ],
- "expectations": {"id": "expectations", "file": "BOSS.md", "heading": "## Expectations", "header": "Expectations",
-  "question": "What are your expectations of me as the boss of your project?",
-  "options": [
-   {"label": "Ship fast", "value": "Ship fast: small PRs, merged often.", "description": "Speed first, within the hard rules"},
-   {"label": "Be careful", "value": "Be careful: verify everything twice, ask when unsure.", "description": "Safety first"},
-   {"label": "Keep me informed", "value": "Keep me informed: a short report at every change.", "description": "Visibility first"}
-  ],
-  "note": "Free text: pick Other and write it in your own words (or pick any and add to them). It is saved to the project's BOSS.md under ## Expectations, which every later boss session loads."},
+ "fixed": ["Merging: the boss never merges, closes a PR or pushes to the base branch without your OK in the conversation. That is fixed, not a setting."],
+ "expectations": {"id": "expectations", "free": true, "file": "BOSS.md", "heading": "## Expectations", "header": "Expectations", "question": "What are your expectations of me as the boss of your project?", "ask": "chat"},
+ "defaults_note": "Everything else keeps its default; change any of it later with `bosskit.py config set --level project KEY=VALUE` (see `bosskit.py config show`).",
  "closing": "I'm a mere boss but you are the god. I hope to please you and get things done. Always let me know how I can be better."
 }

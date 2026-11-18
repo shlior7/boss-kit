@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1087,19 +1088,45 @@ class StatusAsk(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
 
 
+STUB_CLAUDE = """#!/usr/bin/env python3
+import json, os, sys
+a = sys.argv[1:]
+open(os.path.join(os.environ["FIX"], "claude.log"), "a").write(" ".join(a) + "\\n")
+p = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "plugins", "installed_plugins.json")
+d = json.load(open(p))
+if a[:2] == ["plugin", "update"] and a[2] in d["plugins"]:
+    d["plugins"][a[2]][0]["version"] = os.environ.get("STUB_VERSION", "0.8.0")
+if a[:2] == ["plugin", "install"]:
+    d["plugins"][a[2]] = [{"scope": "user", "version": os.environ.get("STUB_VERSION", "0.8.0")}]
+json.dump(d, open(p, "w"))
+"""
+
+
 class KitUpdate(Home):
-    """bin/boss-kit-update against a temp origin and kit clone; the fake host records any message it is asked to send."""
+    """bin/boss-kit-update, the one update command, against a temp origin and kit clone, a stub claude CLI that records its
+    argv, and a temp Claude config dir: every step in order, a dry run that changes nothing, a missing claude CLI as a skip."""
+
+    MARKET = {"name": "boss-kit", "plugins": [{"name": "boss", "version": "0.8.0"}, {"name": "boss-deck", "version": "0.8.0"}]}
 
     def setUp(self):
         super().setUp()
         self.origin, self.kit = (os.path.join(self.tmp, n) for n in ("origin", "kit"))
-        os.makedirs(self.origin)
+        os.makedirs(os.path.join(self.origin, ".claude-plugin"))
         git(self.origin, "init", "-q", "-b", "main")
+        json.dump(self.MARKET, open(os.path.join(self.origin, ".claude-plugin", "marketplace.json"), "w"))
+        git(self.origin, "add", ".claude-plugin")
         self.commit(self.origin, "one")
         subprocess.run(["git", "clone", "-q", self.origin, self.kit], check=True, capture_output=True)
         self.bindir = os.path.join(self.tmp, "fakebin")
         self.calls = os.path.join(self.fixdir, "calls")
+        self.claude_log = os.path.join(self.fixdir, "claude.log")
+        self.cfg = os.path.join(self.tmp, "claude")
+        self.installed = os.path.join(self.cfg, "plugins", "installed_plugins.json")
         os.makedirs(self.bindir)
+        os.makedirs(os.path.dirname(self.installed))
+        json.dump({"version": 2, "plugins": {"boss-deck@boss-kit": [{"scope": "user", "version": "0.5.2"}]}}, open(self.installed, "w"))
+        open(os.path.join(self.bindir, "claude"), "w").write(STUB_CLAUDE)
+        os.chmod(os.path.join(self.bindir, "claude"), 0o755)
         now = time.time()
         json.dump({"live-a": {"project": "widgets", "workspace": "live-a", "heartbeat": now},
                    "old-b": {"project": "gadgets", "workspace": "old-b", "heartbeat": now - 4000}},
@@ -1110,40 +1137,123 @@ class KitUpdate(Home):
         git(repo, "add", name)
         git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", f"add {name}")
 
-    def update(self):
-        env = {**os.environ, "BOSS_KIT": self.kit, "PATH": self.bindir + os.pathsep + os.environ["PATH"]}
-        return subprocess.run([os.path.join(BIN, "boss-kit-update")], capture_output=True, text=True, env=env)
+    def update(self, *args, with_claude=True):
+        path = self.bindir
+        if not with_claude:  # git and python3 only: no claude CLI anywhere on PATH
+            path = os.path.join(self.tmp, "nocli")
+            os.makedirs(path, exist_ok=True)
+            for tool in ("git", "python3"):
+                if not os.path.lexists(os.path.join(path, tool)):
+                    os.symlink(shutil.which(tool), os.path.join(path, tool))
+        env = {**os.environ, "BOSS_KIT": self.kit, "PATH": path + os.pathsep + (os.environ["PATH"] if with_claude else ""),
+               "CLAUDE_CONFIG_DIR": self.cfg}
+        return subprocess.run([os.path.join(BIN, "boss-kit-update"), *args], capture_output=True, text=True, env=env,
+                              stdin=subprocess.DEVNULL)
 
     def inbox(self, project, boss):
         d = os.path.join(self.home, project, "bosses", boss, "inbox")
         return [json.load(open(os.path.join(d, f))) for f in sorted(os.listdir(d)) if f.endswith(".json")] if os.path.isdir(d) else []
 
-    def test_pull_prints_the_range_and_mails_only_live_bosses_without_touching_a_terminal(self):
+    def head(self):
+        return subprocess.run(["git", "-C", self.kit, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+    def test_every_step_runs_in_order_and_ends_with_one_block(self):
         self.commit(self.origin, "two")
         r = self.update()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertRegex(r.stdout, r"kit updated [0-9a-f]+\.\.[0-9a-f]+\n[0-9a-f]+ add two")
+        out = r.stdout
+        steps = [out.index(f"[{n}/5]") for n in range(1, 6)]
+        self.assertEqual(steps, sorted(steps))  # kit, plugins, /boss, migrate, mail
+        self.assertRegex(out, r"updated [0-9a-f]+\.\.[0-9a-f]+\n\s+[0-9a-f]+ add two")
         self.assertTrue(os.path.exists(os.path.join(self.kit, "two")))
+        self.assertEqual(open(self.claude_log).read().splitlines(),
+                         ["plugin marketplace update boss-kit", "plugin update boss-deck@boss-kit", "plugin install boss@boss-kit"])
+        self.assertIn("not installed: boss", out)  # only the installed plugin is updated; /boss then installs the skill's plugin
+        self.assertIn("ok   claude plugin install boss@boss-kit: /boss now comes from the boss plugin", out)
+        self.assertIn("ran boss-migrate --apply", out)
+        final = out.split("\n\nKit:")[1]
+        self.assertRegex(final, r"^\s+[0-9a-f]+\.\.[0-9a-f]+\n")  # kit old..new
+        self.assertIn("boss-deck 0.5.2 -> 0.8.0", final)
+        self.assertTrue(final.rstrip().endswith("Restart each Claude Code session (exit, then `claude --continue`) to load it."))
         (m,) = self.inbox("widgets", "live-a")
         self.assertEqual((m["kind"], m["from_project"]), ("fyi", "kit"))
-        self.assertRegex(m["subject"], r"^kit updated [0-9a-f]+\.\.[0-9a-f]+: run /reload-plugins$")
+        self.assertRegex(m["subject"], r"^kit updated [0-9a-f]+\.\.[0-9a-f]+: restart the session \(claude --continue\) to load boss-deck 0\.8\.0$")
         self.assertIn("add two", m["body"])
         self.assertEqual(self.inbox("gadgets", "old-b"), [])  # no heartbeat for 30 min: not live
         self.assertFalse(os.path.exists(self.calls))  # nothing was sent to any terminal
 
-    def test_up_to_date_mails_nobody(self):
-        r = self.update()
+    def test_dry_run_prints_every_step_and_changes_nothing(self):
+        self.commit(self.origin, "two")
+        before, plugins = self.head(), open(self.installed).read()
+        r = self.update("--dry-run")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("already up to date", r.stdout)
+        for n in range(1, 6):
+            self.assertIn(f"[{n}/5]", r.stdout)
+        self.assertIn("would git pull --ff-only", r.stdout)
+        self.assertIn("would run: claude plugin marketplace update boss-kit", r.stdout)
+        self.assertIn("would run: claude plugin update boss-deck@boss-kit", r.stdout)
+        self.assertIn("would run: claude plugin install boss@boss-kit", r.stdout)
+        self.assertIn("would run boss-migrate", r.stdout)
+        self.assertIn("Dry run: nothing was changed.", r.stdout)
+        self.assertEqual(self.head(), before)
+        self.assertFalse(os.path.exists(os.path.join(self.kit, "two")))
+        self.assertFalse(os.path.exists(self.claude_log))  # the CLI was never run
+        self.assertEqual(open(self.installed).read(), plugins)
+        self.assertFalse(os.path.lexists(os.path.join(self.cfg, "skills", "boss")))
         self.assertEqual(self.inbox("widgets", "live-a"), [])
 
-    def test_dirty_kit_is_refused_and_left_alone(self):
+    def test_no_mail_skips_only_the_mail(self):
+        self.commit(self.origin, "two")
+        r = self.update("--no-mail")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("skipped (--no-mail)", r.stdout)
+        self.assertTrue(os.path.exists(os.path.join(self.kit, "two")))
+        self.assertEqual(self.inbox("widgets", "live-a"), [])
+
+    def test_a_missing_claude_cli_is_a_skip_not_a_failure(self):
+        self.commit(self.origin, "two")
+        r = self.update(with_claude=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("skip: the claude CLI is not on PATH", r.stdout)
+        self.assertIn("/plugin update <plugin>@boss-kit", r.stdout)
+        self.assertTrue(os.path.exists(os.path.join(self.kit, "two")))  # the pull still happened
+        link = os.path.join(self.cfg, "skills", "boss")
+        self.assertEqual(os.path.realpath(link), os.path.realpath(os.path.join(self.kit, "skills", "boss")))  # /boss through the link
+        self.assertEqual(len(self.inbox("widgets", "live-a")), 1)
+
+    def test_boss_comes_from_the_plugin_and_a_leftover_link_is_named(self):
+        data = json.load(open(self.installed))
+        data["plugins"]["boss@boss-kit"] = [{"scope": "user", "version": "0.8.0"}]
+        json.dump(data, open(self.installed, "w"))
+        os.makedirs(os.path.join(self.cfg, "skills"))
+        os.symlink(self.kit, os.path.join(self.cfg, "skills", "boss"))
+        r = self.update()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("/boss comes from the boss plugin; the old link", r.stdout)
+        self.assertIn("duplicate: remove it (rm ", r.stdout)
+        self.assertIn("plugin update boss@boss-kit", open(self.claude_log).read())
+        self.assertNotIn("plugin install", open(self.claude_log).read())
+
+    def test_up_to_date_mails_nobody_and_needs_no_restart(self):
+        self.update()  # install /boss, bring boss-deck to 0.8.0
+        mailed = len(self.inbox("widgets", "live-a"))
+        r = self.update()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("(up to date)", r.stdout)
+        self.assertIn("Up to date: nothing to restart.", r.stdout)
+        self.assertIn("nothing changed: nobody mailed", r.stdout)
+        self.assertEqual(len(self.inbox("widgets", "live-a")), mailed)
+
+    def test_dirty_kit_is_refused_naming_the_files_and_left_alone(self):
         self.commit(self.origin, "two")
         open(os.path.join(self.kit, "one"), "w").write("edited")
         r = self.update()
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("uncommitted", r.stderr)
+        self.assertIn("M one", r.stderr)  # the file is named
+        self.assertIn("stash push", r.stderr)  # and so is the way out
         self.assertFalse(os.path.exists(os.path.join(self.kit, "two")))
+        self.assertFalse(os.path.exists(self.claude_log))
         self.assertEqual(self.inbox("widgets", "live-a"), [])
 
     def test_diverged_kit_is_refused(self):
@@ -1152,7 +1262,27 @@ class KitUpdate(Home):
         r = self.update()
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("cannot fast-forward", r.stderr)
+        self.assertFalse(os.path.exists(self.claude_log))
         self.assertEqual(self.inbox("widgets", "live-a"), [])
+
+
+class Marketplace(unittest.TestCase):
+    """The marketplace ships /boss: a boss plugin whose root holds skills/boss, beside the boss-deck pane."""
+
+    ROOT = os.path.dirname(BIN)
+
+    def test_the_marketplace_lists_the_boss_skill_and_the_pane(self):
+        m = json.load(open(os.path.join(self.ROOT, ".claude-plugin", "marketplace.json")))
+        by = {p["name"]: p for p in m["plugins"]}
+        self.assertEqual(sorted(by), ["boss", "boss-deck"])
+        root = os.path.normpath(os.path.join(self.ROOT, by["boss"]["source"]))
+        manifest = json.load(open(os.path.join(root, ".claude-plugin", "plugin.json")))
+        self.assertEqual(manifest["name"], "boss")
+        skill = open(os.path.join(root, "skills", "boss", "SKILL.md")).read()
+        self.assertRegex(skill, r"(?m)^name: boss$")  # so /boss, not just boss:boss
+        self.assertTrue(os.path.isfile(os.path.join(root, "bin", "bosskit.py")))  # the skill's commands ship with it
+        self.assertTrue(os.path.isfile(os.path.join(self.ROOT, os.path.normpath(by["boss-deck"]["source"]), ".claude-plugin", "plugin.json")))
+        self.assertEqual(by["boss"]["version"], manifest["version"])
 
 
 FAKE_GH = """#!/bin/sh

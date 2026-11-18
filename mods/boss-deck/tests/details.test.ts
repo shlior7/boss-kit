@@ -201,7 +201,7 @@ test("an expanded PR carries a drift line from GitHub's live read", () => {
 })
 
 test('the kit is stale only when the one on disk differs from the one the pane loaded', () => {
-  expect(KIT_STALE).toBe('kit updated · run /reload-plugins')
+  expect(KIT_STALE).toBe('kit updated · restart: claude --continue')
   expect(kitStale('a1b2c3d', 'e4f5a6b')).toBe(true)
   expect(kitStale('a1b2c3d', 'a1b2c3d')).toBe(false)
   expect(kitStale(undefined, 'a1b2c3d')).toBe(false)

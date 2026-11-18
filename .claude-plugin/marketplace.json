@@ -1,8 +1,17 @@
 {
   "name": "boss-kit",
-  "owner": { "name": "Lior Steinberg", "url": "https://github.com/shlior7" },
-  "description": "Boss orchestrator kit for Claude Code, with pluggable worker hosts: the boss-deck pane",
+  "owner": {
+    "name": "Lior Steinberg",
+    "url": "https://github.com/shlior7"
+  },
+  "description": "Boss orchestrator kit for Claude Code, with pluggable worker hosts: the /boss skill and the boss-deck pane",
   "plugins": [
+    {
+      "name": "boss",
+      "source": "./",
+      "description": "The /boss skill: onboards a project in a short form, then loads the boss prompt, the host's commands, the project's facts and lessons",
+      "version": "0.8.0"
+    },
     {
       "name": "boss-deck",
       "source": "./mods/boss-deck",

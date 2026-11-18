@@ -42,7 +42,7 @@ const lv = (o: Partial<Live> = {}): Live => ({ busy: true, turnAt: 0, tasks: [],
 
 test('warnings: context, behind its base, red CI, idle with no DONE comment', () => {
   expect(workerWarnings(view(), lv())).toEqual([])
-  expect(workerWarnings(view(), lv(), true)).toEqual(['kit updated · run /reload-plugins'])
+  expect(workerWarnings(view(), lv(), true)).toEqual(['kit updated · restart: claude --continue'])
   expect(workerWarnings(view({ behind: 2, pr: pr({ ci: 'red' }) }), lv({ ctx: 64 }))).toEqual(['context 64% · clear soon', '2 behind origin/main', 'CI red'])
   expect(workerWarnings(view(), lv({ busy: false, turnAt: 5 }))).toEqual(['idle, no DONE comment on the PR'])
   expect(workerWarnings(view({ pr: pr({ doneAt: 200 }) }), lv({ busy: false, turnAt: 5 }))).toEqual([])
@@ -180,7 +180,7 @@ test('a worker pane warns once the kit on disk moves past the one it loaded', as
   expect(await warnings()).toEqual(['! 2 behind origin/main'])
   deck.kit = 'e4f5a6b'
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
-  expect(await warnings()).toEqual(['! 2 behind origin/main · kit updated · run /reload-plugins'])
+  expect(await warnings()).toEqual(['! 2 behind origin/main · kit updated · restart: claude --continue'])
 })
 
 test('a worker view lists the pages it published, newest first, under the provider line', async ($, on) => {

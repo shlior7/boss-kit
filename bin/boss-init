@@ -7,7 +7,10 @@
 # plugin's prompt import after the template line of DIR/CLAUDE.local.md when that file imports the template without it.
 # It prints the CLAUDE.local.md that makes a worktree the boss (imports form, the host's prompt right after the template).
 # --answers FILE takes the /boss onboarding form's answers (skills/boss/questions.json) as JSON, {"<id>": <answer>}, and
-# applies them after scaffolding: config per layer and BOSS.md's ## Expectations. --questions prints the form.
+# applies them after scaffolding with no further prompt (answering is the consent): config per layer, BOSS.md's
+# ## Expectations (a string, as written), the boss marker in DIR/CLAUDE.local.md; it prints one summary (each file, its
+# .bak-<time> backup, how to change anything later) instead of the next steps. An answer id the form no longer has is
+# ignored, with a note. --questions prints the form.
 # Project data is local: it lives outside the kit and is never pushed anywhere.
 set -euo pipefail
 KIT=${BOSS_KIT_HOME:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -42,7 +45,7 @@ json.dump(c, open(p, "w"), indent=2); open(p, "a").write("\n")
 PY
 [ -n "$WT" ] && printf 'project: %s\n' "$NAME" > "$WT/.boss"
 if [ -n "$ANSWERS" ]; then  # the form's answers, into the layers it names and BOSS.md
-  (cd "${WT:-.}" && python3 "$KIT/bin/bosskit.py" onboard apply "$(cd "$(dirname "$ANSWERS")" && pwd)/$(basename "$ANSWERS")" --project "$NAME" --apply) >/dev/null
+  SUMMARY=$(cd "${WT:-.}" && python3 "$KIT/bin/bosskit.py" onboard apply "$(cd "$(dirname "$ANSWERS")" && pwd)/$(basename "$ANSWERS")" --project "$NAME" --apply)
 fi
 LOCAL_MD=$(python3 - "$KIT" "$HOME_DIR" "$NAME" "$HOST" "$WT" <<'PY'
 import os, sys
@@ -58,6 +61,11 @@ if text and bosskit.with_host_import(text, host) != text:
 print(bosskit.boss_local_md(h, kit, name, host, "<its id: bin/boss-host self>"))
 PY
 )
+if [ -n "$ANSWERS" ]; then  # set up from the form: the summary says what was written; no steps left
+  printf 'Created %s\n%s\n' "$DEST" "$SUMMARY"
+  python3 -c 'import json,sys; print("\n" + json.load(open(sys.argv[1]))["closing"])' "$KIT/skills/boss/questions.json"
+  exit 0
+fi
 cat <<MSG
 Created $DEST
 Next:
@@ -70,5 +78,4 @@ $(printf '%s\n' "$LOCAL_MD" | sed '/./s/^/     /')
 
   3. Project resolution: \$BOSS_PROJECT, then the worktree's .boss file, then its git remote vs config.repo.
 MSG
-[ -n "$ANSWERS" ] && python3 -c 'import json,sys; print("\n" + json.load(open(sys.argv[1]))["closing"])' "$KIT/skills/boss/questions.json"
 exit 0

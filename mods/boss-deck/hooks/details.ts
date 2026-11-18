@@ -33,7 +33,7 @@ export function drift(p: Pr, conflicts = p.conflicts): Part | null {
 }
 
 /** The attention line when the kit on disk is not the one this pane loaded. */
-export const KIT_STALE = 'kit updated · run /reload-plugins'
+export const KIT_STALE = 'kit updated · restart: claude --continue'
 export const kitStale = (loaded?: string, onDisk?: string) => !!loaded && !!onDisk && loaded !== onDisk
 
 /** A workspace's row: its stage, how long it has been there, and a note; its PR's drift follows the stage, where a

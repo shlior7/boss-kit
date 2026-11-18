@@ -168,7 +168,7 @@ const idle = () =>
 
 const main =
   head() +
-  line(seg('› ', 'wa'), seg('kit updated · run /reload-plugins', 'wa')) +
+  line(seg('› ', 'wa'), seg('kit updated · restart: claude --continue', 'wa')) +
   line(seg('› ', 'wa'), seg('#57 approved + green: ready to merge (no proof)', 'wa')) +
   line(seg('· ', 'd'), seg('docs-refresh: idle, docs-9 has no watcher', 'd')) +
   inbox() + bosses() + active(false) + idle() +
@@ -202,7 +202,7 @@ const worker =
   section('from boss', '1 new') +
   field('10:41', 'also cover the 429 case: retry after its header', '') +
   field('10:27', 'base it on main, not on #57', 'd') +
-  '\n' + line(seg('! 3 behind origin/main · kit updated · run /reload-plugins', 'wa')) + '\n' +
+  '\n' + line(seg('! 3 behind origin/main · kit updated · restart: claude --continue', 'wa')) + '\n' +
   justify('page ↗  PR ↗  boss ↗', 'ctx 31% · 8s ago', 'su', 'd')
 
 const paneTitle = '<div class="pane-title"><span>Boss</span></div>'
