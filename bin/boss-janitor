@@ -69,13 +69,20 @@ def etime_s(t):
 
 
 def procs():
-    """{pid: {pid, ppid, cpu, age, args}} of this user's processes."""
-    out = {}
+    """{pid: {pid, ppid, cpu, age, start, args}} of this user's processes; start = when it started (epoch s)."""
+    out, now = {}, time.time()
     for line in (sh(["ps", "-xo", "pid=,ppid=,pcpu=,etime=,args="]) or "").splitlines():
         f = line.split(None, 4)
         if len(f) == 5:
-            out[int(f[0])] = {"pid": int(f[0]), "ppid": int(f[1]), "cpu": float(f[2]), "age": etime_s(f[3]), "args": f[4]}
+            out[int(f[0])] = {"pid": int(f[0]), "ppid": int(f[1]), "cpu": float(f[2]), "age": etime_s(f[3]),
+                              "start": now - etime_s(f[3]), "args": f[4]}
     return out
+
+
+def same(pid, snap):
+    """Whether pid is still the process the plan saw: same command, same start time (etime has 1 s steps)."""
+    f = (sh(["ps", "-o", "etime=,args=", "-p", str(pid)]) or "").strip().split(None, 1)
+    return len(f) == 2 and f[1] == snap["args"] and abs(time.time() - etime_s(f[0]) - snap["start"]) <= 2
 
 
 def cwds(pids):
@@ -177,6 +184,7 @@ def orphans(table, cwd_of, own):
             keep.append((pid, f"{name}: {why}"))
         else:
             act.append({"pid": pid, "pids": pids, "owner": own[root]["id"], "age": p["age"],
+                        "snap": {q: {"start": table[q].get("start", 0), "args": table[q]["args"]} for q in pids},
                         "reason": f"idle orphan {name} in {cwd}" + (f" (+{len(pids) - 1} children)" if len(pids) > 1 else "")})
     return act, keep
 
@@ -191,8 +199,10 @@ def alive(pid):
         return True
 
 
-def kill(pids, wait=TERM_WAIT_S):
-    """SIGTERM each exact pid (children first), wait, SIGKILL the ones still there. Never pkill or killall."""
+def kill(pids, snap, wait=TERM_WAIT_S):
+    """SIGTERM each exact pid (children first), wait, SIGKILL the ones still there. Never pkill or killall.
+    Before each signal the pid must still match its snapshot (start time and command): a reused pid is skipped."""
+    pids = [p for p in pids if same(p, snap[p])]
     for pid in pids:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -202,7 +212,7 @@ def kill(pids, wait=TERM_WAIT_S):
     while time.time() < end and any(alive(p) for p in pids):
         time.sleep(0.2)
     for pid in pids:
-        if alive(pid):
+        if alive(pid) and same(pid, snap[pid]):
             try:
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -311,7 +321,8 @@ def plan(ctx):
     cand = [pid for pid, p in table.items() if p["ppid"] == 1 and tool(p["args"])]
     o_act, o_keep = orphans(table, cwds(cand), own)
     t_act, t_keep = temp(open_paths())
-    return {"workers": [w["id"][:8] for w in workers], "orphans": o_act, "temp": t_act, "keep": o_keep + t_keep}
+    # Full workspace ids: hosts need them; the short id is only for log text.
+    return {"workers": [w["id"] for w in workers], "orphans": o_act, "temp": t_act, "keep": o_keep + t_keep}
 
 
 def log(ctx, line, reason):
@@ -335,7 +346,7 @@ def sweep(ctx, apply, reason="", p=None, record=True):
     for a in p["orphans"]:
         line = f"{verb}kill pid={a['pid']} owner={ctx.name}/{a['owner']} age={age_txt(a['age'])} {a['reason']} pids={','.join(map(str, a['pids']))}"
         if apply:
-            kill(a["pids"])
+            kill(a["pids"], a["snap"])
             done += 1
         out.append(line)
         note(ctx, line, reason)

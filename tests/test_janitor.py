@@ -109,10 +109,33 @@ class Orphans(Base):
             sent.append((pid, sig))
             if sig == signal.SIGTERM and pid != 10:
                 gone.add(pid)  # 10 ignores SIGTERM
-        with mock.patch.object(J.os, "kill", fake_kill), mock.patch.object(J.subprocess, "run") as run:
-            J.kill([12, 11, 10], wait=0.3)
+        with mock.patch.object(J.os, "kill", fake_kill), mock.patch.object(J.subprocess, "run") as run, \
+                mock.patch.object(J, "same", return_value=True):
+            J.kill([12, 11, 10], {12: {}, 11: {}, 10: {}}, wait=0.3)
         self.assertEqual(sent, [(12, signal.SIGTERM), (11, signal.SIGTERM), (10, signal.SIGTERM), (10, signal.SIGKILL)])
         run.assert_not_called()  # never pkill or killall
+
+    def test_reused_pid_is_never_signalled(self):
+        now = time.time()
+        snap = {10: {"start": now - 6 * HOUR, "args": "next dev"}, 11: {"start": now - 6 * HOUR, "args": "chromium"}}
+        ps = {"10": "06:00:00 next dev", "11": "00:05 chromium"}  # 11 was reused: it started 5 s ago
+        sent = []
+        with mock.patch.object(J, "sh", lambda argv, **k: ps[argv[-1]] + "\n"), \
+                mock.patch.object(J.os, "kill", lambda pid, sig: sig and sent.append((pid, sig))), \
+                mock.patch.object(J, "alive", return_value=False):
+            J.kill([11, 10], snap, wait=0)
+            self.assertFalse(J.same(10, {"start": now - 6 * HOUR, "args": "next build"}))  # same start, other command
+            self.assertTrue(J.same(10, snap[10]))
+        self.assertEqual(sent, [(10, signal.SIGTERM)])
+
+    def test_pid_reused_before_sigkill_is_spared(self):
+        checks = iter([True, False])  # matches before SIGTERM, changed before SIGKILL
+        sent = []
+        with mock.patch.object(J, "same", lambda pid, snap: next(checks)), \
+                mock.patch.object(J.os, "kill", lambda pid, sig: sig and sent.append((pid, sig))), \
+                mock.patch.object(J, "alive", return_value=True):
+            J.kill([10], {10: {}}, wait=0)
+        self.assertEqual(sent, [(10, signal.SIGTERM)])
 
     def test_etime(self):
         self.assertEqual(J.etime_s("05:03"), 303)
@@ -207,7 +230,8 @@ class Sweep(Base):
     def setUp(self):
         super().setUp()
         self.plan = {"workers": ["aaaa1111"], "keep": [(99, "next: young")],
-                     "orphans": [{"pid": 10, "pids": [11, 10], "owner": "aaaa1111", "age": 7 * HOUR, "reason": "idle orphan next"}],
+                     "orphans": [{"pid": 10, "pids": [11, 10], "owner": "aaaa1111", "age": 7 * HOUR, "reason": "idle orphan next",
+                                  "snap": {10: {}, 11: {}}}],
                      "temp": []}
         for name, val in (("plan", lambda ctx: self.plan), ("close_dead", mock.Mock(return_value=["would close 0 dead pane(s)"]))):
             p = mock.patch.object(J, name, val)
@@ -243,7 +267,7 @@ class Sweep(Base):
         self.run_main("sweep")
         self.kill.assert_not_called()
         code, out = self.run_main("sweep", "--apply", "--reason", "queue")
-        self.kill.assert_called_once_with([11, 10])
+        self.kill.assert_called_once_with([11, 10], {10: {}, 11: {}})
         self.assertIn("kill pid=10", out)
         self.assertNotIn("would kill", out)
         ledger = bosskit._read(os.path.join(self.pdir, "ledger.md"))
@@ -287,6 +311,17 @@ class Whose(Base):
         ctx = bosskit.load(make=False, resolve_host=False)
         with mock.patch.object(J.bosshost, "get", side_effect=SystemExit("no host")), redirect_stdout(io.StringIO()):
             self.assertEqual(J.own_workers(ctx), [])
+
+    def test_plan_hands_full_workspace_ids_to_the_host(self):
+        full = "756fc5fa-1111-2222-3333-444455556666"
+        stubs = {"own_workers": lambda ctx: [{"id": full, "worktree": self.wt}], "procs": dict, "cwds": lambda pids: {},
+                 "open_paths": set, "temp": lambda opened: ([], [])}
+        with mock.patch.multiple(J, **stubs):
+            p = J.plan(None)
+        self.assertEqual(p["workers"], [full])
+        with mock.patch.object(J.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            J.close_dead(p["workers"], False)
+        self.assertEqual(run.call_args[0][0][-1], full)
 
     def test_close_dead_runs_boss_close_for_own_workers(self):
         with mock.patch.object(J.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "would close 1 dead pane(s)\n", "")) as run:
