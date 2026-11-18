@@ -11,7 +11,7 @@
 Addressing a project delivers to every live boss of it (heartbeat in the last 30 min), or to every
 registered one when none is live, or, when none ever registered, to every <project>/bosses/*/ directory. With "wake": true in the target boss's
 config, one line is also sent to its session so it notices, on the host that boss last ran on: always when that host queues
-messages until the agent is idle, else only into an idle agent terminal.
+messages until the agent is idle, else only into that boss's own terminal (its pane records it) while it is idle.
 
 --urgent wakes the target even with "wake": false, at most once per WAKE_GAP_S per target, and prints one line per target:
 woke, or skipped (why). Every wake line is the kit's fixed one, naming only the kind and the sender's project: no subject,
@@ -71,7 +71,7 @@ def targets(to, me, reg, home):
 
 def wake(h, project, boss, msg, urgent=False):
     """Send one line to the target boss's session when its config opts in (or the mail is urgent), on the host it
-    registered with (never this session's host): on a host that queues, always; else into its idle agent terminal only.
+    registered with (never this session's host): on a host that queues, always; else into its own terminal, idle, only.
     Returns what happened: woke, or skipped (why)."""
     try:
         cfg = bosskit.config_for(h, project, boss)
@@ -88,11 +88,16 @@ def wake(h, project, boss, msg, urgent=False):
     os.makedirs(os.path.dirname(stamp), exist_ok=True)
     with open(stamp[:-len(".json")] + ".lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # per target: concurrent urgent sends check, send and stamp one at a time
-        if time.time() - bosshost._json(bosskit._read(stamp), {}).get("at", 0) < WAKE_GAP_S:
+        last = bosshost._json(bosskit._read(stamp), {})
+        if time.time() - last.get("at", 0) < WAKE_GAP_S:
             return "skipped (rate-limited)"
+        bosskit.save_json(stamp, {"at": time.time()})  # the cooldown first: a wake the host took is never sent twice
         out = deliver(cfg, b, msg, urgent)
-        if out == "woke":
-            bosskit.save_json(stamp, {"at": time.time()})
+        if out != "woke":
+            try:
+                bosskit.save_json(stamp, last)  # nothing was sent: the next urgent mail may try again
+            except OSError:
+                pass
         return out
 
 
@@ -105,12 +110,15 @@ def deliver(cfg, b, msg, urgent=False):
         cfg = bosskit.deep_merge({"hosts": {kind: {"host_id": b["host"]}}}, cfg)
     host = bosshost.get(cfg, kind)
     term = None
-    if not host.queues:
-        ws = next((w for w in host.workers([b["workspace"]]) if w.get("id") == b["workspace"]), {})
-        states = {t["id"]: (t.get("agent") or {}).get("state") for t in ws.get("terminals", []) if t.get("agent")}
-        term = next((t for t, st in states.items() if st == "idle"), None)
+    if not host.queues:  # only the boss's own terminal (its heartbeat names it), never another agent in its workspace
+        term = b.get("terminal")
         if not term:
-            return "skipped (" + ("no terminal" if not states else "busy" if "working" in states.values() else "not idle") + ")"
+            return "skipped (boss terminal unknown)"
+        ws = next((w for w in host.workers([b["workspace"]]) if w.get("id") == b["workspace"]), {})
+        t = next((t for t in ws.get("terminals", []) if t.get("id") == term and t.get("agent")), None)
+        state = (t["agent"] or {}).get("state") if t else None
+        if state != "idle":
+            return "skipped (" + ("no terminal" if not t else "busy" if state == "working" else "not idle") + ")"
     try:
         host.send(b["workspace"], wake_line(msg, urgent), term)
     except (OSError, subprocess.CalledProcessError):
@@ -136,9 +144,12 @@ def send(ctx, to, kind, subject, body, reply_to=None, urgent=False):
             print(f"boss-mail: waking {project}/{boss} failed: {e}", file=sys.stderr)
             woke[f"{project}/{boss}"] = "skipped (send failed)"
         sent.append(f"{project}/{boss}")
-    with open(os.path.join(ctx.bdir, "sent.jsonl"), "a") as f:  # what `sent` reads the receipts back from
-        f.write(json.dumps({"id": msg["id"], "to": sent, "kind": kind, "subject": subject, "urgent": urgent,
-                            "created_at": msg["created_at"]}) + "\n")
+    try:
+        with open(os.path.join(ctx.bdir, "sent.jsonl"), "a") as f:  # what `sent` reads the receipts back from
+            f.write(json.dumps({"id": msg["id"], "to": sent, "kind": kind, "subject": subject, "urgent": urgent,
+                                "created_at": msg["created_at"]}) + "\n")
+    except OSError as e:  # delivered all the same: say so, never make the sender retry into a second copy
+        print(f"boss-mail: {msg['id']} was delivered, but its receipt log was not written: {e}", file=sys.stderr)
     return msg["id"], sent, woke
 
 
@@ -165,8 +176,8 @@ def receipts(home, rec):
     for to in rec["to"]:
         project, boss = to.split("/", 1)
         inbox = os.path.join(home, project, "bosses", boss, "inbox")
-        m = next((bosshost._json(bosskit._read(p), None) for p in (os.path.join(inbox, rec["id"] + ".json"), os.path.join(inbox, "done", rec["id"] + ".json"))
-                  if os.path.exists(p)), None)
+        m = next((m for m in (bosshost._json(bosskit._read(os.path.join(d, rec["id"] + ".json")), None) for d in (inbox, os.path.join(inbox, "done")))
+                  if isinstance(m, dict)), None)  # both, in order: `done` may move it between the two reads
         if not m:
             out.append((to, "gone"))
         elif m.get("done_at"):
@@ -189,6 +200,8 @@ def sent_log(ctx, limit=20):
 
 
 def find(ctx, mid):
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", mid or ""):
+        sys.exit(f"boss-mail: {mid!r} is not a message id")
     for d in (ctx.inbox, os.path.join(ctx.inbox, "done")):
         p = os.path.join(d, mid + ".json")
         if os.path.exists(p):

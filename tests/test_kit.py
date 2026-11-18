@@ -222,7 +222,7 @@ class UrgentMail(Home):
         os.environ["BOSS_PROJECT"] = "gadgets"
         self.ctx = bosskit.load(self.wt)
         bosskit.save_json(os.path.join(self.home, "bosses.json"),
-                          {"w1": {"project": "widgets", "workspace": "w1", "hostKind": "fake", "heartbeat": time.time()}})
+                          {"w1": {"project": "widgets", "workspace": "w1", "hostKind": "fake", "terminal": "t1", "heartbeat": time.time()}})
         self.state("idle")
 
     def state(self, st):
@@ -281,6 +281,65 @@ class UrgentMail(Home):
         self.assertEqual(sorted(got), ["skipped (rate-limited)", "woke"])
         self.assertEqual(len(self.sends()), 1)
 
+    def test_the_wake_goes_to_the_boss_terminal_only(self):
+        json.dump({"workspaces": [{"id": "w1", "terminals": [{"id": "r1", "title": "research", "agent": {"state": "idle"}},
+                                                             {"id": "t1", "title": "boss", "agent": {"state": "working"}}]}]},
+                  open(os.path.join(self.fixdir, "snapshot.json"), "w"))
+        self.assertEqual(self.mail.send(self.ctx, "widgets", "fyi", "x", "b", urgent=True)[2], {"widgets/w1": "skipped (busy)"})
+        self.assertEqual(self.sends(), [])  # the idle research session is not the boss
+        reg = bosskit.registry(self.home)
+        del reg["w1"]["terminal"]
+        bosskit.save_json(os.path.join(self.home, "bosses.json"), reg)
+        self.assertEqual(self.mail.send(self.ctx, "widgets", "fyi", "x", "b", urgent=True)[2], {"widgets/w1": "skipped (boss terminal unknown)"})
+        self.assertEqual(self.sends(), [])
+
+    def test_the_pane_heartbeat_records_the_boss_terminal(self):
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace\n")
+        deck = deck_json(self.wt, stub_tools(self.tmp, self.fixdir), "--workspace", "me-ws", "--terminal", "me-t1", "--host-kind", "fake")
+        self.assertEqual(bosskit.registry(self.home)[deck["me"]["id"]]["terminal"], "me-t1")
+
+    def test_a_message_id_is_a_name_never_a_path(self):
+        open(os.path.join(self.ctx.bdir, "outside.json"), "w").write("{}")
+        for bad in ("../outside", "/etc/passwd", "20260101-000000-abcdef/../../outside"):
+            with self.assertRaises(SystemExit) as e:
+                self.mail.find(self.ctx, bad)
+            self.assertIn("is not a message id", str(e.exception))
+
+    def test_a_cooldown_that_cannot_be_saved_never_hides_a_wake(self):
+        real = bosskit.save_json
+
+        def no_stamp(path, data):
+            if path.endswith("woken.json"):
+                raise OSError("read-only")
+            real(path, data)
+        with mock.patch.object(bosskit, "save_json", no_stamp), mock.patch.object(sys, "stderr", io.StringIO()):
+            woke = self.mail.send(self.ctx, "widgets", "fyi", "x", "b", urgent=True)[2]["widgets/w1"]
+        self.assertEqual((woke, len(self.sends())), ("skipped (send failed)", 0))  # never woke while reporting a failure
+
+    def test_a_failed_wake_keeps_no_cooldown(self):
+        self.state("working")
+        self.mail.send(self.ctx, "widgets", "fyi", "x", "b", urgent=True)
+        self.state("idle")
+        self.assertEqual(self.mail.send(self.ctx, "widgets", "fyi", "x", "b", urgent=True)[2], {"widgets/w1": "woke"})
+
+    def test_a_lost_receipt_log_still_reports_the_delivery(self):
+        os.chmod(self.ctx.bdir, 0o500)
+        err = io.StringIO()
+        try:
+            with mock.patch.object(sys, "stderr", err):
+                mid, sent, _ = self.mail.send(self.ctx, "widgets", "fyi", "x", "b")
+        finally:
+            os.chmod(self.ctx.bdir, 0o700)
+        self.assertEqual(sent, ["widgets/w1"])
+        self.assertIn(f"{mid} was delivered, but its receipt log was not written", err.getvalue())
+
+    def test_a_receipt_moved_to_done_between_reads_is_not_gone(self):
+        inbox = os.path.join(self.home, "widgets", "bosses", "w1", "inbox")
+        os.makedirs(os.path.join(inbox, "done"))
+        json.dump({"id": "m1", "done_at": "2026-01-02T10:00:00+0000"}, open(os.path.join(inbox, "done", "m1.json"), "w"))
+        open(os.path.join(inbox, "m1.json"), "w").write("")  # the inbox copy is mid-move: present, unreadable
+        self.assertEqual(self.mail.receipts(self.home, {"id": "m1", "to": ["widgets/w1"]}), [("widgets/w1", "done 2026-01-02T10:00:00+0000")])
+
     def deck_inbox(self):
         deck, now = load_script("boss-deck-data.py"), time.time()
         inbox = os.path.join(self.home, "widgets", "bosses", "w1", "inbox")
@@ -292,6 +351,20 @@ class UrgentMail(Home):
         json.dump({"id": "m1", "created_at": at(16), "read_at": at(15)}, open(os.path.join(inbox, "m1.json"), "w"))
         box = deck.mail(inbox, now)
         self.assertEqual((box["count"], box["oldestMin"], deck.mail_lines(box, 0)), (1, 0, []))  # read, not done: not waiting
+        json.dump({"id": "m1", "created_at": at(16), "done_at": at(15)}, open(os.path.join(inbox, "m1.json"), "w"))  # stamped, not moved
+        self.assertEqual(deck.mail(inbox, now)["oldestMin"], 0)
+
+    def test_a_null_timestamp_never_stops_the_pane(self):
+        deck, now, inbox, at = self.deck_inbox()
+        json.dump({"id": "m1", "created_at": None}, open(os.path.join(inbox, "m1.json"), "w"))
+        self.assertEqual((deck.mail(inbox, now)["count"], deck.mail(inbox, now)["oldestMin"]), (1, 0))
+
+    def test_the_pane_counts_the_last_20_valid_sent_records(self):
+        deck, now, inbox, at = self.deck_inbox()
+        json.dump({"id": "m0", "created_at": at(30)}, open(os.path.join(inbox, "m0.json"), "w"))
+        recs = [{"id": "m0", "to": ["widgets/w1"]}] + [{"id": f"r{i}", "to": ["widgets/w1"]} for i in range(19)]
+        open(os.path.join(self.ctx.bdir, "sent.jsonl"), "w").write("".join(json.dumps(r) + "\n" for r in recs) + "not json\n")
+        self.assertEqual(deck.sent_unread(self.home, self.ctx.bdir, now), 30)  # a bad line takes no slot from m0
 
     def test_the_pane_keeps_flagging_unread_mail_past_a_day(self):
         deck, now, inbox, at = self.deck_inbox()

@@ -481,8 +481,8 @@ MAIL_STALE_MIN = 10
 def mail_age(m, now=None):
     """Minutes since a message was sent, 0 when its stamp does not parse."""
     try:
-        return int(((now or time.time()) - datetime.strptime(m.get("created_at", ""), MAIL_STAMP).timestamp()) // 60)
-    except ValueError:
+        return int(((now or time.time()) - datetime.strptime(m.get("created_at") or "", MAIL_STAMP).timestamp()) // 60)
+    except (TypeError, ValueError):
         return 0
 
 
@@ -494,7 +494,7 @@ def mail(inbox, now=None):
             try:
                 m = json.load(open(os.path.join(inbox, f)))
                 items.append({"id": m["id"], "kind": m.get("kind", ""), "from": m.get("from_project", ""), "subject": m.get("subject", "")})
-                oldest = max(oldest, 0 if m.get("read_at") else mail_age(m, now))  # read but not done is not waiting
+                oldest = max(oldest, 0 if m.get("read_at") or m.get("done_at") else mail_age(m, now))  # read is not waiting
             except (OSError, ValueError, KeyError):
                 continue
     return {"count": len(items), "dir": inbox, "items": items[-5:], "oldestMin": oldest}
@@ -502,16 +502,18 @@ def mail(inbox, now=None):
 
 def sent_unread(home, bdir, now=None):
     """Minutes the oldest of this boss's last 20 sent messages has waited unread by a recipient, else 0."""
+    recs = []
+    for line in bosskit._read(os.path.join(bdir, "sent.jsonl")).splitlines():
+        r = bosshost._json(line, None)
+        if isinstance(r, dict) and isinstance(r.get("id"), str) and isinstance(r.get("to"), list):
+            recs.append(r)
     worst = 0
-    for line in bosskit._read(os.path.join(bdir, "sent.jsonl")).splitlines()[-20:]:
-        try:
-            r = json.loads(line)
-            for to in r["to"]:
-                project, boss = to.split("/", 1)
-                m = bosshost._json(bosskit._read(os.path.join(home, project, "bosses", boss, "inbox", r["id"] + ".json")), {})
-                worst = max(worst, mail_age(m, now) if m and not m.get("read_at") else 0)
-        except (ValueError, KeyError, TypeError, AttributeError):
-            continue
+    for r in recs[-20:]:  # as boss-mail sent counts them: a bad line takes no slot
+        for to in r["to"]:
+            project, _, boss = str(to).partition("/")
+            m = bosshost._json(bosskit._read(os.path.join(home, project, "bosses", boss, "inbox", r["id"] + ".json")), {})
+            if isinstance(m, dict) and m and not (m.get("read_at") or m.get("done_at")):
+                worst = max(worst, mail_age(m, now))
     return worst
 
 
@@ -789,8 +791,9 @@ def main():
         first_seen = json.load(open(sessions_path))
     except (OSError, ValueError):
         first_seen = {}
+    own_term = arg("--terminal") or host.terminal_id()
     sessions = boss_sessions(next((w for w in spaces if w.get("id") == ctx.workspace), None) if ctx.workspace else None,
-                             arg("--terminal") or host.terminal_id(),
+                             own_term,
                              ledger_terms(os.path.join(ctx.pdir, cfg.get("ledger", "ledger.md")), ctx.workspace[:8]) if ctx.workspace else {},
                              first_seen, time.time())
     bosskit.save_json(sessions_path, first_seen)
@@ -813,7 +816,7 @@ def main():
     todo = attention([w for w in workers if w["stage"] != "done"], armed, pr_rows) + mail_lines(box, sent_unread(ctx.home, ctx.bdir))
     working = sum(w["state"] == "working" for w in workers)
     for_you = sum(a["level"] == "act" for a in todo)
-    bosskit.heartbeat(ctx, host.host_id(), {"working": working, "forYou": for_you,
+    bosskit.heartbeat(ctx, host.host_id(), {"working": working, "forYou": for_you, "terminal": own_term,
                                        "domain": bosskit.boss_domain(ctx.worktree), "next": now_line})
     if "--session-start" in sys.argv:
         name_boss_workspace(host, cfg)
