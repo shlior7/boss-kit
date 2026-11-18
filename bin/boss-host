@@ -150,6 +150,13 @@ def ctx_or_none():
         return None
 
 
+def pick(workers, ids):
+    """(the workers *ids* name, by id or id prefix as Host.worker matches, in that order; the ids that name none)."""
+    hit = lambda w, i: w.get("id", "").startswith(i[:8]) or i.startswith(w.get("id") or "\0")
+    found = [w for i in ids for w in workers if hit(w, i)]
+    return [w for n, w in enumerate(found) if w not in found[:n]], [i for i in ids if not any(hit(w, i) for w in workers)]
+
+
 def main(argv):
     args = list(argv)
     cmd = args.pop(0) if args else ""
@@ -173,7 +180,13 @@ def main(argv):
         elif cmd == "self":
             print(host.self_id())
         elif cmd == "workers":
-            print(json.dumps(host.workers(args or None), indent=1))
+            ws = host.workers(args or None)
+            if args:  # a host may list them all: keep the named ones, and name any it does not have
+                ws, missing = pick(ws, args)
+                if missing:
+                    print(json.dumps(ws, indent=1))
+                    sys.exit(f"boss-host workers: no worker {', '.join(missing)} on {host.name}")
+            print(json.dumps(ws, indent=1))
         elif cmd == "show" and len(args) == 1:
             print(json.dumps(host.worker(args[0]), indent=1))
         elif cmd == "create":
