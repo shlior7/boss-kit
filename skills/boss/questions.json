@@ -117,8 +117,8 @@
   {"id": "wake", "key": "wake", "level": "boss", "header": "Wake on mail",
    "question": "Should mail from another boss also message this boss's session (wake it)?",
    "options": [
-    {"label": "No", "value": false, "description": "Mail waits in the inbox; every prompt names it"},
-    {"label": "Yes", "value": true, "description": "The mail also lands in the session"}
+    {"label": "No", "value": false, "description": "Mail waits in the inbox; every prompt names it. Mail sent --urgent still wakes an idle session"},
+    {"label": "Yes", "value": true, "description": "One fixed line lands in the session, naming only the kind and the sender's project, never the subject or body"}
    ]},
   {"id": "deck", "key": ["deck_buttons", "deck_worker_buttons"], "level": "user", "header": "Deck buttons",
    "question": "Should the boss-deck pane show its prompt buttons?",
