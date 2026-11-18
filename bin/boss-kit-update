@@ -18,9 +18,10 @@ Steps, in order, each printed:
   5. One 'fyi' mail to each live boss (written straight to its inbox: the script types into no terminal, so nothing
      lands in a boss's input box). Skipped by --no-mail.
   6. One final block: kit old..new, each plugin old -> new, and the restart line.
---dry-run prints every step and changes nothing (no pull, no plugin command, no write, no mail). It does git fetch (this
-moves only origin's refs, not the checkout) and reads the plugin list and the diffs from origin, so it reports what a real
-run would do: would install, would update, would reinstall.
+--dry-run changes no working-tree file, plugin or inbox and sends no mail. It runs git fetch, which does write to the kit's
+.git (objects, origin's remote-tracking refs, FETCH_HEAD), then reads the plugin list and the diffs at the one upstream
+commit it resolved, so it reports what a real run would do: would install, would update, would reinstall. If the fetch or
+the upstream lookup fails it prints a warning and plans from the local HEAD. If the kit has diverged it stops, as a real run does.
 
 The kit is $BOSS_KIT, else $BOSS_KIT_HOME, else the one this script is in.
 """
@@ -66,36 +67,61 @@ def version(info, key):
     return (info.get(key) or {}).get("version")
 
 
+def manifest_version(kit, ref, source):
+    """The version in the plugin's own plugin.json at ref, which is the one Claude Code installs under (None if it declares none)."""
+    try:
+        return json.loads(git(kit, "show", f"{ref}:{os.path.normpath(os.path.join(source, '.claude-plugin', 'plugin.json'))}").stdout).get("version")
+    except ValueError:
+        return None
+
+
 def marketplace(kit, ref="HEAD"):
-    """{plugin name: {"version", "source"}} the kit's marketplace lists at ref (origin's, for a dry run)."""
+    """{plugin name: {"version", "source"}} the kit's marketplace lists at ref (the resolved upstream commit, for a dry run). The
+    version is the plugin's own plugin.json version, else the marketplace entry's."""
     try:
         r = git(kit, "show", f"{ref}:.claude-plugin/marketplace.json")
-        return {p["name"]: {"version": p.get("version", "?"), "source": os.path.normpath(p.get("source", "./"))}
-                for p in json.loads(r.stdout).get("plugins", [])}
+        out = {}
+        for p in json.loads(r.stdout).get("plugins", []):
+            src = os.path.normpath(p.get("source", "./"))
+            out[p["name"]] = {"version": manifest_version(kit, ref, src) or p.get("version", "?"), "source": src}
+        return out
     except (ValueError, KeyError):
         return {}
 
 
 def pull(kit, dry=False):
-    """Fast-forward the kit; (old, new, ref, note): short shas, the ref the plugin list is read from, a note for the output.
-    Exits on a dirty or diverged kit. A dry run only fetches: new is what origin has, ref is origin's."""
+    """Fast-forward the kit; (old, new, ref, note): short shas, the full sha the plugin list and diffs are read at, a note for the
+    output. Exits on a dirty or diverged kit. A dry run only fetches: it resolves upstream once, and plans from it when a
+    fast-forward is possible, from HEAD when HEAD is ahead of it."""
     if not os.path.exists(os.path.join(kit, ".git")):
         sys.exit(f"boss-kit-update: {kit} is not a git checkout")
     dirty = git(kit, "status", "--porcelain", "--untracked-files=no").stdout.rstrip()
     if dirty.strip():
         sys.exit(f"boss-kit-update: {kit} has uncommitted changes:\n{dirty}\n"
                  f"Stash them (git -C {kit} stash push -m before-update, then git -C {kit} stash pop after), or discard them, and run it again.")
-    old = git(kit, "rev-parse", "--short", "HEAD").stdout.strip()
+    rev = lambda *a: git(kit, "rev-parse", "--verify", "--quiet", *a)
+    head, old = rev("HEAD").stdout.strip(), git(kit, "rev-parse", "--short", "HEAD").stdout.strip()
+    short = lambda sha: git(kit, "rev-parse", "--short", sha).stdout.strip()
+    stuck = (f"{kit} cannot fast-forward (diverged from its upstream, or no upstream)"
+             f"\nRebase or reset it to its upstream yourself (git -C {kit} status), then run this again.")
     if dry:
-        f, up = git(kit, "fetch", "--quiet"), git(kit, "rev-parse", "--verify", "--short", "@{u}")
+        f, up = git(kit, "fetch", "--quiet"), rev("@{u}^{commit}")
         if f.returncode or up.returncode:
-            return old, old, "HEAD", "could not fetch origin (" + (f.stderr or "no upstream").strip().splitlines()[-1] + "): reporting from the local kit"
-        return old, up.stdout.strip(), "@{u}", ""
+            why = (f.stderr.strip().splitlines() or ["no upstream"])[-1]
+            return old, old, head, f"could not fetch origin ({why}): reporting from the local kit"
+        up = up.stdout.strip()
+        ancestor = lambda a, b: git(kit, "merge-base", "--is-ancestor", a, b).returncode == 0
+        if ancestor(head, up):
+            return old, short(up), up, ""
+        if ancestor(up, head):
+            return old, old, head, "the local kit is ahead of its upstream: a real pull changes nothing"
+        sys.exit(f"boss-kit-update: a real run would stop here: {stuck}")
     r = git(kit, "pull", "--ff-only", "--quiet")
     if r.returncode:
         sys.exit(f"boss-kit-update: {kit} cannot fast-forward (diverged from its upstream, or no upstream): {r.stderr.strip()}\n"
                  f"Rebase or reset it to its upstream yourself (git -C {kit} status), then run this again.")
-    return old, git(kit, "rev-parse", "--short", "HEAD").stdout.strip(), "HEAD", ""
+    new = rev("HEAD").stdout.strip()
+    return old, short(new), new, ""
 
 
 def claude(*args):
@@ -117,33 +143,67 @@ def own_files(p, plugins):
     return [p["source"]] + [f":(exclude){q['source']}" for q in plugins.values() if nested(q)]
 
 
-def update_plugins(kit, ref, dry, before):
-    """Step 2: refresh the marketplace; install each plugin it lists that is not installed, update one whose version moved,
-    reinstall one whose files changed under the same version. Returns (lines, failed)."""
+def fetchable(kit, name, source):
+    """False when the marketplace's own checkout has no copy of the plugin's source dir to install from."""
+    try:
+        root = json.load(open(os.path.join(claude_home(), "plugins", "known_marketplaces.json")))[MARKET]["installLocation"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return True
+    return os.path.isdir(os.path.join(root, source))
+
+
+def plan(kit, ref, before):
+    """[(kind, [argv...], why)]: marketplace refresh, then per plugin an install, an update, or a reinstall (uninstall, install)."""
     plugins = marketplace(kit, ref)
-    if not shutil.which("claude"):
-        return ["skip: the claude CLI is not on PATH. In Claude Code run /plugin marketplace update "
-                f"{MARKET}, then /plugin update (or /plugin install) <plugin>@{MARKET} for each of: {', '.join(plugins) or 'the kit plugins'}"], False
     steps = [("run", [["plugin", "marketplace", "update", MARKET]], "")]
     for n, p in plugins.items():
         key, have = f"{n}@{MARKET}", before.get(f"{n}@{MARKET}")
         if not have:
             steps.append(("install", [["plugin", "install", key]], ""))
-        elif have["version"] == p["version"] and have["sha"] and changed(kit, have["sha"], ref, own_files(p, plugins)):
+            continue
+        # same version and different files: update would skip it. A moved source dir is a different plugin copy.
+        old_src = marketplace(kit, have["sha"]).get(n, {}).get("source") if have["sha"] else None
+        if have["version"] == p["version"] and have["sha"] and (old_src != p["source"] or changed(kit, have["sha"], ref, own_files(p, plugins))):
             steps.append(("reinstall", [["plugin", "uninstall", key], ["plugin", "install", key]], "files changed, version unchanged"))
         else:
             steps.append(("update", [["plugin", "update", key]], ""))
-    lines, failed = [], False
+    return steps
+
+
+def update_plugins(kit, ref, dry, before):
+    """Step 2: refresh the marketplace; install each plugin it lists that is not installed, update one whose version moved,
+    reinstall one whose files changed under the same version. A reinstall never starts when the marketplace refresh failed or
+    its source is not in the marketplace checkout (the installed copy stays); if its install fails after the uninstall it is
+    retried once, then the exact command is printed. Returns (lines, failed)."""
+    steps = plan(kit, ref, before)
+    if not shutil.which("claude"):
+        slash = "; ".join("/" + " then /".join(" ".join(a) for a in argvs) for _, argvs, _ in steps)
+        return [f"skip: the claude CLI is not on PATH. In Claude Code run: {slash}"], False
+    srcs = {n: p["source"] for n, p in marketplace(kit, ref).items()}
+    lines, failed, refreshed = [], False, True
     for kind, argvs, why in steps:
+        key = argvs[-1][-1]
         if dry:
             lines.append(f"would {kind}{f' ({why})' if why else ''}: " + ", then ".join("claude " + " ".join(a) for a in argvs))
             continue
-        for argv in argvs:
+        if kind == "reinstall" and (not refreshed or not fetchable(kit, key, srcs[key.split("@")[0]])):
+            lines.append(f"skip reinstall {key}: " + ("the marketplace refresh failed" if not refreshed else "the marketplace has no copy of its files to install")
+                         + "; the installed copy is kept. Fix that and run boss-kit-update again")
+            failed = True
+            continue
+        for i, argv in enumerate(argvs):
             ok, last = claude(*argv)
+            if not ok and argv[1] == "install" and kind == "reinstall":  # the plugin is gone now: try once more
+                lines.append(f"FAIL claude {' '.join(argv)}" + (f": {last[:120]}" if last else "") + " (retrying once)")
+                ok, last = claude(*argv)
             failed |= not ok
+            if kind == "run":
+                refreshed = ok
             lines.append(f"{'ok  ' if ok else 'FAIL'} claude {' '.join(argv)}" + (f": {last[:120]}" if last else "")
-                         + (f" ({kind}ed: {why})" if ok and why and argv is argvs[-1] else ""))
+                         + (f" ({kind}ed: {why})" if ok and why and i == len(argvs) - 1 else ""))
             if not ok:
+                if kind == "reinstall" and argv[1] == "install":
+                    lines.append(f"{key} is now uninstalled. Run: claude plugin install {key}")
                 break
     return lines, failed
 
@@ -236,11 +296,14 @@ def main(argv):
     mk = lambda k: k.endswith("@" + MARKET)
     moved = {k: (version(before, k), v["version"]) for k, v in after.items()
              if mk(k) and (version(before, k), (before.get(k) or {}).get("sha")) != (v["version"], v["sha"])}
-    was_changed = old != new or bool(moved)
+    missing = sorted(k for k in before if mk(k) and k not in after and k.split("@")[0] in marketplace(kit, ref))
+    was_changed = old != new or bool(moved) or bool(missing)
     ver = lambda n: version(after, f"{n}@{MARKET}") or marketplace(kit, ref).get(n, {}).get("version", "?")
     sent = []
     if dry or no_mail:
         mail = "would mail the live bosses" if dry else "skipped (--no-mail)"
+    elif missing:
+        mail = "nobody mailed: a plugin is missing (see below)"
     elif not was_changed:
         mail = "nothing changed: nobody mailed"
     else:
@@ -248,7 +311,10 @@ def main(argv):
         mail = f"mailed {len(sent)} live boss{'' if len(sent) == 1 else 'es'}" + (": " + ", ".join(sent) if sent else "")
     step(5, "mail", [mail])
     mine = {k.split("@")[0]: v["version"] for k, v in after.items() if mk(k)}
-    if moved:
+    if missing:
+        plugins = ", ".join(f"{k.split('@')[0]} MISSING (uninstalled, not reinstalled)" for k in missing) + (
+            "; " + "; ".join(f"{k.split('@')[0]} {b}" for k, (a, b) in sorted(moved.items())) if moved else "")
+    elif moved:
         plugins = "; ".join(f"{k.split('@')[0]} {a or 'new'} -> {b}" if a != b else f"{k.split('@')[0]} {b} (reinstalled, files changed)"
                             for k, (a, b) in sorted(moved.items()))
     else:
@@ -256,7 +322,10 @@ def main(argv):
     print("\n" + "\n".join([
         f"Kit:     {old}..{new}" if old != new else f"Kit:     {new} (up to date)",
         f"Plugins: {plugins}",
-        "Dry run: nothing was changed." if dry else RESTART if was_changed else "Up to date: nothing to restart.",
+        "Dry run: nothing was changed." if dry else
+        "INCOMPLETE: " + ", ".join(missing) + " is not installed. Fix the error above, run `claude plugin install "
+        + missing[0] + "`, then run boss-kit-update again." if missing else
+        RESTART if was_changed else "Up to date: nothing to restart.",
     ]))
     sys.exit(1 if failed else 0)
 

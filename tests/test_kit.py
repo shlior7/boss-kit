@@ -1324,8 +1324,14 @@ class StatusAsk(unittest.TestCase):
 STUB_CLAUDE = """#!/usr/bin/env python3
 import json, os, subprocess, sys
 a = sys.argv[1:]
-open(os.path.join(os.environ["FIX"], "claude.log"), "a").write(" ".join(a) + "\\n")
-p = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "plugins", "installed_plugins.json")
+cmd = " ".join(a)
+open(os.path.join(os.environ["FIX"], "claude.log"), "a").write(cmd + "\\n")
+once = os.path.join(os.environ["FIX"], "failed-once")
+if cmd in os.environ.get("STUB_FAIL", "").split(","):
+    print("stub: " + cmd + " failed", file=sys.stderr); sys.exit(1)
+if cmd == os.environ.get("STUB_FAIL_ONCE") and not os.path.exists(once):
+    open(once, "w").close(); print("stub: " + cmd + " failed once", file=sys.stderr); sys.exit(1)
+p =os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "plugins", "installed_plugins.json")
 d = json.load(open(p))
 sha = subprocess.run(["git", "-C", os.environ["BOSS_KIT"], "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 v = os.environ.get("STUB_VERSION", "0.8.0")
@@ -1378,7 +1384,7 @@ class KitUpdate(Home):
         git(repo, "add", name)
         git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", f"add {name}")
 
-    def update(self, *args, with_claude=True):
+    def update(self, *args, with_claude=True, env=None):
         path = self.bindir
         if not with_claude:  # git and python3 only: no claude CLI anywhere on PATH
             path = os.path.join(self.tmp, "nocli")
@@ -1387,7 +1393,7 @@ class KitUpdate(Home):
                 if not os.path.lexists(os.path.join(path, tool)):
                     os.symlink(shutil.which(tool), os.path.join(path, tool))
         env = {**os.environ, "BOSS_KIT": self.kit, "PATH": path + os.pathsep + (os.environ["PATH"] if with_claude else ""),
-               "CLAUDE_CONFIG_DIR": self.cfg}
+               "CLAUDE_CONFIG_DIR": self.cfg, **(env or {})}
         return subprocess.run([os.path.join(BIN, "boss-kit-update"), *args], capture_output=True, text=True, env=env,
                               stdin=subprocess.DEVNULL)
 
@@ -1457,7 +1463,9 @@ class KitUpdate(Home):
         r = self.update(with_claude=False)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("skip: the claude CLI is not on PATH", r.stdout)
-        self.assertIn("/plugin update (or /plugin install) <plugin>@boss-kit", r.stdout)
+        self.assertIn("/plugin marketplace update boss-kit", r.stdout)
+        self.assertIn("/plugin install boss@boss-kit", r.stdout)
+        self.assertIn("/plugin update boss-deck@boss-kit", r.stdout)
         self.assertTrue(os.path.exists(os.path.join(self.kit, "two")))  # the pull still happened
         link = os.path.join(self.cfg, "skills", "boss")
         self.assertEqual(os.path.realpath(link), os.path.realpath(os.path.join(self.kit, "skills", "boss")))  # /boss through the link
@@ -1582,6 +1590,110 @@ class KitUpdate(Home):
         self.assertEqual(open(self.installed).read(), plugins)
         self.assertFalse(os.path.exists(self.claude_log))
         self.assertEqual(self.inbox("widgets", "live-a"), [])
+
+    def deck_changed(self):
+        self.install()
+        self.commit(self.origin, "mods/boss-deck/hooks/details.ts")  # boss-deck changed, still 0.8.0
+
+    def test_a_failed_marketplace_refresh_skips_every_reinstall_and_keeps_the_plugin(self):
+        self.deck_changed()
+        r = self.update(env={"STUB_FAIL": "plugin marketplace update boss-kit"})
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("uninstall", open(self.claude_log).read())
+        self.assertIn("skip reinstall boss-deck@boss-kit: the marketplace refresh failed", r.stdout)
+        self.assertIn("the installed copy is kept", r.stdout)
+        self.assertIn("boss-deck@boss-kit", json.load(open(self.installed))["plugins"])
+
+    def test_no_reinstall_when_the_marketplace_has_no_copy_to_install_from(self):
+        self.deck_changed()
+        empty = os.path.join(self.tmp, "empty-marketplace")
+        os.makedirs(empty)
+        json.dump({"boss-kit": {"installLocation": empty}}, open(os.path.join(self.cfg, "plugins", "known_marketplaces.json"), "w"))
+        r = self.update()
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("uninstall", open(self.claude_log).read())
+        self.assertIn("skip reinstall boss-deck@boss-kit: the marketplace has no copy", r.stdout)
+        self.assertIn("boss-deck@boss-kit", json.load(open(self.installed))["plugins"])
+
+    def test_an_install_that_fails_after_the_uninstall_is_retried_once_then_named_and_never_reported_up_to_date(self):
+        self.install(**{"boss-deck": "d" * 40})  # kit already current: only the reinstall is in play
+        r = self.update(env={"STUB_FAIL": "plugin install boss-deck@boss-kit"})
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(open(self.claude_log).read().splitlines().count("plugin install boss-deck@boss-kit"), 2)  # tried, retried once
+        self.assertIn("boss-deck@boss-kit is now uninstalled. Run: claude plugin install boss-deck@boss-kit", r.stdout)
+        final = r.stdout.split("\n\nKit:")[1]
+        self.assertNotIn("Up to date", final)
+        self.assertIn("INCOMPLETE: boss-deck@boss-kit is not installed", final)
+        self.assertIn("boss-deck MISSING", final)
+        self.assertEqual(self.inbox("widgets", "live-a"), [])  # a restart mail would be wrong: the plugin is gone
+
+    def test_an_install_that_works_on_the_retry_finishes_normally(self):
+        self.deck_changed()
+        r = self.update(env={"STUB_FAIL_ONCE": "plugin install boss-deck@boss-kit"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)  # the retry fixed it: no failure left
+        self.assertEqual(open(self.claude_log).read().splitlines().count("plugin install boss-deck@boss-kit"), 2)
+        self.assertIn("boss-deck 0.8.0 (reinstalled, files changed)", r.stdout)
+
+    def test_the_version_claude_code_uses_is_the_plugin_manifests_not_the_marketplace_entry(self):
+        manifest = os.path.join(self.origin, "mods", "boss-deck", ".claude-plugin", "plugin.json")
+        os.makedirs(os.path.dirname(manifest))
+        json.dump({"name": "boss-deck", "version": "0.8.0"}, open(manifest, "w"))
+        git(self.origin, "add", "mods")
+        self.commit(self.origin, "mods/boss-deck/x")
+        git(self.kit, "pull", "-q")
+        self.install()
+        bumped = {**self.MARKET, "plugins": [self.MARKET["plugins"][0], {**self.MARKET["plugins"][1], "version": "0.8.1"}]}
+        json.dump(bumped, open(os.path.join(self.origin, ".claude-plugin", "marketplace.json"), "w"))  # only the entry is bumped
+        git(self.origin, "add", ".claude-plugin")
+        self.commit(self.origin, "mods/boss-deck/hooks/details.ts")
+        r = self.update()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        log = open(self.claude_log).read()
+        self.assertIn("plugin uninstall boss-deck@boss-kit", log)  # 0.8.0 either way, so update would skip it
+        self.assertNotIn("plugin update boss-deck@boss-kit", log)
+
+    def test_a_plugin_whose_source_dir_moved_is_reinstalled_even_when_the_new_dir_is_unchanged(self):
+        self.commit(self.origin, "mods/boss-deck-next/hooks/details.ts")
+        git(self.kit, "pull", "-q")
+        self.install()
+        moved = {**self.MARKET, "plugins": [self.MARKET["plugins"][0], {**self.MARKET["plugins"][1], "source": "./mods/boss-deck-next"}]}
+        json.dump(moved, open(os.path.join(self.origin, ".claude-plugin", "marketplace.json"), "w"))
+        git(self.origin, "add", ".claude-plugin")
+        self.commit(self.origin, "note")
+        r = self.update()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("plugin uninstall boss-deck@boss-kit", open(self.claude_log).read())
+
+    def test_a_dry_run_plans_from_one_resolved_commit_not_a_moving_ref(self):
+        import importlib.machinery, importlib.util
+        loader = importlib.machinery.SourceFileLoader("boss_kit_update", os.path.join(BIN, "boss-kit-update"))
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("boss_kit_update", loader))
+        loader.exec_module(mod)
+        self.commit(self.origin, "two")
+        old, new, ref, note = mod.pull(self.kit, dry=True)
+        self.assertRegex(ref, r"^[0-9a-f]{40}$")  # a sha, so a fetch landing later cannot change what the plan reads
+        self.assertTrue(ref.startswith(new))
+        self.assertEqual(note, "")
+
+    def test_a_dry_run_with_a_local_kit_ahead_of_origin_plans_from_head(self):
+        self.commit(self.kit, "local")  # ahead, not diverged
+        r = self.update("--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("the local kit is ahead of its upstream: a real pull changes nothing", r.stdout)
+        self.assertNotIn("..", r.stdout.split("[2/5]")[0].split("[1/5]")[1])  # no old..new range for a pull that moves nothing
+
+    def test_a_dry_run_on_a_diverged_kit_stops_as_a_real_run_does(self):
+        self.commit(self.origin, "two")
+        self.commit(self.kit, "local")
+        r = self.update("--dry-run")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("a real run would stop here", r.stderr)
+        self.assertNotIn("would install", r.stdout)
+
+    def test_the_missing_cli_text_names_the_uninstall_then_install_steps(self):
+        self.deck_changed()
+        r = self.update(with_claude=False)
+        self.assertIn("/plugin uninstall boss-deck@boss-kit then /plugin install boss-deck@boss-kit", r.stdout)
 
     def test_a_dry_run_that_cannot_fetch_says_so_and_reads_the_local_kit(self):
         git(self.kit, "remote", "remove", "origin")
