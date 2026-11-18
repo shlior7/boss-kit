@@ -23,6 +23,8 @@ Config, under `hosts.superset`: `host_id` (the host's machine id; empty = `$BOSS
 - the agent sits idle on an unchanged screen (digits ignored: a status-line clock ticks every minute) for 9 polls (3 min), or 135 (45 min) while a background shell or monitor shows;
 - the terminal is gone.
 
+All timings (poll, timeout, both idle fallbacks, the re-arm cap, the beat tolerance) live in `bin/watch-timings.json`; `watch.sh` and the boss-deck both read it. Every poll it touches a beat beside its file in `cache/watchers/` (`<pid>.beat`); the deck shows a watcher stale only when its pid is dead or the beat is 3 polls old, never by age. At the 3 h timeout it re-arms itself in place (same worker, terminal, branch; up to `WATCH_REARM_MAX` times, counted as `rearms` in its file, shown by the deck as "re-armed Nx"), then exits with `TIMEOUT` as before. DONE / IDLE / BLOCKED output is unchanged.
+
 Never swap it for `superset terminals wait --match`: a one-line regex misses an envelope drawn above a short read window or split over two lines, `terminals read` returns only the visible screen, and it has no idle fallback. `tests/test-watch.sh` feeds it captured screens (`watch.sh --sig < screen`).
 
 ## Troubleshooting

@@ -19,10 +19,13 @@
 # ($CLAUDE_CONFIG_DIR or ~/.claude, projects/<worktree path with every non-alphanumeric as ->/<newest>.jsonl) through the same `sig`,
 # against its own baseline, so an envelope taller than the pane still fires.
 # Workers keep their PR draft and post a status comment ending with the marker there; the boss marks it ready. `--ready < pr-list.json` prints the numbers (tests/test-watch.sh).
-# Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen (digits ignored: a status-line clock ticks every minute), 135 (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
+# Idle fallback (for a worker that asks in plain text): WATCH_IDLE_S of idle polls with an unchanged screen (digits ignored: a status-line clock ticks every minute; 3 min), WATCH_IDLE_SHELL_S (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
+# All timings (poll, timeout, both idle fallbacks, re-arms) come from bin/watch-timings.json, which the boss-deck reads too.
+# Liveness: every poll touches a beat beside the watcher's file ($BOSS_WATCHER_FILE, set by `boss-host watch`: <pid>.json -> <pid>.beat); the deck calls a watcher stale only when its pid is dead or the beat is older than WATCH_BEAT_POLLS polls.
+# Self-heal: when WATCH_TIMEOUT_S passes it re-arms itself in place (same worker, terminal, branch and baselines, so nothing that landed meanwhile is missed) up to WATCH_REARM_MAX times, counting them in its file ("rearms"), then exits with TIMEOUT as before.
 # On a fire it logs the stage to the boss's events.jsonl through bin/boss-event (DONE, BLOCKED, PR READY or merged), for the boss-deck stages.
 # Env: BOSS_HOST (default: first host), BOSS_HOST_CLI (default: superset); boss-host sets both to what the adapter resolved.
-# Poll 20 s, timeout 3 h (BOSS_WATCH_POLL_S, BOSS_WATCH_POLLS: 540). Needs the superset CLI, jq (gh for <branch>).
+# Tests override the sleep and the polls per run: BOSS_WATCH_POLL_S, BOSS_WATCH_POLLS. Needs the superset CLI, jq (gh for <branch>).
 # It reads the screen: this host's workers leave the envelope there.
 # `sig` ignores any line whose box border starts past column 20 (the boss's own message box, which may quote a done-message with real values).
 # `sig` is "DONE|<id>|<first 30 chars of summary>" (or BLOCKED), so a new envelope with an already-seen task id still differs from the
@@ -60,10 +63,21 @@ scr(){ "$S" terminals read --workspace "$W" --host "$H" --terminal "$T" --max-li
 # numbers of this branch's PRs that count as done (pick); fails when gh does
 ready(){ local j; j=$(gh pr list --head "$B" --state all --json number,isDraft,state,comments 2>/dev/null) || return 1
   echo "$j" | pick; }
+read -r POLL TIMEOUT IDLE IDLE_SHELL REARM_MAX < <(jq -r '[.WATCH_POLL_S, .WATCH_TIMEOUT_S, .WATCH_IDLE_S, .WATCH_IDLE_SHELL_S, .WATCH_REARM_MAX] | @tsv' "$(dirname "$0")/../../bin/watch-timings.json") \
+  || { echo "watch.sh: cannot read bin/watch-timings.json" >&2; exit 1; }
+polls=${BOSS_WATCH_POLLS:-$((TIMEOUT / POLL))}
+# the liveness beat, beside the watcher's file (unset when run by hand); a failure here never stops the watcher
+beat(){ [ -n "$BOSS_WATCHER_FILE" ] && touch "${BOSS_WATCHER_FILE%.json}.beat" 2>/dev/null; return 0; }
+# count a re-arm in the watcher's file (atomic: the deck reads it at any time)
+rearmed(){ [ -n "$BOSS_WATCHER_FILE" ] && jq --argjson n "$1" '.rearms = $n' "$BOSS_WATCHER_FILE" > "$BOSS_WATCHER_FILE.tmp" 2>/dev/null && mv "$BOSS_WATCHER_FILE.tmp" "$BOSS_WATCHER_FILE"; return 0; }
 base=$(scr | sig); tbase=$(said | sig); idle=0; lasth=""; prbase=""; prok=0
 [ -n "$B" ] && prbase=$(ready) && prok=1
-for i in $(seq 1 "${BOSS_WATCH_POLLS:-540}"); do
-  sleep "${BOSS_WATCH_POLL_S:-20}"
+beat
+# one pass is polls polls (WATCH_TIMEOUT_S); at its end the watcher re-arms itself, keeping its baselines, up to WATCH_REARM_MAX times
+for i in $(seq 1 $((polls * (REARM_MAX + 1)))); do
+  sleep "${BOSS_WATCH_POLL_S:-$POLL}"
+  beat
+  [ "$i" -gt 1 ] && [ $(((i - 1) % polls)) -eq 0 ] && rearmed $(((i - 1) / polls))
   txt=$(scr); [ -z "$txt" ] && { echo "TERMINAL GONE (session ended or host restarted)"; exit 0; }
   cur=$(echo "$txt" | sig)
   if [ -z "$cur" ] || [ "$cur" = "$base" ]; then   # not on the screen: the transcript (an envelope taller than the pane)
@@ -87,7 +101,7 @@ for i in $(seq 1 "${BOSS_WATCH_POLLS:-540}"); do
   h=$(echo "$txt" | tail -25 | tr -d 0-9 | cksum)
   if [ "$st" = idle ] && [ "$h" = "$lasth" ]; then idle=$((idle+1)); else idle=0; fi
   lasth=$h
-  need=9; echo "$txt" | tail -12 | grep -qE "[0-9]+ (shells?|monitors?)|Monitor event" && need=135
+  need=$((IDLE / POLL)); echo "$txt" | tail -12 | grep -qE "[0-9]+ (shells?|monitors?)|Monitor event" && need=$((IDLE_SHELL / POLL))
   if [ "$idle" -ge "$need" ]; then echo "AGENT IDLE WITHOUT ENVELOPE"; echo "$txt" | tail -40 | sed 's/││.*$//'; exit 0; fi
 done
 echo TIMEOUT

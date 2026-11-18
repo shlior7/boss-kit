@@ -58,9 +58,10 @@ DONE_COMMENT = re.compile(r"(^|\n)[ \t>`]*(?:<!--[ \t]*)?BOSS_WORKER_DONE\s+task
 # A boss refreshes every minute; past this its heartbeat age shows (bosskit.live drops it after STALE_S).
 BOSS_STALE_S = 300
 STATE_LINES = 3  # a domain boss's state file, in its details
-# ponytail: a watcher is "stale" by age or an idle worker; a real liveness probe would read the terminal
-STALE_AGE_S = 7200
-IDLE_STALE_S = 1800
+# A watcher is stale only when it stopped beating: its pid is dead (watchers() drops those) or its beat is WATCH_BEAT_POLLS polls old.
+# A live watcher legitimately runs for hours (WATCH_TIMEOUT_S) and idles for up to WATCH_IDLE_SHELL_S, so its age says nothing.
+TIMINGS = bosskit.watch_timings()  # bin/watch-timings.json, which a host plugin's watch.sh reads too
+WATCH_BEAT_STALE_S = TIMINGS["WATCH_BEAT_POLLS"] * TIMINGS["WATCH_POLL_S"]
 # Worker mode: rows per section, and the event stages DELIVERED lists ("msg" goes to FROM BOSS instead).
 DELIVERED_ROWS = 5
 MSG_ROWS = 10
@@ -191,21 +192,34 @@ def repo_tag(repo, aliases=None):
 
 
 def watchers(cache):
-    """Armed watchers: the files `boss-host watch` leaves in cache/watchers/, one per live process; a dead one's file is removed."""
+    """Armed watchers: the files `boss-host watch` leaves in cache/watchers/, one per live process (a dead one's file and beat are
+    removed), each with its beat (<pid>.beat, touched every poll): `stale` when the beat is older than WATCH_BEAT_STALE_S (a watcher
+    that has not beat yet counts from its arming), `rearms` how often it re-armed itself after its timeout."""
     d = os.path.join(cache, "watchers")
     found = []
+    now = int(time.time())
     for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
         path = os.path.join(d, f)
+        if f.endswith(".beat"):
+            continue
         try:
             w = json.load(open(path))
             os.kill(int(w["pid"]), 0)
         except (OSError, ValueError, KeyError, TypeError):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            for p in (path, os.path.splitext(path)[0] + ".beat"):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
             continue
-        found.append({"ws": str(w["ws"]), "term": str(w.get("term") or ""), "ageS": max(0, int(time.time()) - int(w.get("at") or 0))})
+        at = int(w.get("at") or 0)
+        try:
+            beat_at = int(os.path.getmtime(os.path.splitext(path)[0] + ".beat"))
+        except OSError:
+            beat_at = at
+        found.append({"ws": str(w["ws"]), "term": str(w.get("term") or ""), "ageS": max(0, now - at),
+                      "beatS": max(0, now - max(beat_at, at)), "rearms": int(w.get("rearms") or 0),
+                      "stale": now - max(beat_at, at) > WATCH_BEAT_STALE_S})
     return found
 
 
@@ -462,7 +476,7 @@ def attention(workers, armed, prs):
             items.append({"level": "check", "text": f"{w['name']}: idle, {w['task']} has no watcher"})
     for w in armed:
         if w["stale"]:
-            items.append({"level": "check", "text": f"watcher {w['ws'][:8]} stale ({w['ageS'] // 60}m)"})
+            items.append({"level": "check", "text": f"watcher {w['ws'][:8]} stale (no beat for {w['beatS'] // 60}m)"})
     for p in prs:
         tag = f"#{p['num']}" if p.get("primary") else f"{p['repo']}#{p['num']}"
         if p["ci"] == "red" and not p["draft"]:
@@ -797,10 +811,6 @@ def main():
                              ledger_terms(os.path.join(ctx.pdir, cfg.get("ledger", "ledger.md")), ctx.workspace[:8]) if ctx.workspace else {},
                              first_seen, time.time())
     bosskit.save_json(sessions_path, first_seen)
-    states = {w["ws"]: w["state"] for w in workers}
-    for w in armed:
-        idle = states.get(w["ws"][:8]) not in ("working", None)
-        w["stale"] = w["ageS"] > STALE_AGE_S or (idle and w["ageS"] > IDLE_STALE_S)
     try:
         now_line = open(os.path.join(ctx.bdir, "next.txt")).read().strip().splitlines()[0][:120]
     except (OSError, IndexError):

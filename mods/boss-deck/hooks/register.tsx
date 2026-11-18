@@ -493,7 +493,10 @@ export const register: Register = on => {
         )}
         {d.watchers
           .filter(w => w.stale)
-          .map(w => text(`! watcher ${w.ws.slice(0, 8)} stale, ${ago(w.ageS)}`, false, 'error'))}
+          .map(w => text(`! watcher ${w.ws.slice(0, 8)} stale, no beat for ${ago(w.beatS)}`, false, 'error'))}
+        {d.watchers
+          .filter(w => !w.stale && w.rearms > 0)
+          .map(w => text(`watcher ${w.ws.slice(0, 8)} re-armed ${w.rearms}x`, true))}
 
         {/* One quiet line when it fits: the tracker and the hint flow on the left, wrapping whole, the age stays right. */}
         <Box flexDirection="row" justifyContent="space-between" columnGap={2} marginTop={1}>

@@ -116,6 +116,12 @@ COMMENT_KINDS = {
 QUESTIONS = os.path.join(KIT, "skills", "boss", "questions.json")  # the onboarding form: the skill and boss-init read it
 
 
+def watch_timings():
+    """The watcher's timings, one file (bin/watch-timings.json) that a host plugin's watch.sh also reads with jq: the deck's
+    stale line and the watcher can never disagree about how often a watcher beats or how long it lives."""
+    return json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "watch-timings.json")))
+
+
 def home():
     return os.environ.get("BOSS_HOME") or os.path.expanduser("~/.claude/boss")
 
