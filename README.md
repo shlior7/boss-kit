@@ -502,7 +502,9 @@ bin/bosskit.py buttons set --level boss Cleanup="Do it all" Mail=null   # a dry 
 bin/bosskit.py buttons set --level boss --worker Verify="Verify {pr}" --apply   # writes (the old file is copied to <file>.bak-<time>)
 ```
 
-To go back to the default, remove the label from that layer's `deck_prompts` in its config file (`bosskit.py config show` names the file).
+`buttons set` previews the whole stack when a project resolves, and says `<label>: shadowed by <layer>` when a higher layer already overrides that label (its prompt, not yours, shows in the pane). A value that is not a string or `null`, or a list row without a text label and prompt, is ignored the same way by the pane and by `buttons`, and `buttons` prints an `ignored:` line for it. `buttons set` rejects any argument that is not `LABEL=prompt` before it writes anything.
+
+To remove an override, delete the label from that layer's `deck_prompts` (the worker rows' `deck_worker_prompts`) in its config file (`bosskit.py buttons` names the layer of each button). That restores inheritance, not the kit's prompt: the next lower layer's override for that label applies if there is one (delete the boss's and the user's shows again), else the prompt in the winning `deck_buttons` list, which is the kit's unless a layer replaced the list.
 
 ### The worker view
 

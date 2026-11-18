@@ -827,7 +827,7 @@ def main():
         "others": others(bosskit.registry(ctx.home), ctx.bid, workspace=ctx.workspace, wt=ctx.worktree), "mail": box,
         "bosses": bosses(bosskit.registry(ctx.home), ctx.name, ctx.bid, ctx.pdir, workspace=ctx.workspace, wt=ctx.worktree, sessions=sessions),
         "lessonsNew": lessons_new(ctx.home, ctx.bdir, "--session-start" in sys.argv),
-        "buttons": bosskit.pane_buttons(cfg), "workerButtons": bosskit.pane_buttons(cfg, "worker"),
+        "buttons": bosskit.pane_buttons(ctx.layers), "workerButtons": bosskit.pane_buttons(ctx.layers, "worker"),
     }))
 
 
