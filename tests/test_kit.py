@@ -1442,7 +1442,7 @@ class KitUpdate(Home):
         self.assertIn("would install: claude plugin install boss@boss-kit", r.stdout)
         self.assertIn("/boss will come from the boss plugin", r.stdout)
         self.assertIn("would run boss-migrate", r.stdout)
-        self.assertIn("Dry run: nothing was changed.", r.stdout)
+        self.assertIn("Dry run: no files, plugins or mail were changed (git fetch updated .git).", r.stdout)
         self.assertEqual(self.head(), before)
         self.assertFalse(os.path.exists(os.path.join(self.kit, "two")))
         self.assertFalse(os.path.exists(self.claude_log))  # the CLI was never run

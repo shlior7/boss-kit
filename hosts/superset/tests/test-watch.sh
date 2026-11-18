@@ -94,7 +94,8 @@ if [ "$got" = "1 6 7 8 9 10" ]; then echo "ok   PR READY, drafts off -> $got"; e
 t=$(mktemp -d); mkdir "$t/bin" "$t/cli"; ln -s "$(command -v jq)" "$t/bin/jq"
 printf '#!/bin/sh\necho "$*" >> "%s/calls"\necho "{\\"text\\": \\"hi\\"}"\n' "$t" > "$t/cli/the-cli"; chmod +x "$t/cli/the-cli"
 PATH="$t/bin:/usr/bin:/bin" BOSS_HOST=m-7 BOSS_HOST_CLI="$t/cli/the-cli" "$S" w1 t1 >/dev/null 2>&1 & pid=$!
-for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$t/calls" ] && break; sleep 0.2; done; kill $pid 2>/dev/null; wait $pid 2>/dev/null
+# wait for the watcher's first terminals read (not just any call: it lists workspaces first), up to 60 s on a loaded machine
+for _ in $(seq 300); do grep -qs '^terminals read' "$t/calls" && break; sleep 0.2; done; kill $pid 2>/dev/null; wait $pid 2>/dev/null
 got=$(grep -m1 '^terminals read' "$t/calls" 2>/dev/null)
 if [ "$got" = "terminals read --workspace w1 --host m-7 --terminal t1 --max-lines 600 --json" ]; then echo "ok   resolved CLI and machine -> $got"
 else echo "FAIL resolved CLI and machine: got '${got:-no call}'"; fail=1; fi
@@ -106,7 +107,7 @@ F="$(dirname "$S")/tests/fixtures"
 check "boxed envelope, side pane, 2 shells, 64-row pane" "DONE|widgets-12|The bot's summary on 4c1e9a2 d" < "$F/boxed-envelope.screen"
 check "the same screen in a 32-row pane: its first line is off the top" "" < <(tail -32 "$F/boxed-envelope.screen")
 # loop <polls> <screen before> <screen from the 2nd poll> [<transcript before> <transcript from the 2nd poll>]: the watcher's
-# output. Each read ticks the status-line clock a minute; the agent is idle; killed after 20 s.
+# output. Each read ticks the status-line clock a minute; the agent is idle; waited for up to 120 s (it normally exits in a few seconds; a loaded machine is slower, so the wait is only a ceiling).
 loop(){ local t; t=$(mktemp -d); mkdir -p "$t/claude/projects/-work-acme-widgets"
   cp "$2" "$t/s1"; cp "$3" "$t/s2"; [ -n "$4" ] && cp "$4" "$t/claude/projects/-work-acme-widgets/s.jsonl" && cp "$5" "$t/t2"
   cat > "$t/cli" <<'C'
@@ -122,10 +123,10 @@ esac
 C
   chmod +x "$t/cli"
   CLAUDE_CONFIG_DIR=$t/claude BOSS_HOST=m-7 BOSS_HOST_CLI=$t/cli BOSS_BIN=$t/none BOSS_WATCH_POLL_S=0 BOSS_WATCH_POLLS=$1 "$S" w1 t1 > "$t/out" 2>&1 & local pid=$!
-  for _ in $(seq 100); do kill -0 $pid 2>/dev/null || break; sleep 0.2; done; kill $pid 2>/dev/null; wait $pid 2>/dev/null
+  for _ in $(seq 600); do kill -0 $pid 2>/dev/null || break; sleep 0.2; done; kill $pid 2>/dev/null; wait $pid 2>/dev/null
   cat "$t/out"; rm -rf "$t"; }
 fires(){ local name=$1 want=$2 got; shift 2; got=$(loop "$@" | head -1)
-  if [ "$got" = "$want" ]; then echo "ok   $name -> $got"; else echo "FAIL $name: want '$want', got '${got:-nothing in 20 s}'"; fail=1; fi; }
+  if [ "$got" = "$want" ]; then echo "ok   $name -> $got"; else echo "FAIL $name: want '$want', got '${got:-nothing in 120 s}'"; fail=1; fi; }
 w=$(mktemp -d); { head -14 "$F/boxed-envelope.screen"; tail -8 "$F/boxed-envelope.screen"; } > "$w/working"; tail -32 "$F/boxed-envelope.screen" > "$w/tall"
 head -4 "$F/boxed-envelope.jsonl" > "$w/t1"   # the worker's earlier envelope, then the boss's follow-up: the baseline
 fires "envelope taller than the pane: read from the worker's transcript" "ENVELOPE DONE|widgets-12|The bot's summary on 4c1e9a2 d" \

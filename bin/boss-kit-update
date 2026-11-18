@@ -275,7 +275,7 @@ def main(argv):
         for l in lines:
             print("  " + l)
 
-    print(f"boss-kit-update{' (dry run: nothing changes)' if dry else ''}: kit {kit}")
+    print(f"boss-kit-update{' (dry run: no files, plugins or mail change; git fetch updates .git)' if dry else ''}: kit {kit}")
     old, new, ref, note = pull(kit, dry)
     log = git(kit, "log", "--oneline", f"-{LOG_LINES}", f"{old}..{new}").stdout.strip() if old != new else ""
     head = (f"would git pull --ff-only: {old}..{new}" if old != new else f"would git pull --ff-only (already at {new})") if dry \
@@ -322,7 +322,7 @@ def main(argv):
     print("\n" + "\n".join([
         f"Kit:     {old}..{new}" if old != new else f"Kit:     {new} (up to date)",
         f"Plugins: {plugins}",
-        "Dry run: nothing was changed." if dry else
+        "Dry run: no files, plugins or mail were changed (git fetch updated .git)." if dry else
         "INCOMPLETE: " + ", ".join(missing) + " is not installed. Fix the error above, run `claude plugin install "
         + missing[0] + "`, then run boss-kit-update again." if missing else
         RESTART if was_changed else "Up to date: nothing to restart.",
