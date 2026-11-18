@@ -15,7 +15,8 @@ Config is layered, later wins (dicts deep-merged, lists replaced): the kit's DEF
 present), $BOSS_HOME/config.json (user), <project>/config.json (project), <project>/bosses/<boss-id>/config.json (one boss).
 
 usage: bosskit.py show            the resolved paths, as JSON
-       bosskit.py instructions    template + host commands + org.md + project BOSS.md + project and shared lessons (the /boss loader)
+       bosskit.py instructions    template + host commands + org.md + project BOSS.md + project and shared lessons (the /boss loader);
+                                  a domain boss also gets playbooks/domain-boss.md. --full: every playbook inlined in the template
        bosskit.py config show [--json]                                 every config key, its value and the layer it came from
        bosskit.py config set --level user|project|boss KEY=VALUE... [--apply]
                                   shows the resolved config after the change; writes only with --apply
@@ -948,10 +949,30 @@ def for_host(host, text, what):
             + "".join(l + "\n" for l in head) + "\n\n".join(keep) + "\n")
 
 
-def instructions(ctx):
+PLAYBOOK = re.compile(r"`playbooks/([\w-]+\.md)`")
+
+
+def playbook(name):
+    return _read(os.path.join(KIT, "playbooks", name))
+
+
+def inline_playbooks(text):
+    """The template with each playbook it names inlined after the first section that names it (instructions --full)."""
+    seen, out = set(), []
+    for chunk in re.split(r"(?=^## )", text, flags=re.M):
+        out.append(chunk)
+        for name in PLAYBOOK.findall(chunk):
+            if name not in seen:
+                seen.add(name)
+                out.append(f"\n<!-- playbooks/{name} -->\n\n{playbook(name).strip()}\n\n")
+    return "".join(out)
+
+
+def instructions(ctx, full=False):
     import bosshost
     lessons = lambda path, what: for_host(ctx.host, _read(path), what)
-    parts = [("BOSS-template.md", _read(os.path.join(KIT, "BOSS-template.md"))),
+    template = _read(os.path.join(KIT, "BOSS-template.md"))
+    parts = [("BOSS-template.md" + (" (playbooks inlined)" if full else ""), inline_playbooks(template) if full else template),
              (f"host plugin {ctx.host} (host commands)", host_prompt(ctx)),
              ("settings in effect (config)", github_text(ctx.cfg, bosshost.get(ctx.cfg, ctx.host))),
              ("org.md (org layer)", for_host(ctx.host, _read(os.path.join(ctx.home, "org.md")), "the org facts")),
@@ -963,6 +984,8 @@ def instructions(ctx):
         ddir = os.path.join(ctx.pdir, "domains")
         parts.insert(5, (f"{ctx.name}/domains/{domain}.md (domain charter)", _read(os.path.join(ddir, f"{domain}.md"))))
         parts.insert(6, (f"{ctx.name}/domains/{domain}-state.md (domain state, you keep it current)", _read(os.path.join(ddir, f"{domain}-state.md"))))
+        if not full:  # --full has it inlined in the template already
+            parts.insert(5, ("playbooks/domain-boss.md (domain boss playbook)", playbook("domain-boss.md")))
     org = org_files(ctx.home)
     head = (f"# Boss session: project {ctx.name}, boss {ctx.bid}, host {ctx.host}" + (f", domain {domain}" if domain else "")
             + (f", org layer: {' + '.join(map(os.path.basename, org))}" if org else "") + "\n")
@@ -1080,7 +1103,7 @@ def main():
                           "review": os.path.join(ctx.bdir, "review.txt"), "inbox": ctx.inbox, "is_boss": is_boss(ctx),
                           "host": ctx.host, **({"org": org_files(ctx.home)} if org_files(ctx.home) else {})}, indent=1))
     elif cmd == "instructions":
-        print(instructions(ctx) if is_boss(ctx) else not_boss_note(ctx))
+        print(instructions(ctx, "--full" in sys.argv[2:]) if is_boss(ctx) else not_boss_note(ctx))
     else:
         sys.exit(__doc__)
 
