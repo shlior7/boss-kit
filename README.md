@@ -47,6 +47,7 @@ flowchart LR
 | Path | What |
 |---|---|
 | `BOSS-template.md` | The boss prompt: role, hard rules, routing, the completion envelope, verification, merge discipline, reporting format. Generic, with `[PLACEHOLDERS]` |
+| `playbooks/` | **Playbooks:** the full wording of the template's sections 5 to 15, with their examples and steps (dispatch, watcher, verify, merge, layover, report, ledger, first actions, review page, mail, lessons, domain boss). The template keeps each rule as one short line and says when to read each playbook. A domain boss loads its playbook automatically; `bosskit.py instructions --full` prints the template with every playbook inlined |
 | `skills/boss/` | The `/boss` skill: onboarding on first run, then loads the template, the host's commands, the project's `BOSS.md`, and the project and shared lessons |
 | `hosts/<name>/` | The bundled host plugins, one folder each (`host.json`, `adapter.py`, `prompt.md`, its README and tests): see Host plugins |
 | `projects/_template/` | What `boss-init` copies into your data root: `BOSS.md` (project facts), `config.json`, `ledger.md`, `lessons.md`, `prompts/` |
