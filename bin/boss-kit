@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Install and synchronize the boss skill across agent providers.
+
+  boss-kit install [--providers claude,codex,agy] [--scope global|project] [--force] [--dry-run]
+  boss-kit update  [--providers claude,codex,agy] [--scope global|project] [--force] [--dry-run]
+  boss-kit check   [--providers claude,codex,agy] [--scope global|project]
+  boss-kit version
+
+The command installs the portable /boss skill, not a live session integration.  It never
+reloads, sends input to, stops, or archives a boss or worker.  Each install is assembled in
+a sibling staging directory and atomically swapped into place only after it is complete.
+The previous install is retained as a timestamped backup, including when --force adopts an
+unmanaged directory.
+"""
+import argparse
+import json
+import re
+import os
+import shutil
+import sys
+import tempfile
+import time
+
+KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SOURCE = os.path.join(KIT, "skills", "boss")
+MARKER = ".boss-kit-install.json"
+PROVIDERS = ("claude", "codex", "agy")
+
+
+def version():
+    try:
+        return open(os.path.join(KIT, "VERSION")).read().strip()
+    except OSError:
+        return "dev"
+
+
+def provider_root(provider, scope):
+    if scope == "project":
+        return os.path.join(os.getcwd(), f".{provider}" if provider != "agy" else ".agents")
+    if provider == "claude":
+        return os.environ.get("BOSS_CLAUDE_HOME") or os.path.expanduser("~/.claude")
+    if provider == "codex":
+        return os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+    return os.environ.get("AGY_HOME") or os.path.expanduser("~/.agents")
+
+
+def target(provider, scope):
+    return os.path.join(provider_root(provider, scope), "skills", "boss")
+
+
+def selected(raw, default):
+    names = tuple(n.strip().lower() for n in (raw or default).split(",") if n.strip())
+    bad = [n for n in names if n not in PROVIDERS]
+    if bad:
+        raise SystemExit("boss-kit: unknown provider(s): " + ", ".join(bad) + "; choose " + ", ".join(PROVIDERS))
+    if not names:
+        raise SystemExit("boss-kit: no providers selected")
+    return names
+
+
+def marker(path):
+    try:
+        with open(os.path.join(path, MARKER)) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def installed_providers(scope):
+    return tuple(p for p in PROVIDERS if marker(target(p, scope)))
+
+
+def stage(provider, scope, dest_parent):
+    tmp = tempfile.mkdtemp(prefix=".boss-kit-stage-", dir=dest_parent)
+    out = os.path.join(tmp, "boss")
+    shutil.copytree(SOURCE, out)
+    skill = os.path.join(out, "SKILL.md")
+    # A copy must still point to the checked-out kit that owns its scripts and hosts.
+    text = open(skill).read()
+    text, n = re.subn(r'KIT="\$\{BOSS_KIT_HOME:-.*?\}"', lambda _: 'KIT="${BOSS_KIT_HOME:-' + KIT + '}"', text, count=1)
+    if not n:
+        raise RuntimeError("SKILL.md has no KIT= line to point at this kit")
+    with open(skill, "w") as f:
+        f.write(text)
+    data = {"provider": provider, "scope": scope, "version": version(), "kit": KIT,
+            "installed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    with open(os.path.join(out, MARKER), "w") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+        f.write("\n")
+    return tmp, out
+
+
+def install_one(provider, scope, force=False, dry=False):
+    dst = target(provider, scope)
+    present = os.path.lexists(dst)
+    old = marker(dst) if present else None
+    if present and not old and not force:
+        raise RuntimeError(f"{provider}: {dst} is not a boss-kit install; rerun with --force to preserve it as a backup")
+    action = "update" if old else "install"
+    if dry:
+        return f"would {action} {provider}: {dst}" + (" (preserving existing directory)" if present else "")
+    parent = os.path.dirname(dst)
+    os.makedirs(parent, exist_ok=True)
+    tmp = ""
+    try:
+        tmp, staged = stage(provider, scope, parent)
+        backup = ""
+        if present:
+            backup = dst + ".boss-kit-backup-" + time.strftime("%Y%m%d%H%M%S", time.gmtime())
+            # A collision can only be another retained backup; preserve both.
+            suffix = 1
+            base = backup
+            while os.path.lexists(backup):
+                suffix += 1
+                backup = f"{base}-{suffix}"
+            os.replace(dst, backup)
+        try:
+            os.replace(staged, dst)
+        except Exception:
+            if backup and not os.path.lexists(dst):
+                os.replace(backup, dst)
+            raise
+        return f"{action}ed {provider}: {dst}" + (f" (backup: {backup})" if backup else "")
+    finally:
+        if tmp and os.path.isdir(tmp):
+            shutil.rmtree(tmp)
+
+
+def check_one(provider, scope):
+    dst = target(provider, scope)
+    data = marker(dst)
+    if not data:
+        return f"{provider:<7} not installed  {dst}"
+    state = "current" if data.get("version") == version() and os.path.abspath(data.get("kit", "")) == KIT else "update available"
+    return f"{provider:<7} {data.get('version', 'unknown'):<12} {state:<16} {dst}"
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="boss-kit", description="Install the /boss skill across Claude, Codex and AGY.")
+    sub = parser.add_subparsers(dest="command")
+    for command in ("install", "update", "check"):
+        p = sub.add_parser(command)
+        p.add_argument("--providers", help="comma-separated: claude,codex,agy")
+        p.add_argument("--scope", choices=("global", "project"), default="global")
+        if command != "check":
+            p.add_argument("--force", action="store_true", help="adopt an unmanaged destination after backing it up")
+            p.add_argument("--dry-run", action="store_true")
+            p.add_argument("-y", "--yes", action="store_true", help="accepted for script compatibility; changes are non-interactive")
+    sub.add_parser("version")
+    args = parser.parse_args(argv)
+    if args.command == "version":
+        print(version())
+        return 0
+    if not args.command:
+        parser.print_help()
+        return 2
+    if args.command == "check":
+        names = selected(args.providers, ",".join(PROVIDERS))
+        print(f"boss-kit {version()} ({KIT})")
+        for name in names:
+            print(check_one(name, args.scope))
+        return 0
+    default = ",".join(PROVIDERS) if args.command == "install" else ",".join(installed_providers(args.scope))
+    if args.command == "update" and not args.providers and not default:
+        print("No managed provider installs found; nothing to update.")
+        return 0
+    names = selected(args.providers, default)
+    failures = []
+    for name in names:
+        try:
+            print(install_one(name, args.scope, args.force, args.dry_run))
+        except (OSError, RuntimeError) as e:
+            failures.append(str(e))
+    if failures:
+        print("boss-kit: " + "\n boss-kit: ".join(failures), file=sys.stderr)
+        return 1
+    print("No provider was reloaded; active bosses and workers continue unchanged.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

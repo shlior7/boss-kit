@@ -11,7 +11,7 @@
     --chrome: #222327;
     --rule: #2c2d32;
     --fg: #e4e2dd;
-    --dim: #85837d;
+    --dim: #9b9993;
     --faint: #5b5a56;
     --success: #5fb870;
     --error: #ff6b80;
@@ -24,7 +24,7 @@
   .shot { display: none; }
   body[data-shot="main"] #main, body[data-shot="peek"] #peek, body[data-shot="worker"] #worker { display: block; }
   .win { background: var(--term); border-radius: 10px; overflow: hidden; box-shadow: 0 18px 50px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.3); border: 1px solid #2a2b30; }
-  .bar { background: var(--chrome); height: 34px; display: flex; align-items: center; padding: 0 14px; gap: 8px; border-bottom: 1px solid var(--rule); }
+  .bar { background: var(--chrome); min-height: 38px; display: flex; align-items: center; padding: 8px 14px; gap: 8px; border-bottom: 1px solid var(--rule); }
   .bar i { width: 12px; height: 12px; border-radius: 50%; background: #3a3b40; }
   .bar span { margin-left: 12px; color: var(--dim); font-size: 12px; }
   .body { display: grid; grid-template-columns: 1fr auto; }

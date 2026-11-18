@@ -1914,6 +1914,86 @@ class Marketplace(unittest.TestCase):
         self.assertEqual(by["boss"]["version"], manifest["version"])
 
 
+class ProviderInstaller(unittest.TestCase):
+    """The cross-provider skill installer changes files atomically and never consults live bosses."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.homes = {"BOSS_CLAUDE_HOME": os.path.join(self.tmp, "claude"),
+                      "CODEX_HOME": os.path.join(self.tmp, "codex"),
+                      "AGY_HOME": os.path.join(self.tmp, "agents")}
+        self.cli = os.path.join(BIN, "boss-kit")
+
+    def cli_run(self, *args):
+        return subprocess.run([self.cli, *args], capture_output=True, text=True, env={**os.environ, **self.homes})
+
+    def target(self, home):
+        return os.path.join(self.homes[home], "skills", "boss")
+
+    def test_install_check_update_and_backup(self):
+        r = self.cli_run("install", "--providers=claude,codex")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for env in ("BOSS_CLAUDE_HOME", "CODEX_HOME"):
+            where = self.target(env)
+            meta = json.load(open(os.path.join(where, ".boss-kit-install.json")))
+            self.assertEqual(meta["version"], "0.9.0")
+            self.assertIn(os.path.dirname(BIN), open(os.path.join(where, "SKILL.md")).read())
+        r = self.cli_run("check", "--providers=claude,codex")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("current", r.stdout)
+        open(os.path.join(self.target("BOSS_CLAUDE_HOME"), "local-note"), "w").write("old")
+        r = self.cli_run("update", "--providers=claude")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        parent = os.path.dirname(self.target("BOSS_CLAUDE_HOME"))
+        backups = [n for n in os.listdir(parent) if n.startswith("boss.boss-kit-backup-")]
+        self.assertEqual(len(backups), 1)
+        self.assertTrue(os.path.exists(os.path.join(parent, backups[0], "local-note")))
+        self.assertFalse(os.path.exists(os.path.join(self.target("BOSS_CLAUDE_HOME"), "local-note")))
+
+    def test_unmanaged_destination_is_untouched_without_force(self):
+        dst = self.target("AGY_HOME")
+        os.makedirs(dst)
+        open(os.path.join(dst, "keep"), "w").write("do not replace")
+        r = self.cli_run("install", "--providers=agy")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not a boss-kit install", r.stderr)
+        self.assertEqual(open(os.path.join(dst, "keep")).read(), "do not replace")
+        r = self.cli_run("install", "--providers=agy", "--force")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        parent = os.path.dirname(dst)
+        backups = [n for n in os.listdir(parent) if n.startswith("boss.boss-kit-backup-")]
+        self.assertTrue(os.path.exists(os.path.join(parent, backups[0], "keep")))
+
+
+class NativeWorkers(Home):
+    """Native hosts start only new worktrees and will never kill or remove a live worker."""
+
+    def setUp(self):
+        super().setUp()
+        open(os.path.join(self.wt, "seed"), "w").write("seed")
+        git(self.wt, "add", "seed")
+        git(self.wt, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "seed")
+        os.environ["BOSS_PROJECT"] = "widgets"
+        os.environ["BOSS_HOST_PATH"] = ""
+
+    def test_codex_worker_isolated_and_archive_never_kills_it(self):
+        host = bosshost.get({}, "codex")
+        fake = mock.Mock(pid=424242)
+        isolated = os.path.join(self.tmp, "isolated-worker")
+        os.makedirs(isolated)
+        with mock.patch("bossnative.new_worktree", return_value=isolated), mock.patch("bossnative.subprocess.Popen", return_value=fake), mock.patch("bossnative.running", return_value=True):
+            wid = host.create("acme/widgets", "fix/codex", "do the thing", name="worker")
+            row = host.worker(wid)
+            self.assertEqual((row["branch"], row["terminals"][0]["agent"]["state"]), ("fix/codex", "working"))
+            with self.assertRaises(bosshost.Unsupported):
+                host.archive(wid)
+        with mock.patch("bossnative.running", return_value=False):
+            host.archive(wid)
+        data = next(d for d in __import__("bossnative").records("codex", host.cfg) if d["id"] == wid)
+        self.assertTrue(data["archived"])
+        self.assertTrue(os.path.isdir(data["worktree"]))
+
+
 FAKE_GH = """#!/bin/sh
 case "$1 $2" in
   "pr view") if [ -f "$FIX/merged" ]; then cat "$FIX/pr-merged.json"; else cat "$FIX/pr.json"; fi;;

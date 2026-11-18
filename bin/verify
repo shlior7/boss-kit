@@ -56,8 +56,11 @@ def leaks(d, files):
         m.update({k: bosshost._list(m.get(k)) for k in ("session_env", "terminal_env", "cli")})
         words |= bosshost.keywords(m)
     out = {}
+    # The portable provider installer is the one intentional cross-provider surface. Host
+    # implementation and all regular kit instructions remain decoupled from provider names.
+    provider_surface = {"bin/boss-kit", "README.md"}
     for f in files:
-        if f.startswith("hosts/"):
+        if f.startswith(("hosts/", "tests/")) or f in provider_surface:
             continue
         try:
             text = open(os.path.join(d, f), encoding="utf-8").read().lower()

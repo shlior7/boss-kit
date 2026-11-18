@@ -1,0 +1,14 @@
+{
+  "name": "agy",
+  "description": "AGY CLI: a worker is a detached agy print process in its own git worktree",
+  "priority": 40,
+  "keywords": ["agy", "antigravity"],
+  "session_env": ["AGY_CONVERSATION_ID"],
+  "terminal_env": [],
+  "cli": ["agy"],
+  "queues": false,
+  "prompt": "prompt.md",
+  "envelope_aliases": [],
+  "proof_links": [],
+  "defaults": {"worktrees_dir": ""}
+}

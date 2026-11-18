@@ -1,0 +1,14 @@
+{
+  "name": "codex",
+  "description": "Codex CLI: a worker is a detached codex exec process in its own git worktree",
+  "priority": 30,
+  "keywords": ["codex"],
+  "session_env": ["CODEX_THREAD_ID"],
+  "terminal_env": [],
+  "cli": ["codex"],
+  "queues": true,
+  "prompt": "prompt.md",
+  "envelope_aliases": [],
+  "proof_links": [],
+  "defaults": {"worktrees_dir": ""}
+}
