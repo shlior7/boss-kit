@@ -14,7 +14,9 @@ Steps, in order, each printed:
   3. /boss is available: through the "boss" plugin once installed, which also removes the old ~/.claude/skills/boss link
      when that is a symlink into the kit (a real directory, or a link pointing elsewhere, is left alone and named);
      with no claude CLI and no plugin, the link is made.
-  4. bin/boss-migrate --apply (an old layout's project data into $BOSS_HOME, host prompt imports); prints what it changed.
+  4. bin/boss-migrate --apply (~/.claude/boss and ~/.claude/boss-kit to ~/.boss and ~/.boss-kit with symlinks back, an
+     old layout's project data into $BOSS_HOME, host prompt imports); prints what it changed. Safe while this script
+     runs from ~/.claude/boss-kit: the rename keeps it running and later paths resolve through the symlink.
   5. One 'fyi' mail to each live boss (written straight to its inbox: the script types into no terminal, so nothing
      lands in a boss's input box). Skipped by --no-mail.
   6. One final block: kit old..new, each plugin old -> new, and the restart line.

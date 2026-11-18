@@ -1,6 +1,6 @@
 {
   "name": "boss-deck",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Boss workspace panel: what needs you, dispatched workers on any host plugin, watchers, PRs and tracker, read-only; in a worker's own session, that worker's status",
   "author": { "name": "Lior Steinberg" },
   "license": "MIT",

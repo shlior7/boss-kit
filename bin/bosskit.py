@@ -2,7 +2,8 @@
 """boss-kit core: where code and data live, which project and boss this is, the boss registry,
 lessons, and the instruction loader. Every bin/ script imports it.
 
-Code is the kit ($BOSS_KIT_HOME, else the folder above bin/). Data is $BOSS_HOME (default
+Code is the kit ($BOSS_KIT_HOME, else the folder above bin/; installed in ~/.boss-kit, ~/.claude/boss-kit until
+bin/boss-migrate moves it). Data is $BOSS_HOME (default
 ~/.boss, shared by bosses on every provider; ~/.claude/boss until bin/boss-migrate moves it):
 
   bosses.json                     registry: boss id -> project, workspace, worktree, host, heartbeat
@@ -121,12 +122,19 @@ def vacant(path):
     return not os.path.lexists(path) or (os.path.isdir(path) and not os.path.islink(path) and not os.listdir(path))
 
 
-def home():
-    if os.environ.get("BOSS_HOME"):
-        return os.environ["BOSS_HOME"]
-    new, old = os.path.expanduser("~/.boss"), os.path.expanduser("~/.claude/boss")
-    # Until boss-migrate moves it, data in the old default stays where it is. Mirrored in bin/boss-init.
+def _default(new, old):
+    # Until boss-migrate moves it, the old default stays in use. Mirrored in bin/boss-init and the deck's register.tsx.
+    new, old = os.path.expanduser(new), os.path.expanduser(old)
     return old if vacant(new) and os.path.isdir(old) else new
+
+
+def home():
+    return os.environ.get("BOSS_HOME") or _default("~/.boss", "~/.claude/boss")
+
+
+def kit_home():
+    """The installed kit (not necessarily this one, see KIT): $BOSS_KIT_HOME, else ~/.boss-kit."""
+    return os.environ.get("BOSS_KIT_HOME") or _default("~/.boss-kit", "~/.claude/boss-kit")
 
 
 def _git(cwd, *args):

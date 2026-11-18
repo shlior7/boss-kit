@@ -212,8 +212,8 @@ Re-run it any time with `/boss onboard` (questions already set are skipped; `/bo
 ## Install
 
 ```bash
-git clone https://github.com/shlior7/boss-kit.git ~/.claude/boss-kit
-~/.claude/boss-kit/bin/boss-kit install --providers=claude,codex,agy
+git clone https://github.com/shlior7/boss-kit.git ~/.boss-kit
+~/.boss-kit/bin/boss-kit install --providers=claude,codex,agy
 ```
 
 Both the `/boss` skill and the pane are plugins in this repo's marketplace. From inside Claude Code:
@@ -231,12 +231,12 @@ Or from a shell: `claude plugin marketplace add shlior7/boss-kit && claude plugi
 One command, from any directory, no boss session needed:
 
 ```bash
-~/.claude/boss-kit/bin/boss-kit-update
+~/.boss-kit/bin/boss-kit-update
 ```
 
-It pulls the kit (it refuses uncommitted changes, naming the files, and a kit that cannot fast-forward), refreshes the plugins' cached copies (`claude plugin marketplace update boss-kit`, then for each plugin the marketplace lists: `install` if you have not installed it, `update` if its version moved, and `uninstall` then `install` if its files changed under the same version (or its source folder moved), which `claude plugin update` skips; the version compared is the one in the plugin's own `plugin.json`, falling back to the marketplace entry, and the check diffs the commit `installed_plugins.json` recorded for the plugin against the kit. It never uninstalls when the marketplace refresh failed or the marketplace has no copy of the plugin; if the install after an uninstall fails it retries once, then prints the exact `claude plugin install` command, ends with `INCOMPLETE` instead of `Up to date`, and exits 1; without the `claude` CLI it prints a skip), removes the old `~/.claude/skills/boss` link once the `boss` plugin is there (only a symlink into the kit; a real directory or a link elsewhere is left alone and named), runs `boss-migrate --apply`, mails the live bosses, and prints one block: the kit `old..new`, each plugin `old -> new`, and what to do next: restart each Claude Code session (exit, then `claude --continue`). `--dry-run` changes no working-tree file, plugin or inbox and sends no mail, but it runs `git fetch`, which writes to the kit's `.git` (objects, origin's remote-tracking refs, `FETCH_HEAD`); it resolves upstream to one commit and reads the plugin list and diffs at that commit, then prints what a real run would do (would install, would update, would reinstall); if the fetch or upstream lookup fails it prints a warning and plans from the local `HEAD`, and on a diverged kit it stops as a real run does; `--no-mail` skips the mail. A pane that sees the kit on disk move past the version it loaded shows `kit updated · restart: claude --continue` until it is restarted.
+It pulls the kit (it refuses uncommitted changes, naming the files, and a kit that cannot fast-forward), refreshes the plugins' cached copies (`claude plugin marketplace update boss-kit`, then for each plugin the marketplace lists: `install` if you have not installed it, `update` if its version moved, and `uninstall` then `install` if its files changed under the same version (or its source folder moved), which `claude plugin update` skips; the version compared is the one in the plugin's own `plugin.json`, falling back to the marketplace entry, and the check diffs the commit `installed_plugins.json` recorded for the plugin against the kit. It never uninstalls when the marketplace refresh failed or the marketplace has no copy of the plugin; if the install after an uninstall fails it retries once, then prints the exact `claude plugin install` command, ends with `INCOMPLETE` instead of `Up to date`, and exits 1; without the `claude` CLI it prints a skip), removes the old `~/.claude/skills/boss` link once the `boss` plugin is there (only a symlink into the kit; a real directory or a link elsewhere is left alone and named), runs `boss-migrate --apply` (which also moves a kit cloned at the old default `~/.claude/boss-kit` to `~/.boss-kit`, and data in `~/.claude/boss` to `~/.boss`, leaving symlinks so old paths, hooks and imports keep working), mails the live bosses, and prints one block: the kit `old..new`, each plugin `old -> new`, and what to do next: restart each Claude Code session (exit, then `claude --continue`). `--dry-run` changes no working-tree file, plugin or inbox and sends no mail, but it runs `git fetch`, which writes to the kit's `.git` (objects, origin's remote-tracking refs, `FETCH_HEAD`); it resolves upstream to one commit and reads the plugin list and diffs at that commit, then prints what a real run would do (would install, would update, would reinstall); if the fetch or upstream lookup fails it prints a warning and plans from the local `HEAD`, and on a diverged kit it stops as a real run does; `--no-mail` skips the mail. A pane that sees the kit on disk move past the version it loaded shows `kit updated · restart: claude --continue` until it is restarted.
 
-For Codex and AGY, which have no plugin marketplace, install the `/boss` skill with `~/.claude/boss-kit/bin/boss-kit install --providers=codex,agy`; `boss-kit check` shows each installed version and `boss-kit update` refreshes every managed install. Installs stage beside the destination and swap atomically only once complete; an existing directory is never overwritten unless `--force`, and is kept as a timestamped backup. It never reloads, messages, stops or archives a running boss or worker.
+For Codex and AGY, which have no plugin marketplace, install the `/boss` skill with `~/.boss-kit/bin/boss-kit install --providers=codex,agy`; `boss-kit check` shows each installed version and `boss-kit update` refreshes every managed install. Installs stage beside the destination and swap atomically only once complete; an existing directory is never overwritten unless `--force`, and is kept as a timestamped backup. It never reloads, messages, stops or archives a running boss or worker.
 
 If you cloned the kit somewhere else, `export BOSS_KIT_HOME=/path/to/boss-kit`. For data somewhere else, `export BOSS_HOME=/path`. Every script, the skill and the pane read both.
 
@@ -247,7 +247,7 @@ The short way: start Claude Code in the worktree that will be the boss and run `
 1. **Scaffold a project:**
 
    ```bash
-   ~/.claude/boss-kit/bin/boss-init widgets --repo acme/widgets --base main --me your-login --host <plugin> --worktree ~/work/widgets-boss
+   ~/.boss-kit/bin/boss-init widgets --repo acme/widgets --base main --me your-login --host <plugin> --worktree ~/work/widgets-boss
    ```
 
    This writes `$BOSS_HOME/widgets/`, seeds `$BOSS_HOME/lessons.md`, and (with `--worktree`) a `.boss` file naming the project.
@@ -289,8 +289,8 @@ The short way: start Claude Code in the worktree that will be the boss and run `
    ```markdown
    # Boss workspace <workspace id>
 
-   @~/.claude/boss-kit/BOSS-template.md
-   @~/.claude/boss-kit/hosts/<host>/prompt.md
+   @~/.boss-kit/BOSS-template.md
+   @~/.boss-kit/hosts/<host>/prompt.md
    @~/.boss/widgets/BOSS.md
    @~/.boss/widgets/lessons.md
    @~/.boss/lessons.md
@@ -303,7 +303,7 @@ The short way: start Claude Code in the worktree that will be the boss and run `
 4. **Optional:** sync the tracker at session start, from that worktree's `.claude/settings.local.json`:
 
    ```json
-   { "hooks": { "SessionStart": [ { "hooks": [ { "type": "command", "command": "python3 ~/.claude/boss-kit/bin/boss-tasks.py", "timeout": 45 } ] } ] } }
+   { "hooks": { "SessionStart": [ { "hooks": [ { "type": "command", "command": "python3 ~/.boss-kit/bin/boss-tasks.py", "timeout": 45 } ] } ] } }
    ```
 
 5. Start Claude Code in that worktree and say: *"List my workspaces and open PRs and build the stack picture."* The template's section 11 takes it from there.

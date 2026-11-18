@@ -9,13 +9,16 @@ or *.tmp (junk), and no file outside hosts/ naming a host plugin (decoupled: the
 does). The type check needs the gitignored
 mods/boss-deck/.claude-plugin/types/, which Claude Code writes only when an interactive session loads the mod; when it
 is missing, verify copies it from another worktree of the repo or from the installed kit ($BOSS_KIT_HOME, else
-~/.claude/boss-kit), read-only. If none has it, open `claude --plugin-dir mods/boss-deck` once.
+~/.boss-kit, ~/.claude/boss-kit until boss-migrate moves it), read-only. If none has it, open `claude --plugin-dir mods/boss-deck` once.
 """
 import fnmatch
 import os
 import shutil
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosskit  # noqa: E402
 
 TYPES = os.path.join("mods", "boss-deck", ".claude-plugin", "types")
 JUNK = ("*.profraw", ".DS_Store", "__pycache__", "*.tmp")
@@ -84,7 +87,7 @@ def git(d, *args):
 def types_sources(d):
     """Where a copy of the mod's types may be: the repo's other worktrees, then the installed kit."""
     trees = [l[9:] for l in git(d, "worktree", "list", "--porcelain").splitlines() if l.startswith("worktree ")]
-    kit = os.environ.get("BOSS_KIT_HOME") or os.path.expanduser("~/.claude/boss-kit")
+    kit = bosskit.kit_home()
     return [os.path.join(t, TYPES) for t in trees + [kit] if os.path.realpath(t) != os.path.realpath(d)]
 
 
