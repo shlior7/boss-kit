@@ -16,7 +16,10 @@ set -euo pipefail
 KIT=${BOSS_KIT_HOME:-$(cd "$(dirname "$0")/.." && pwd)}
 # Same rule as bosskit.home(): ~/.claude/boss only until boss-migrate moves it to ~/.boss.
 HOME_DIR=${BOSS_HOME:-$HOME/.boss}
-[ -z "${BOSS_HOME:-}" ] && [ ! -e "$HOME/.boss" ] && [ -d "$HOME/.claude/boss" ] && HOME_DIR=$HOME/.claude/boss
+if [ -z "${BOSS_HOME:-}" ] && [ -d "$HOME/.claude/boss" ] && { [ ! -e "$HOME/.boss" ] && [ ! -L "$HOME/.boss" ] ||
+     { [ -d "$HOME/.boss" ] && [ ! -L "$HOME/.boss" ] && [ -z "$(ls -A "$HOME/.boss")" ]; }; }; then
+  HOME_DIR=$HOME/.claude/boss
+fi
 USAGE="usage: boss-init <project> [--repo owner/repo] [--base main] [--me login] [--host PLUGIN] [--worktree DIR] [--answers FILE] | boss-init --questions"
 NAME=${1:?$USAGE}; shift
 # A flag where the name goes ("boss-init --help") once scaffolded a project named after it.

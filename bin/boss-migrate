@@ -56,7 +56,7 @@ def move_home(apply):
     old, new = os.path.expanduser("~/.claude/boss"), os.path.expanduser("~/.boss")
     if os.path.islink(old) or not os.path.isdir(old):
         return False
-    if os.path.lexists(new) and not (os.path.isdir(new) and not os.path.islink(new) and not os.listdir(new)):
+    if not bosskit.vacant(new):
         print(f"skip  {old}  ({new} already exists: both have data, merge them by hand, then ln -s {new} {old})")
         return False
     print(f"{'move' if apply else 'would move'}  {old}  ->  {new}  (+ symlink back)")

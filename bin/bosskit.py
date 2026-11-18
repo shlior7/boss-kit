@@ -116,12 +116,17 @@ COMMENT_KINDS = {
 QUESTIONS = os.path.join(KIT, "skills", "boss", "questions.json")  # the onboarding form: the skill and boss-init read it
 
 
+def vacant(path):
+    """Missing, or an empty real folder: a move may land there."""
+    return not os.path.lexists(path) or (os.path.isdir(path) and not os.path.islink(path) and not os.listdir(path))
+
+
 def home():
     if os.environ.get("BOSS_HOME"):
         return os.environ["BOSS_HOME"]
     new, old = os.path.expanduser("~/.boss"), os.path.expanduser("~/.claude/boss")
     # Until boss-migrate moves it, data in the old default stays where it is. Mirrored in bin/boss-init.
-    return old if not os.path.exists(new) and os.path.isdir(old) else new
+    return old if vacant(new) and os.path.isdir(old) else new
 
 
 def _git(cwd, *args):

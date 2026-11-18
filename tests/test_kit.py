@@ -466,6 +466,8 @@ class BossHome(unittest.TestCase):
         self.old_data()
         self.assertEqual(self.home(), self.old)
         os.makedirs(self.new)
+        self.assertEqual(self.home(), self.old)  # an empty ~/.boss must not hide the data still in the old folder
+        open(os.path.join(self.new, "lessons.md"), "w").write("x")
         self.assertEqual(self.home(), self.new)
         self.assertEqual(self.home(BOSS_HOME="/x/y"), "/x/y")
 
@@ -474,6 +476,8 @@ class BossHome(unittest.TestCase):
                                       capture_output=True, text=True).stderr
         self.old_data()
         self.assertIn(f"{self.old}/widgets already exists", init())
+        os.makedirs(self.new)
+        self.assertIn(f"{self.old}/widgets already exists", init())  # empty ~/.boss: still the old folder
         os.makedirs(os.path.join(self.new, "widgets"))
         self.assertIn(f"{self.new}/widgets already exists", init())
 
