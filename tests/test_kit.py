@@ -495,6 +495,35 @@ class DomainBoss(Home):
         text = bosskit.instructions(bosskit.load(self.wt))
         for part in ("domain studio", "studio charter", "studio state"):
             self.assertIn(part, text)
+        # its playbook loads by itself, before the charter; --full has it inlined in the template instead, once
+        self.assertLess(text.index("<!-- playbooks/domain-boss.md"), text.index("studio charter"))
+        self.assertIn(bosskit.playbook("domain-boss.md").strip(), text)
+        full = bosskit.instructions(bosskit.load(self.wt), full=True)
+        self.assertEqual(full.count(bosskit.playbook("domain-boss.md").strip()), 1)
+
+
+class Playbooks(Home):
+    """BOSS-template.md keeps the rules; playbooks/*.md hold the how-to detail, each one named by the template."""
+
+    def test_every_playbook_is_named_by_the_template_and_exists(self):
+        template = bosskit._read(os.path.join(bosskit.KIT, "BOSS-template.md"))
+        named = set(bosskit.PLAYBOOK.findall(template))
+        files = set(os.listdir(os.path.join(bosskit.KIT, "playbooks")))
+        self.assertEqual(named, files)
+        for f in ("dispatch.md", "watcher.md", "verify.md", "merge.md", "layover.md", "report.md", "ledger.md", "first-actions.md",
+                  "review-page.md", "mail.md", "lessons.md", "domain-boss.md"):
+            self.assertIn(f, files)
+
+    def test_full_inlines_each_playbook_once_after_its_section(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        ctx = bosskit.load(self.wt)
+        short, full = bosskit.instructions(ctx), bosskit.instructions(ctx, full=True)
+        self.assertNotIn("<!-- playbooks/", short)  # a main boss loads no playbook by itself
+        for name in os.listdir(os.path.join(bosskit.KIT, "playbooks")):
+            self.assertEqual(full.count(bosskit.playbook(name).strip()), 1, name)
+        self.assertLess(full.index("## 6. "), full.index("<!-- playbooks/watcher.md"))
+        self.assertLess(full.index("<!-- playbooks/watcher.md"), full.index("## 7. "))
+        self.assertLess(full.index("<!-- playbooks/domain-boss.md"), full.index("<!-- host plugin"))
 
 
 class Deck(Home):
