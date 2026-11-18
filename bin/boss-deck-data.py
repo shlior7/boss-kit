@@ -494,14 +494,14 @@ def mail(inbox, now=None):
             try:
                 m = json.load(open(os.path.join(inbox, f)))
                 items.append({"id": m["id"], "kind": m.get("kind", ""), "from": m.get("from_project", ""), "subject": m.get("subject", "")})
-                oldest = max(oldest, mail_age(m, now))
+                oldest = max(oldest, 0 if m.get("read_at") else mail_age(m, now))  # read but not done is not waiting
             except (OSError, ValueError, KeyError):
                 continue
     return {"count": len(items), "dir": inbox, "items": items[-5:], "oldestMin": oldest}
 
 
 def sent_unread(home, bdir, now=None):
-    """Minutes the oldest of this boss's last 20 sent messages (from the last day) has waited unread by a recipient, else 0."""
+    """Minutes the oldest of this boss's last 20 sent messages has waited unread by a recipient, else 0."""
     worst = 0
     for line in bosskit._read(os.path.join(bdir, "sent.jsonl")).splitlines()[-20:]:
         try:
@@ -509,8 +509,7 @@ def sent_unread(home, bdir, now=None):
             for to in r["to"]:
                 project, boss = to.split("/", 1)
                 m = bosshost._json(bosskit._read(os.path.join(home, project, "bosses", boss, "inbox", r["id"] + ".json")), {})
-                age = mail_age(m, now) if m and not m.get("read_at") else 0
-                worst = max(worst, age if age < 24 * 60 else 0)
+                worst = max(worst, mail_age(m, now) if m and not m.get("read_at") else 0)
         except (ValueError, KeyError, TypeError, AttributeError):
             continue
     return worst
@@ -518,11 +517,11 @@ def sent_unread(home, bdir, now=None):
 
 def mail_lines(box, sent_min):
     """The pane's quiet mail lines: mail waiting here, or mail this boss sent waiting there, 10 min or more."""
-    out = []
+    out, age = [], lambda n: f"{n} min" if n < 24 * 60 else ">24h"
     if box["count"] and box["oldestMin"] >= MAIL_STALE_MIN:
-        out.append({"level": "check", "text": f"mail unread {box['oldestMin']} min · boss-mail inbox"})
+        out.append({"level": "check", "text": f"mail unread {age(box['oldestMin'])} · boss-mail inbox"})
     if sent_min >= MAIL_STALE_MIN:
-        out.append({"level": "check", "text": f"sent mail unread {sent_min} min · boss-mail sent"})
+        out.append({"level": "check", "text": f"sent mail unread {age(sent_min)} · boss-mail sent"})
     return out
 
 
