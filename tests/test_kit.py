@@ -1401,8 +1401,8 @@ class KitUpdate(Home):
         self.assertTrue(os.path.exists(os.path.join(self.kit, "two")))
         self.assertEqual(open(self.claude_log).read().splitlines(),
                          ["plugin marketplace update boss-kit", "plugin update boss-deck@boss-kit", "plugin install boss@boss-kit"])
-        self.assertIn("not installed: boss", out)  # only the installed plugin is updated; /boss then installs the skill's plugin
-        self.assertIn("ok   claude plugin install boss@boss-kit: /boss now comes from the boss plugin", out)
+        self.assertIn("ok   claude plugin install boss@boss-kit", out)  # listed in the marketplace, not installed: installed
+        self.assertIn("/boss comes from the boss plugin", out)
         self.assertIn("ran boss-migrate --apply", out)
         final = out.split("\n\nKit:")[1]
         self.assertRegex(final, r"^\s+[0-9a-f]+\.\.[0-9a-f]+\n")  # kit old..new
@@ -1425,7 +1425,8 @@ class KitUpdate(Home):
         self.assertIn("would git pull --ff-only", r.stdout)
         self.assertIn("would run: claude plugin marketplace update boss-kit", r.stdout)
         self.assertIn("would run: claude plugin update boss-deck@boss-kit", r.stdout)
-        self.assertIn("would run: claude plugin install boss@boss-kit", r.stdout)
+        self.assertIn("would install: claude plugin install boss@boss-kit", r.stdout)
+        self.assertIn("/boss will come from the boss plugin", r.stdout)
         self.assertIn("would run boss-migrate", r.stdout)
         self.assertIn("Dry run: nothing was changed.", r.stdout)
         self.assertEqual(self.head(), before)
@@ -1448,24 +1449,71 @@ class KitUpdate(Home):
         r = self.update(with_claude=False)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("skip: the claude CLI is not on PATH", r.stdout)
-        self.assertIn("/plugin update <plugin>@boss-kit", r.stdout)
+        self.assertIn("/plugin update (or /plugin install) <plugin>@boss-kit", r.stdout)
         self.assertTrue(os.path.exists(os.path.join(self.kit, "two")))  # the pull still happened
         link = os.path.join(self.cfg, "skills", "boss")
         self.assertEqual(os.path.realpath(link), os.path.realpath(os.path.join(self.kit, "skills", "boss")))  # /boss through the link
         self.assertEqual(len(self.inbox("widgets", "live-a")), 1)
 
-    def test_boss_comes_from_the_plugin_and_a_leftover_link_is_named(self):
-        data = json.load(open(self.installed))
-        data["plugins"]["boss@boss-kit"] = [{"scope": "user", "version": "0.8.0"}]
-        json.dump(data, open(self.installed, "w"))
-        os.makedirs(os.path.join(self.cfg, "skills"))
-        os.symlink(self.kit, os.path.join(self.cfg, "skills", "boss"))
+    def link(self, target):
+        os.makedirs(os.path.join(self.cfg, "skills"), exist_ok=True)
+        os.symlink(target, os.path.join(self.cfg, "skills", "boss"))
+
+    def test_an_uninstalled_marketplace_plugin_is_installed_and_the_old_link_into_the_kit_goes(self):
+        link = os.path.join(self.cfg, "skills", "boss")
+        self.link(os.path.join(self.kit, "skills", "boss"))
         r = self.update()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("/boss comes from the boss plugin; the old link", r.stdout)
-        self.assertIn("duplicate: remove it (rm ", r.stdout)
-        self.assertIn("plugin update boss@boss-kit", open(self.claude_log).read())
-        self.assertNotIn("plugin install", open(self.claude_log).read())
+        self.assertIn("ok   claude plugin install boss@boss-kit", r.stdout)
+        self.assertIn(f"removed the old link {link} -> {os.path.join(self.kit, 'skills', 'boss')}: /boss comes from the boss plugin", r.stdout)
+        self.assertFalse(os.path.lexists(link))
+        self.assertIn("boss new -> 0.8.0", r.stdout)
+        self.assertIn("boss@boss-kit", json.load(open(self.installed))["plugins"])
+
+    def test_dry_run_would_install_and_would_remove_the_link_but_does_neither(self):
+        link = os.path.join(self.cfg, "skills", "boss")
+        self.link(os.path.join(self.kit, "skills", "boss"))
+        plugins = open(self.installed).read()
+        r = self.update("--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("would install: claude plugin install boss@boss-kit", r.stdout)
+        self.assertIn(f"would remove the old link {link}", r.stdout)
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(open(self.installed).read(), plugins)
+        self.assertFalse(os.path.exists(self.claude_log))
+
+    def test_a_link_elsewhere_and_a_real_directory_are_left_alone(self):
+        elsewhere = os.path.join(self.tmp, "mine")
+        os.makedirs(elsewhere)
+        link = os.path.join(self.cfg, "skills", "boss")
+        for kind in ("link", "dir"):
+            with self.subTest(kind=kind):
+                if os.path.lexists(link):
+                    os.remove(link)
+                os.makedirs(os.path.dirname(link), exist_ok=True)
+                if kind == "link":
+                    os.symlink(elsewhere, link)
+                else:
+                    os.makedirs(link)
+                    open(os.path.join(link, "SKILL.md"), "w").write("mine")
+                r = self.update("--no-mail")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn(f"left {link} alone", r.stdout)
+                self.assertIn("/boss will show twice", r.stdout)
+                self.assertEqual(os.path.islink(link), kind == "link")
+                self.assertTrue(os.path.exists(link))
+        self.assertTrue(os.path.isdir(elsewhere))  # the link's target survived too
+
+    def test_an_installed_boss_plugin_is_updated_not_installed(self):
+        data = json.load(open(self.installed))
+        data["plugins"]["boss@boss-kit"] = [{"scope": "user", "version": "0.7.0"}]
+        json.dump(data, open(self.installed, "w"))
+        r = self.update()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        log = open(self.claude_log).read()
+        self.assertIn("plugin update boss@boss-kit", log)
+        self.assertNotIn("plugin install", log)
+        self.assertIn("boss 0.7.0 -> 0.8.0", r.stdout)
 
     def test_up_to_date_mails_nobody_and_needs_no_restart(self):
         self.update()  # install /boss, bring boss-deck to 0.8.0

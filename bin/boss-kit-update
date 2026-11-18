@@ -7,10 +7,11 @@ Steps, in order, each printed:
   1. git pull --ff-only in the kit. A kit with uncommitted changes to tracked files, or one that has diverged from its
      upstream, is refused: it names the files and says how to stash.
   2. claude plugin marketplace update boss-kit, then claude plugin update <plugin>@boss-kit for each installed plugin
-     in .claude-plugin/marketplace.json (the plugin cache pins a copy: only this refreshes it). A missing claude CLI is a
-     printed skip, not a failure.
-  3. /boss is available: through the "boss" plugin when installed (installed here when neither it nor the
-     ~/.claude/skills/boss link exists), else through the link. Both at once is named: remove the link.
+     in .claude-plugin/marketplace.json (the plugin cache pins a copy: only this refreshes it), and claude plugin install
+     for each one listed there that is not installed. A missing claude CLI is a printed skip, not a failure.
+  3. /boss is available: through the "boss" plugin once installed, which also removes the old ~/.claude/skills/boss link
+     when that is a symlink into the kit (a real directory, or a link pointing elsewhere, is left alone and named);
+     with no claude CLI and no plugin, the link is made.
   4. bin/boss-migrate --apply (an old layout's project data into $BOSS_HOME, host prompt imports); prints what it changed.
   5. One 'fyi' mail to each live boss (written straight to its inbox: the script types into no terminal, so nothing
      lands in a boss's input box). Skipped by --no-mail.
@@ -91,20 +92,19 @@ def claude(*args):
 
 
 def update_plugins(kit, dry, before):
-    """Step 2: refresh the marketplace and each installed plugin. Returns (lines, failed)."""
-    lines, failed = [], False
+    """Step 2: refresh the marketplace, update each installed plugin, install each one the marketplace lists that is not
+    installed. Returns (lines, failed)."""
     names = marketplace(kit)
     if not shutil.which("claude"):
         return ["skip: the claude CLI is not on PATH. In Claude Code run /plugin marketplace update "
-                f"{MARKET}, then /plugin update <plugin>@{MARKET} for each of: {', '.join(names) or 'the kit plugins'}"], False
-    todo = [f"marketplace update {MARKET}"] + [f"update {n}@{MARKET}" for n in names if not before or f"{n}@{MARKET}" in before]
-    for n in names:
-        if before and f"{n}@{MARKET}" not in before:
-            lines.append(f"not installed: {n} (install it with: claude plugin install {n}@{MARKET})")
-    for cmd in todo:
-        argv = ["plugin", "marketplace", "update", MARKET] if cmd.startswith("marketplace") else ["plugin", *cmd.split()]
+                f"{MARKET}, then /plugin update (or /plugin install) <plugin>@{MARKET} for each of: {', '.join(names) or 'the kit plugins'}"], False
+    steps = [("run", ["plugin", "marketplace", "update", MARKET])]
+    steps += [("run", ["plugin", "update", f"{n}@{MARKET}"]) for n in names if f"{n}@{MARKET}" in before]
+    steps += [("install", ["plugin", "install", f"{n}@{MARKET}"]) for n in names if f"{n}@{MARKET}" not in before]
+    lines, failed = [], False
+    for kind, argv in steps:
         if dry:
-            lines.append("would run: claude " + " ".join(argv))
+            lines.append(f"would {kind}: claude " + " ".join(argv))
             continue
         ok, last = claude(*argv)
         failed |= not ok
@@ -112,28 +112,32 @@ def update_plugins(kit, dry, before):
     return lines, failed
 
 
-def ensure_boss_skill(kit, dry):
-    """Step 3: say how /boss is provided; install it when nothing does. Returns (lines, failed)."""
+def ensure_boss_skill(kit, dry, planned=()):
+    """Step 3: say how /boss is provided. Once the boss plugin is there, the old link into the kit goes (a real directory, or
+    a link pointing elsewhere, is left alone and named). Without the plugin and without claude, link it. (lines, failed)"""
     link = os.path.join(claude_home(), "skills", "boss")
-    plugin = f"boss@{MARKET}" in installed()
-    linked = os.path.lexists(link)
-    if plugin and linked:
-        return [f"/boss comes from the boss plugin; the old link {link} makes a duplicate: remove it (rm {link})"], False
-    if plugin:
-        return ["/boss comes from the boss plugin"], False
-    if linked:
-        return [f"/boss comes from the link {link} (the boss plugin, `claude plugin install boss@{MARKET}`, replaces it)"], False
-    if shutil.which("claude"):
+    plugin = f"boss@{MARKET}" in installed() or "boss" in planned
+    if not os.path.lexists(link):
+        if plugin:
+            return [f"/boss {'comes' if f'boss@{MARKET}' in installed() else 'will come'} from the boss plugin"], False
+        if shutil.which("claude"):
+            return ["/boss is not available: the boss plugin did not install (see step 2)"], True
         if dry:
-            return [f"would run: claude plugin install boss@{MARKET} (/boss is not available yet)"], False
-        ok, last = claude("plugin", "install", f"boss@{MARKET}")
-        return [f"{'ok  ' if ok else 'FAIL'} claude plugin install boss@{MARKET}: /boss {'now comes from the boss plugin' if ok else 'is still missing'}"
-                + ("" if ok else f" ({last[:120]})")], not ok
-    if dry:
-        return [f"would link {link} to {kit}/skills/boss (/boss is not available yet)"], False
-    os.makedirs(os.path.dirname(link), exist_ok=True)
-    os.symlink(os.path.join(kit, "skills", "boss"), link)
-    return [f"linked {link} so /boss is available (no claude CLI to install the plugin)"], False
+            return [f"would link {link} to {kit}/skills/boss (no claude CLI to install the plugin)"], False
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        os.symlink(os.path.join(kit, "skills", "boss"), link)
+        return [f"linked {link} so /boss is available (no claude CLI to install the plugin)"], False
+    if not plugin:
+        return [f"/boss comes from the link {link} (the boss plugin, `claude plugin install boss@{MARKET}`, replaces it)"], False
+    real, root = os.path.realpath(link), os.path.realpath(kit)
+    if os.path.islink(link) and os.path.commonpath([real, root]) == root:
+        if dry:
+            return [f"would remove the old link {link} -> {os.readlink(link)}: /boss comes from the boss plugin"], False
+        target = os.readlink(link)
+        os.remove(link)
+        return [f"removed the old link {link} -> {target}: /boss comes from the boss plugin"], False
+    return [f"left {link} alone ({'a link pointing outside the kit' if os.path.islink(link) else 'a real directory'}): "
+            "/boss will show twice; remove it yourself"], False
 
 
 def migrate(kit, dry):
@@ -183,7 +187,8 @@ def main(argv):
     lines, bad = update_plugins(kit, dry, before)
     failed |= bad
     step(2, "plugins", lines)
-    lines, bad = ensure_boss_skill(kit, dry)
+    planned = {n for n in marketplace(kit) if f"{n}@{MARKET}" not in before} if dry and shutil.which("claude") else ()
+    lines, bad = ensure_boss_skill(kit, dry, planned)
     failed |= bad
     step(3, "/boss", lines)
     lines, bad = migrate(kit, dry)
