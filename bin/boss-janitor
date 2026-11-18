@@ -215,8 +215,8 @@ def held(path, opened):
     return opened is None or any(under(o, path) for o in opened)
 
 
-def newest_mtime(path):
-    """The newest mtime in a tree, never following a symlink."""
+def newest_mtime(path, stop=None):
+    """The newest mtime in a tree, never following a symlink; returns early at the first one newer than *stop*."""
     best = os.lstat(path).st_mtime
     for d, dirs, files in os.walk(path, followlinks=False):
         for n in dirs + files:
@@ -224,6 +224,8 @@ def newest_mtime(path):
                 best = max(best, os.lstat(os.path.join(d, n)).st_mtime)
             except OSError:
                 pass
+            if stop and best > stop:
+                return best
     return best
 
 
@@ -237,10 +239,14 @@ def temp_roots():
 def temp(opened, now=None):
     """(act, keep): act = [{path, kind (worktree | dir), root, age, reason}], keep = [(path, why)]."""
     now = now or time.time()
-    act, keep = [], []
+    act, keep, young = [], [], 0
     for wt in sorted(glob.glob(os.path.join(TMP, "review-*"))):
         if os.path.islink(wt) or not os.path.isfile(os.path.join(wt, ".git")):
             continue  # not a git worktree: not ours to judge
+        age = now - newest_mtime(wt, stop=now - TEMP_AGE_S)
+        if age < TEMP_AGE_S:
+            keep.append((wt, "younger than 7 days"))
+            continue
         status = sh(["git", "-C", wt, "status", "--porcelain"])
         unpushed = sh(["git", "-C", wt, "log", "--oneline", "HEAD", "--not", "--remotes"])
         why = ("held open" if held(wt, opened) else "git unreadable" if status is None or unpushed is None
@@ -248,9 +254,7 @@ def temp(opened, now=None):
         if why:
             keep.append((wt, why))
         else:
-            act.append({"path": wt, "kind": "worktree", "root": TMP, "age": now - os.lstat(wt).st_mtime,
-                        "reason": "review worktree no process holds"})
-    young = 0
+            act.append({"path": wt, "kind": "worktree", "root": TMP, "age": age, "reason": "review worktree untouched 7+ days, no process holds it"})
     for root in temp_roots():
         for name in sorted(os.listdir(root)):
             path = os.path.join(root, name)
@@ -259,7 +263,7 @@ def temp(opened, now=None):
                 continue
             if not os.path.isdir(path):
                 continue  # session dirs only
-            age = now - newest_mtime(path)
+            age = now - newest_mtime(path, stop=now - TEMP_AGE_S)
             if age < TEMP_AGE_S:
                 young += 1
             elif held(path, opened):

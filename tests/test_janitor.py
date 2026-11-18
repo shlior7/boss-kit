@@ -154,14 +154,17 @@ class Temp(Base):
         os.utime(path, (t, t))
 
     def test_review_worktrees(self):
-        clean, held, dirty, ahead = (self.review(f"review-{n}") for n in (1, 2, 3, 4))
+        clean, held, dirty, ahead, fresh = (self.review(f"review-{n}") for n in (1, 2, 3, 4, 5))
         open(os.path.join(dirty, "wip.txt"), "w").write("x")
         git(ahead, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "local")
+        for wt in (clean, held, dirty, ahead):
+            self.old(wt)
         os.makedirs(os.path.join(self.tmproot, "review-notgit"))
         act, keep = J.temp({held + "/src/a.ts"})
         self.assertEqual([a["path"] for a in act], [clean])
         why = dict(keep)
-        self.assertEqual((why[held], why[dirty], why[ahead]), ("held open", "uncommitted work", "unpushed commits"))
+        self.assertEqual((why[held], why[dirty], why[ahead], why[fresh]),
+                         ("held open", "uncommitted work", "unpushed commits", "younger than 7 days"))
         self.assertNotIn(os.path.join(self.tmproot, "review-notgit"), why)
         self.assertEqual(J.remove(act[0]), "")
         self.assertFalse(os.path.exists(clean))
@@ -192,7 +195,7 @@ class Temp(Base):
         self.assertTrue(os.path.isdir(outside))
 
     def test_unknown_open_files_hold_everything(self):
-        self.review("review-1")
+        self.old(self.review("review-1"))
         os.makedirs(os.path.join(self.sess, "old"))
         self.old(os.path.join(self.sess, "old"))
         act, keep = J.temp(None)
