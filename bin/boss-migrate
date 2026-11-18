@@ -4,7 +4,8 @@
   boss-migrate [--kit DIR] [--boss ID] [--apply]
 
 First, unless $BOSS_HOME is set: the old default data folder ~/.claude/boss -> ~/.boss (when ~/.boss is missing or
-empty), with a symlink back. When both hold data it says so and changes neither.
+empty), with a symlink back. When both hold data it says so and changes neither. The same, unless $BOSS_KIT_HOME is
+set, for the kit checkout: ~/.claude/boss-kit -> ~/.boss-kit.
 
 Finds, in the old kit (default: this kit):
   projects/<name>/      (v0.3-v0.4 layout)          -> $BOSS_HOME/<name>/
@@ -48,13 +49,15 @@ def plan(kit, home, boss):
     return ops
 
 
-def move_home(apply):
-    """Move the old default data folder ~/.claude/boss to ~/.boss and leave a symlink back, so running bosses,
-    absolute paths in ledgers and @~/.claude/boss/... imports keep working. Never overwrites. True when there is a move."""
-    if os.environ.get("BOSS_HOME"):
+def move_default(env, old, new, apply, marker=None):
+    """Move an old default folder (~/.claude/boss, ~/.claude/boss-kit) to its new place and leave a symlink back, so
+    running bosses, absolute paths in ledgers, settings.json hooks and @~/.claude/... imports keep working. A rename on
+    the same filesystem keeps a script running from the old kit alive; its later paths resolve through the symlink.
+    Never overwrites; skipped when $env is set or old lacks marker. True when there is a move."""
+    if os.environ.get(env):
         return False
-    old, new = os.path.expanduser("~/.claude/boss"), os.path.expanduser("~/.boss")
-    if os.path.islink(old) or not os.path.isdir(old):
+    old, new = os.path.expanduser(old), os.path.expanduser(new)
+    if os.path.islink(old) or not os.path.isdir(old) or (marker and not os.path.exists(os.path.join(old, marker))):
         return False
     if not bosskit.vacant(new):
         print(f"skip  {old}  ({new} already exists: both have data, merge them by hand, then ln -s {new} {old})")
@@ -100,7 +103,9 @@ def main():
     ap.add_argument("--boss", default=bosskit.self_id() or "migrated")
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args()
-    moved = move_home(args.apply)
+    moved = [move_default("BOSS_HOME", "~/.claude/boss", "~/.boss", args.apply),
+             move_default("BOSS_KIT_HOME", "~/.claude/boss-kit", "~/.boss-kit", args.apply, marker=".git")]
+    moved = any(moved)
     kit, home = os.path.abspath(args.kit), bosskit.home()
     ops, fixes = plan(kit, home, args.boss), host_imports(home)
     for path, text in fixes:

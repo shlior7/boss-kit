@@ -24,6 +24,10 @@ import bosskit  # noqa: E402
 from kit_testing import fake_cli  # noqa: E402,F401
 
 HOSTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hosts")
+# boss-migrate (also run by boss-kit-update) moves the real ~/.claude/boss-kit unless $BOSS_KIT_HOME is set. Only tests on
+# a temp $HOME clear it.
+if not os.environ.get("BOSS_KIT_HOME"):
+    os.environ["BOSS_KIT_HOME"] = os.path.dirname(BIN)
 
 
 def load_script(name):
@@ -439,8 +443,8 @@ class Migrate(unittest.TestCase):
         self.assertIn("nothing to move", run("--apply").stdout)
 
 
-class BossHome(unittest.TestCase):
-    """~/.boss is the default; ~/.claude/boss until boss-migrate moves it. Every test runs on a temp $HOME."""
+class TempHome(unittest.TestCase):
+    """A temp $HOME with no $BOSS_HOME, and boss-migrate run on it."""
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -457,6 +461,9 @@ class BossHome(unittest.TestCase):
         return subprocess.run([sys.executable, os.path.join(BIN, "boss-migrate"), "--kit", self.kit, "--boss", "b1", *a],
                               env={**self.env, **extra}, cwd=self.tmp, capture_output=True, text=True)
 
+
+class BossHome(TempHome):
+    """~/.boss is the default; ~/.claude/boss until boss-migrate moves it."""
     def old_data(self):
         os.makedirs(os.path.join(self.old, "widgets"))
         open(os.path.join(self.old, "widgets", "BOSS.md"), "w").write("w")
@@ -518,6 +525,70 @@ class BossHome(unittest.TestCase):
         self.assertNotIn(self.new, out)
         self.assertFalse(os.path.exists(self.new))
         self.assertFalse(os.path.islink(self.old))
+
+
+class KitHomeDefault(TempHome):
+    """~/.boss-kit is the installed kit's default; ~/.claude/boss-kit until boss-migrate moves it. Temp $HOME only."""
+    def setUp(self):
+        super().setUp()
+        self.env.pop("BOSS_KIT_HOME", None)
+        self.new, self.old = os.path.join(self.tmp, ".boss-kit"), os.path.join(self.tmp, ".claude", "boss-kit")
+
+    def kit_home(self, **extra):
+        with mock.patch.dict(os.environ, {**self.env, **extra}, clear=True):
+            return bosskit.kit_home()
+
+    def old_kit(self):
+        os.makedirs(os.path.join(self.old, "bin"))
+        git(self.old, "init", "-q")
+
+    def deck_kit(self):
+        """$K as the deck's register.tsx shell resolves it."""
+        src = open(os.path.join(os.path.dirname(BIN), "mods", "boss-deck", "hooks", "register.tsx")).read()
+        kit_sh = src.split("const KIT_SH = '", 1)[1].split("'\n", 1)[0]
+        return subprocess.run(["sh", "-c", kit_sh + 'echo "$K"'], env=self.env, capture_output=True, text=True).stdout.strip()
+
+    def test_default_is_dot_boss_kit_and_the_old_checkout_until_it_moves(self):
+        self.assertEqual((self.kit_home(), self.deck_kit()), (self.new, self.new))
+        self.old_kit()
+        self.assertEqual((self.kit_home(), self.deck_kit()), (self.old, self.old))
+        os.makedirs(self.new)
+        self.assertEqual((self.kit_home(), self.deck_kit()), (self.old, self.old))  # empty ~/.boss-kit: still the old one
+        os.makedirs(os.path.join(self.new, "bin"))
+        self.assertEqual((self.kit_home(), self.deck_kit()), (self.new, self.new))
+        self.env["BOSS_KIT_HOME"] = "/x/kit"
+        self.assertEqual((self.kit_home(), self.deck_kit()), ("/x/kit", "/x/kit"))
+
+    def test_migrate_moves_the_kit_and_links_back_then_is_a_no_op(self):
+        self.old_kit()
+        out = self.migrate().stdout
+        self.assertIn(f"would move  {self.old}  ->  {self.new}", out)
+        self.assertFalse(os.path.exists(self.new))
+        self.migrate("--apply")
+        self.assertEqual(os.readlink(self.old), self.new)
+        self.assertTrue(os.path.isdir(os.path.join(self.new, ".git")))
+        self.assertTrue(os.path.isdir(os.path.join(self.old, "bin")))  # old paths still work
+        self.assertEqual(self.kit_home(), self.new)
+        self.assertNotIn("move  ", self.migrate("--apply").stdout)
+
+    def test_migrate_leaves_a_folder_that_is_no_checkout(self):
+        os.makedirs(self.old)
+        self.migrate("--apply")
+        self.assertFalse(os.path.islink(self.old))
+        self.assertFalse(os.path.exists(self.new))
+
+    def test_migrate_refuses_when_both_kits_exist(self):
+        self.old_kit()
+        os.makedirs(os.path.join(self.new, "bin"))
+        self.assertIn("both have data", self.migrate("--apply").stdout)
+        self.assertFalse(os.path.islink(self.old))
+        self.assertEqual(os.listdir(self.new), ["bin"])
+
+    def test_migrate_leaves_an_explicit_kit_home_alone(self):
+        self.old_kit()
+        self.migrate("--apply", BOSS_KIT_HOME=self.old)
+        self.assertFalse(os.path.islink(self.old))
+        self.assertFalse(os.path.exists(self.new))
 
 
 class Lessons(Home):
@@ -1670,6 +1741,23 @@ class KitUpdate(Home):
         self.assertIn("add two", m["body"])
         self.assertEqual(self.inbox("gadgets", "old-b"), [])  # no heartbeat for 30 min: not live
         self.assertFalse(os.path.exists(self.calls))  # nothing was sent to any terminal
+
+    def test_run_from_the_old_kit_path_moves_the_kit_and_finishes(self):
+        user = os.path.join(self.tmp, "user")  # a temp $HOME whose kit sits at the old default, running its own update
+        old, new = os.path.join(user, ".claude", "boss-kit"), os.path.join(user, ".boss-kit")
+        os.makedirs(os.path.dirname(old))
+        os.rename(self.kit, old)
+        shutil.copytree(BIN, os.path.join(old, "bin"), ignore=shutil.ignore_patterns("__pycache__"))
+        self.commit(self.origin, "two")
+        env = {**os.environ, "HOME": user, "BOSS_KIT": "", "BOSS_KIT_HOME": "", "CLAUDE_CONFIG_DIR": self.cfg,
+               "PATH": self.bindir + os.pathsep + os.environ["PATH"]}
+        r = subprocess.run([os.path.join(old, "bin", "boss-kit-update")], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"move  {old}  ->  {new}", r.stdout)
+        self.assertIn("[5/5]", r.stdout)  # the steps after the move still ran, through the symlink
+        self.assertEqual(os.readlink(old), new)
+        self.assertTrue(os.path.exists(os.path.join(new, "two")))
+        self.assertEqual(len(self.inbox("widgets", "live-a")), 1)
 
     def test_dry_run_prints_every_step_and_changes_nothing(self):
         self.commit(self.origin, "two")

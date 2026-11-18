@@ -9,12 +9,14 @@ import { activity, newMsgs, progress, prParts, stateParts, taskList, workerWarni
 const PANE = 'boss-deck'
 const TITLE = 'Boss'
 const WORKER_TITLE = 'Worker'
-// The kit root: $BOSS_KIT_HOME, else ~/.claude/boss-kit. A shell expands it so the mod needs no env access.
-const DATA_CMD = ['sh', '-c', 'exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/boss-deck-data.py" "$@"', 'boss-deck-data']
+// The kit root as $K: $BOSS_KIT_HOME, else ~/.boss-kit, else ~/.claude/boss-kit until boss-migrate moves it
+// (bosskit.kit_home()). A shell expands it so the mod needs no env access.
+const KIT_SH = 'K="${BOSS_KIT_HOME:-$HOME/.boss-kit}"; [ -n "$BOSS_KIT_HOME" ] || [ -d "$K/bin" ] || [ ! -d "$HOME/.claude/boss-kit" ] || K="$HOME/.claude/boss-kit"; '
+const DATA_CMD = ['sh', '-c', KIT_SH + 'exec python3 "$K/bin/boss-deck-data.py" "$@"', 'boss-deck-data']
 // bin/boss-host as this session: its host plugin and id first, then boss-host's own arguments (open, screen).
-const HOST_CMD = ['sh', '-c', 'BOSS_HOST_KIND="$1" BOSS_SESSION_ID="$2"; export BOSS_HOST_KIND BOSS_SESSION_ID; shift 2; exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/boss-host" "$@"', 'boss-host']
+const HOST_CMD = ['sh', '-c', KIT_SH + 'BOSS_HOST_KIND="$1" BOSS_SESSION_ID="$2"; export BOSS_HOST_KIND BOSS_SESSION_ID; shift 2; exec python3 "$K/bin/boss-host" "$@"', 'boss-host']
 // This session on its host, {kind, id, terminal}: boss-host reads the env this process passes on, so the mod reads none.
-const HOST_SESSION_CMD = ['sh', '-c', 'exec python3 "${BOSS_KIT_HOME:-$HOME/.claude/boss-kit}/bin/boss-host" session', 'boss-host-session']
+const HOST_SESSION_CMD = ['sh', '-c', KIT_SH + 'exec python3 "$K/bin/boss-host" session', 'boss-host-session']
 const REFRESH_MS = 60_000
 // The worker view's FROM BOSS rows.
 const MSG_ROWS = 3
