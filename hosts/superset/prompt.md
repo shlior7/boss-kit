@@ -12,7 +12,7 @@ Your host is Paradev (formerly Superset), CLI 2.x. A worker is a **workspace**: 
 
 ## Superset commands boss-host does not cover
 - `superset workspaces list --local --json`; `superset terminals list --workspace <id>`; `superset terminals read --workspace <id> --terminal <t> --max-lines N`. Use the FULL terminal UUID, never the short id. `superset snapshot --host <id> --json` shows every worker's state in one call.
-- A session in an existing workspace (research, ops, reviews, checks; in the boss's own workspace when it changes no files): `superset agents create --workspace <id> --agent claude --model <m> --prompt "..." --json` (keep `sessionId`). Presets: claude (default), codex, gemini, antigravity/agy, amp, copilot, opencode (`superset agents list --local --json`). Drive codex as a terminal agent.
+- A session in an existing workspace (research, ops, reviews, checks; in the boss's own workspace when it changes no files): `superset agents create --workspace <id> --agent claude --model <m> --prompt "..." --json` (keep `sessionId`). Use only a preset this host lists with `superset agents list --local --json`.
 - New agents start in the user's default permission mode; a permission prompt reads as agent state `blocked`. Answer a read-only command prompt with the option that stops asking in the mode the user runs (auto, or bypass when that is their default); anything that writes, ask me.
 - Pages: `superset pages publish scratch/pages/<f>.html --title ... --description ...` (self-contained HTML, no remote scripts/fetch/eval).
 
