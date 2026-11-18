@@ -20,6 +20,9 @@ usage: bosskit.py show            the resolved paths, as JSON
        bosskit.py config show [--json]                                 every config key, its value and the layer it came from
        bosskit.py config set --level user|project|boss KEY=VALUE... [--apply]
                                   shows the resolved config after the change; writes only with --apply
+       bosskit.py buttons [--worker] [--json]                          the pane's resolved buttons and the layer each came from
+       bosskit.py buttons set --level user|project|boss [--worker] LABEL="prompt"... [--apply]
+                                  override one button's prompt (LABEL=null hides it, a new label adds one); a dry run until --apply
        bosskit.py detect          the environment, as JSON: host CLIs, gh, git, $BOSS_HOME (for onboarding)
        bosskit.py onboard questions [--text] [--all]   the onboarding form (skills/boss/questions.json) with current values, packed
                                   into AskUserQuestion calls; --text for people (bin/boss-init --questions)
@@ -69,7 +72,8 @@ DEFAULTS = {
         {"label": "Sweep PRs", "prompt": "Run the gh PR sweep, then verify any DONE or ready PR (section 7). Ask before merging."},
         {"label": "Check workers", "prompt": "Read every worker's screen and re-arm any dead watcher."},
         {"label": "Review page", "prompt": "Publish the review page now (section 12)."},
-        {"label": "Cleanup", "prompt": "Retire merged workspaces after the leftover check, and tidy junk. "
+        {"label": "Cleanup", "prompt": "Cleanup: retire merged workspaces after the leftover check, close finished sessions and "
+                                       "their terminals (boss-host close / close-dead), and tidy junk. "
                                        "Ask before merging, and before anything outward."},
         {"label": "Mail", "prompt": "Read the boss-mail inbox and handle each message (section 13)."},
         {"label": "Lessons", "prompt": "Record today's incidents as lessons (section 14)."},
@@ -82,6 +86,11 @@ DEFAULTS = {
                                        "and nothing is left over or queued, ask me to archive it (archive at once only under a "
                                        "standing cleanup OK); close its dead panes."},
     ],
+    # Per-label overrides of the two lists above, merged key by key across layers (a list is replaced whole by the layer that
+    # sets it): {"Cleanup": "<prompt>"} changes that button's prompt, {"Mail": None} hides it, a label not in the list adds a
+    # button. `bosskit.py buttons` shows the result and where each button came from.
+    "deck_prompts": {},
+    "deck_worker_prompts": {},
     # What goes on GitHub; `instructions` states it in plain words (github_text). comments: the PR comments the boss and
     # its workers may post, any of COMMENT_KINDS ([] posts none); draft: workers open draft PRs; body: what the PR body
     # carries (tracker, proof); ready: who marks a verified PR ready (boss | never); merge: boss-merge's method
@@ -276,6 +285,81 @@ def show_config(layers, as_json=False):
     width = max(map(len, src), default=0)
     files = "\n".join(f"  {l:<8} {p}{'' if os.path.exists(p) else '  (none)'}" for l, p, _ in layers if p)
     return "\n".join(f"{k:<{width}}  {json.dumps(v)}  ({l})" for k, (v, l) in src.items()) + "\n\nlayers, later wins:\n  kit      DEFAULTS in bin/bosskit.py\n" + files
+
+
+# ---- the pane's buttons: a list per layer, plus per-label overrides --------------------------------------------------
+
+BUTTONS = {"boss": ("deck_buttons", "deck_prompts"), "worker": ("deck_worker_buttons", "deck_worker_prompts")}
+
+
+def resolve_buttons(layers, kind="boss"):
+    """[{label, prompt, from, how}] for the pane's buttons, in order, hidden ones last with prompt None. The list comes from the
+    highest layer that sets it (replaced whole); the label overrides are merged across all layers, later layer per label wins, and
+    applied on top: a string changes that button's prompt (how: override), null hides it (hidden), a new label adds one (added)."""
+    lkey, okey = BUTTONS[kind]
+    rows, layer = [], "kit"
+    for name, _, d in layers:
+        if isinstance(d.get(lkey), list):
+            rows, layer = [{"label": b["label"], "prompt": b["prompt"], "from": name, "how": ""} for b in d[lkey]
+                           if isinstance(b, dict) and b.get("label") and isinstance(b.get("prompt"), str)], name
+    over = {}
+    for name, _, d in layers:
+        for label, v in (d.get(okey) or {}).items() if isinstance(d.get(okey), dict) else ():
+            if v is None or isinstance(v, str):
+                over[label] = (v, name)
+    out, hidden = [], []
+    for r in rows:
+        v, name = over.pop(r["label"], (r["prompt"], None))
+        if v is None:
+            hidden.append({**r, "prompt": None, "from": name, "how": "hidden"})
+        else:
+            out.append({**r, "prompt": v, "from": name or r["from"], "how": "override" if name else r["how"]})
+    out += [{"label": l, "prompt": v, "from": name, "how": "added"} for l, (v, name) in over.items() if v is not None]
+    return out + hidden
+
+
+def pane_buttons(cfg, kind="boss"):
+    """[{label, prompt}] the boss pane shows, from a resolved config."""
+    return [{"label": r["label"], "prompt": r["prompt"]} for r in resolve_buttons([("config", "", cfg)], kind) if r["prompt"] is not None]
+
+
+def show_buttons(layers, kind="boss", as_json=False):
+    rows = resolve_buttons(layers, kind)
+    if as_json:
+        return json.dumps(rows, indent=1)
+    width = max((len(r["label"]) for r in rows), default=0)
+    return "\n".join(f"{r['label']:<{width}}  {r['from']:<8} {r['how'] or 'list':<9} " + (r["prompt"] if r["prompt"] is not None else "(hidden)")
+                     for r in rows) or "no buttons"
+
+
+def buttons_cmd(args):
+    """bosskit.py buttons [--worker] [--json] | set --level L [--worker] LABEL="prompt"... [--apply]"""
+    kind = "worker" if "--worker" in args else "boss"
+    if not args or args[0] != "set":
+        return show_buttons(load(make=False, resolve_host=False).layers, kind, "--json" in args)
+    level = args[args.index("--level") + 1] if "--level" in args[:-1] else ""
+    if level not in LEVELS:
+        sys.exit(f"bosskit: buttons set needs --level {'|'.join(LEVELS)}")
+    pairs = [a for i, a in enumerate(args[1:], 1) if "=" in a and args[i - 1] != "--level"]
+    if not pairs:
+        sys.exit(buttons_cmd.__doc__)
+    change = {}
+    for pair in pairs:
+        label, _, prompt = pair.partition("=")
+        if not label:
+            sys.exit(f"bosskit: expected LABEL=prompt, got {pair!r}")
+        change[label] = None if prompt == "null" else prompt
+    layers = base_layers(home()) if level == "user" else load(make="--apply" in args, resolve_host=False).layers
+    change = {BUTTONS[kind][1]: change}
+    if not next((p for l, p, _ in layers if l == level), None):
+        sys.exit(f"bosskit: no {level} layer here (boss needs a resolved boss, project a resolved project)")
+    new = [(l, p, deep_merge(d, change) if l == level else d) for l, p, d in layers]
+    text = show_buttons(new, kind)
+    if "--apply" not in args:
+        return text + "\n\n(dry run: nothing written; add --apply to write)"
+    done = []
+    write_layers(layers, {level: change}, True, done=done)
+    return text + "".join(f"\n\nwrote {path}" + (f" (backup {bak})" if bak else "") for path, bak, _ in done)
 
 
 def parse_sets(pairs):
@@ -1093,6 +1177,9 @@ def main():
         return
     if cmd == "onboard":
         print(onboard_cmd(sys.argv[2:]))
+        return
+    if cmd == "buttons":
+        print(buttons_cmd(sys.argv[2:]))
         return
     ctx = load()
     if cmd == "show":

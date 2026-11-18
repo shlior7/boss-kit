@@ -167,6 +167,8 @@ bin/bosskit.py config set --level boss host=<plugin> models.strong=fable --apply
 | `ledger` | `ledger.md` | the ledger file in the project folder |
 | `deck_buttons` | Status, Sweep PRs, Check workers, Review page, Cleanup, Mail, Lessons | the boss pane's button row, `[{label, prompt}]`: a click submits the prompt to the boss's own session, as typed. A prompt only asks; section 3 still gates |
 | `deck_worker_buttons` | Status, Verify, Nudge, Cleanup | the same, in each worker's accordion; `{name}`, `{id}`, `{pr}` and `{branch}` are filled per worker |
+| `deck_prompts` | `{}` | per-button overrides of `deck_buttons`, by label, merged key by key across layers: `{"Cleanup": "<prompt>"}` changes that button's prompt, `{"Mail": null}` hides it, a label that is not in the list adds a button (see [Pane buttons](#pane-buttons)) |
+| `deck_worker_prompts` | `{}` | the same for `deck_worker_buttons` |
 | `github.comments` | `["status", "proof", "demo", "review_replies"]` | the PR comments the boss and its workers may post, opt-in per kind; `[]` posts none. Kinds: `status` (the worker's short plain-English done or blocked note, ending with the hidden marker), `proof` (the proof links in that note), `demo` (the demo video on the PR), `marker` (only the hidden marker, as an otherwise empty comment), `review_replies` (workers reply on review threads), `verify` (the boss's note of what it verified when it marks ready), `merged` (the boss's note after a merge) |
 | `github.draft` | `true` | workers open a draft PR at their first commit; `false`: a ready PR, and leaving draft stops counting as a done signal |
 | `github.body` | `["tracker", "proof"]` | what the PR body carries besides what changed |
@@ -433,6 +435,7 @@ Both files are append-only and numbered. An exact duplicate is refused; one that
 | `bin/boss-init <name> [--repo o/r] [--base main] [--me login] [--host PLUGIN] [--worktree DIR] [--answers FILE]` \| `--questions` | Copies `projects/_template` to `$BOSS_HOME/<name>`, seeds the shared lessons, and writes `DIR/.boss`; `--answers` applies the onboarding form's answers (config, `BOSS.md`'s expectations), `--questions` prints the form |
 | `bin/bosskit.py show \| instructions` | The resolved paths (and host) as JSON, or the full boss instructions (what `/boss` loads) |
 | `bin/bosskit.py config show [--json] \| config set --level user\|project\|boss KEY=VALUE... [--apply]` | The resolved config with each value's layer; `set` is a dry run until `--apply`, merges into the file and keeps a `.bak` copy |
+| `bin/bosskit.py buttons [--worker] [--json] \| buttons set --level user\|project\|boss [--worker] LABEL="prompt"... [--apply]` | The pane's resolved buttons, each with the layer it came from (`list`, `override`, `added`, `hidden`); `set` overrides one button's prompt by label (`LABEL=null` hides it, a new label adds one), a dry run until `--apply`; see [Pane buttons](#pane-buttons) |
 | `bin/bosskit.py detect` | Read-only environment probe for onboarding: host CLIs, session id, gh, git, `$BOSS_HOME` projects and layers |
 | `bin/bosskit.py onboard questions [--text] \| onboard apply FILE [--project N] [--level L] [--apply]` | The onboarding form with current values, packed into question pages; its answers as config, `BOSS.md`'s `## Expectations` and `Domain:` lines, a dry run until `--apply` |
 | `bin/bosshost.py kind \| self \| workers [ID...] \| send ID TEXT [TERM] \| rename ID NAME \| open ID \| screen ID TERM` | The host adapter from the shell: what the scripts and the pane call |
@@ -480,6 +483,26 @@ A quiet pane: grey by default, color only for what needs you. Here with a worksp
 - **Colors:** a working worker's dot is green, a blocked one's square red, your move's and waiting-on-you's `›` yellow, done today's `✓` green. A PR-only row's status: green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. A boss's `for you` count and a stale boss's age are yellow.
 - **Refresh:** every 60 s, plus right after the boss dispatches, merges, comments or syncs; those refreshes skip the 5-minute PR cache, so a merged PR drops off at once. `/boss-deck` refreshes on demand. The pane writes no status line.
 - **Messages:** each `boss-host send` the boss runs is logged as that workspace's `msg` event (first 200 characters), for the worker's FROM BOSS.
+
+### Pane buttons
+
+The boss pane's buttons and the worker rows' buttons come from config; a click submits the prompt to the boss's own session, as typed. A prompt only asks: the template's section 3 gates still hold. The default **Cleanup** button asks the boss to retire merged workspaces after the leftover check, close finished sessions and their terminals (`boss-host close` / `close-dead`), and tidy junk, asking before merging and before anything outward.
+
+`deck_buttons` is a list, and the highest layer that sets it replaces the whole list, so to change one prompt you would have to copy the other six. Instead, override by label with `deck_prompts` (and `deck_worker_prompts` for the worker rows, whose prompts fill `{name}`, `{id}`, `{pr}`, `{branch}`):
+
+```json
+{"deck_prompts": {"Cleanup": "Cleanup: archive merged workspaces at once, then close dead terminals.", "Mail": null, "Deploy check": "Is staging green? Ask before merging."}}
+```
+
+A string changes that button's prompt, `null` hides the button, and a label that is not in the list adds a button at the end. The maps merge key by key across the layers (kit < org < user < project < boss, later wins per label), so one boss can have its own Cleanup while every other boss keeps the default, and a project can hide a button the user set. The overrides apply on top of whichever layer's list wins.
+
+```bash
+bin/bosskit.py buttons [--worker]                                   # each resolved button, the layer it came from, list | override | added | hidden
+bin/bosskit.py buttons set --level boss Cleanup="Do it all" Mail=null   # a dry run: shows the result, writes nothing
+bin/bosskit.py buttons set --level boss --worker Verify="Verify {pr}" --apply   # writes (the old file is copied to <file>.bak-<time>)
+```
+
+To go back to the default, remove the label from that layer's `deck_prompts` in its config file (`bosskit.py config show` names the file).
 
 ### The worker view
 
