@@ -17,7 +17,7 @@
                                              does not answer (a failed read is never a gone worker), and logs the stage.
   boss-host sig < text                       the envelope a text holds, as the watcher reads it (DONE|<task>|<summary start>)
 A host that cannot do something says so and names what to do instead (exit 3).
-Env for watch: BOSS_WATCH_POLL_S (20), BOSS_WATCH_POLLS (540).
+Env for watch: BOSS_WATCH_POLL_S, BOSS_WATCH_POLLS (the defaults, and the idle fallback, are in bin/watch-timings.json).
 """
 import json
 import os
@@ -29,7 +29,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bosshost  # noqa: E402
 import bosskit  # noqa: E402
 
-IDLE_POLLS = 9
+TIMINGS = bosskit.watch_timings()  # bin/watch-timings.json: the same file watch.sh and the boss-deck read
+POLL_S = TIMINGS["WATCH_POLL_S"]
+IDLE_POLLS = TIMINGS["WATCH_IDLE_S"] // POLL_S
 PLACEHOLDER = re.compile(r"(task|summary|files|checks|proof|handoff|reason|needs):? *(<[a-z]|\.\.\.)")
 
 
@@ -75,7 +77,18 @@ def register_watcher(ctx, wid, term, branch):
     return path
 
 
-def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print):
+def beat(path):
+    """The watcher's liveness beat (<pid>.beat beside its file, touched every poll): the deck calls a watcher stale when it stops."""
+    b = path[:-len(".json")] + ".beat"
+    try:
+        if os.path.exists(path):  # a watcher with no file (a direct call) leaves no stray beat
+            open(b, "a").close()
+            os.utime(b)
+    except OSError:
+        pass
+
+
+def watch(ctx, host, wid, branch="", poll_s=POLL_S, polls=TIMINGS["WATCH_TIMEOUT_S"] // POLL_S, out=print):
     boss = host.self_id()
     ev = lambda stage, note: bosskit.add_event(ctx, wid, stage, note)
     since = host.dispatched_at(boss, wid) if boss else 0
@@ -85,8 +98,11 @@ def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print):
     prs = pr_list(branch) if branch else None
     pr_base = ready(host, prs, draft) if prs is not None else None
     idle = unread = 0
+    mine = os.path.join(ctx.cache, "watchers", f"{os.getpid()}.json")
+    beat(mine)
     for i in range(1, polls + 1):
         time.sleep(poll_s)
+        beat(mine)
         for mid, text, _ in (host.messages(boss, wid) or []) if msgs is not None else []:
             if mid in seen:
                 continue
@@ -237,16 +253,19 @@ def main(argv):
             if script:  # the plugin's own watcher, in this process, so the pane's watcher file stays true
                 if not term:
                     term = next((t["id"] for t in (host.worker(wid) or {}).get("terminals", []) if t.get("agent")), "")
-                register_watcher(ctx, wid, term, branch)
+                os.environ["BOSS_WATCHER_FILE"] = register_watcher(ctx, wid, term, branch)  # watch.sh beats and counts re-arms beside it
                 os.environ["BOSS_BIN"] = os.path.dirname(os.path.abspath(__file__))
                 os.environ["BOSS_PR_DRAFT"] = "1" if (ctx.cfg.get("github") or {}).get("draft", True) else "0"
                 os.environ.update({k: v for k, v in host.watch_env().items() if v})
                 os.execv(script, [script, wid, term, *([branch] if branch else [])])
             path = register_watcher(ctx, wid, term, branch)
             try:
-                return watch(ctx, host, wid, branch, float(os.environ.get("BOSS_WATCH_POLL_S", 20)), int(os.environ.get("BOSS_WATCH_POLLS", 540)))
+                return watch(ctx, host, wid, branch, float(os.environ.get("BOSS_WATCH_POLL_S", POLL_S)),
+                             int(os.environ.get("BOSS_WATCH_POLLS", TIMINGS["WATCH_TIMEOUT_S"] // POLL_S)))
             finally:
                 os.remove(path)
+                if os.path.exists(path[:-len(".json")] + ".beat"):
+                    os.remove(path[:-len(".json")] + ".beat")
         else:
             print(__doc__)
             return 2

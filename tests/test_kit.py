@@ -1362,6 +1362,56 @@ class Hosts(Home):
         self.assertEqual([(w["ws"], w["term"], w["ageS"] >= 300) for w in deck.watchers(os.path.join(self.tmp, "cache"))], [("aaaa1111", "t", True)])
         self.assertEqual(os.listdir(d), ["1.json"])  # the dead one's file is gone
 
+    def watcher_files(self, name, age_s, beat_age_s, **extra):
+        """A watcher file for this live process, armed age_s ago, its heartbeat beat_age_s old (None: no beat yet)."""
+        d = os.path.join(self.tmp, "cache", "watchers")
+        os.makedirs(d, exist_ok=True)
+        now = int(time.time())
+        bosskit.save_json(os.path.join(d, f"{name}.json"), {"pid": os.getpid(), "ws": "aaaa1111", "term": "t", "at": now - age_s, **extra})
+        if beat_age_s is not None:
+            beat = os.path.join(d, f"{name}.beat")
+            open(beat, "w").close()
+            os.utime(beat, (now - beat_age_s, now - beat_age_s))
+        return load_script("boss-deck-data.py").watchers(os.path.join(self.tmp, "cache"))
+
+    def test_a_watcher_with_a_fresh_beat_is_never_stale_however_old(self):
+        got = self.watcher_files("1", 2 * 3600 + 60, 5)  # a working agent: the watcher lives up to 3 h
+        self.assertEqual([(w["ws"], w["stale"]) for w in got], [("aaaa1111", False)])
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "cache", "watchers", "1.beat")))  # listing never eats a live beat
+
+    def test_a_watcher_with_a_fresh_beat_on_an_idle_shell_footer_is_not_stale_at_40_min(self):
+        got = self.watcher_files("1", 40 * 60, 5)  # idle fallback is 45 min while a shell or monitor shows
+        self.assertIs(got[0].get("stale"), False)
+
+    def test_a_watcher_whose_beat_stopped_is_stale(self):
+        beat_stale_s = 3 * bosskit.watch_timings()["WATCH_POLL_S"]
+        self.assertIs(self.watcher_files("1", 600, beat_stale_s + 30)[0].get("stale"), True)
+        self.assertIs(self.watcher_files("1", 600, None)[0].get("stale"), True)  # armed 10 min ago, never beat
+
+    def test_a_new_watcher_that_has_not_polled_yet_is_not_stale(self):
+        self.assertIs(self.watcher_files("1", 5, None)[0].get("stale"), False)
+
+    def test_the_deck_shows_how_often_a_watcher_re_armed(self):
+        self.assertEqual(self.watcher_files("1", 3 * 3600, 5, rearms=2)[0].get("rearms"), 2)
+        self.assertEqual(self.watcher_files("1", 60, 5)[0].get("rearms"), 0)
+
+    def test_a_dead_watchers_beat_goes_with_its_file(self):
+        d = os.path.join(self.tmp, "cache", "watchers")
+        os.makedirs(d)
+        bosskit.save_json(os.path.join(d, "2.json"), {"pid": 2 ** 22 + 12345, "ws": "bbbb2222", "at": 0})
+        open(os.path.join(d, "2.beat"), "w").close()
+        load_script("boss-deck-data.py").watchers(os.path.join(self.tmp, "cache"))
+        self.assertEqual(os.listdir(d), [])
+
+    def test_the_watch_timings_have_one_source(self):
+        t = bosskit.watch_timings()
+        self.assertEqual({k: t[k] for k in ("WATCH_POLL_S", "WATCH_TIMEOUT_S", "WATCH_IDLE_S", "WATCH_IDLE_SHELL_S")},
+                         {"WATCH_POLL_S": 20, "WATCH_TIMEOUT_S": 10800, "WATCH_IDLE_S": 180, "WATCH_IDLE_SHELL_S": 2700})
+        for script in ("hosts/superset/watch.sh", "bin/boss-deck-data.py", "bin/boss-host"):
+            src = open(os.path.join(os.path.dirname(BIN), script)).read()
+            for literal in (":-540}", ":-20}", "need=9;", "need=135", "STALE_AGE_S = ", "IDLE_STALE_S = ", "IDLE_POLLS = 9"):
+                self.assertNotIn(literal, src, f"{script} still hardcodes {literal}")
+
 
 class Watch(Home):
     """boss-host watch: fires on an envelope message, PR READY, blocked, idle or a gone worker, and logs the stage."""

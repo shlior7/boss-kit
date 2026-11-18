@@ -40,7 +40,8 @@ export type Worker = {
   pages?: Page[]
 }
 export type TaskProgress = { done: number; total: number; current: string; at: number }
-export type Watcher = { ws: string; term: string; ageS: number; stale: boolean }
+/** stale: its beat stopped (pid dead or no beat for 3 polls), never its age; rearms: how often it re-armed itself after a timeout */
+export type Watcher = { ws: string; term: string; ageS: number; beatS: number; stale: boolean; rearms: number }
 export type Pr = {
   /** owner/repo */
   repo: string

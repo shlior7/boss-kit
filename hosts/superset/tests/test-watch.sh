@@ -122,9 +122,11 @@ case "$1 $2" in
 esac
 C
   chmod +x "$t/cli"
-  CLAUDE_CONFIG_DIR=$t/claude BOSS_HOST=m-7 BOSS_HOST_CLI=$t/cli BOSS_BIN=$t/none BOSS_WATCH_POLL_S=0 BOSS_WATCH_POLLS=$1 "$S" w1 t1 > "$t/out" 2>&1 & local pid=$!
+  mkdir -p "$t/watchers"; echo '{"pid":1,"ws":"w1"}' > "$t/watchers/1.json"   # what `boss-host watch` leaves; the watcher beats beside it
+  BOSS_WATCHER_FILE=$t/watchers/1.json CLAUDE_CONFIG_DIR=$t/claude BOSS_HOST=m-7 BOSS_HOST_CLI=$t/cli BOSS_BIN=$t/none BOSS_WATCH_POLL_S=0 BOSS_WATCH_POLLS=$1 "$S" w1 t1 > "$t/out" 2>&1 & local pid=$!
   for _ in $(seq 600); do kill -0 $pid 2>/dev/null || break; sleep 0.2; done; kill $pid 2>/dev/null; wait $pid 2>/dev/null
-  cat "$t/out"; rm -rf "$t"; }
+  cat "$t/out"; [ -n "$STATE" ] && echo "rearms=$(jq -r '.rearms // 0' "$t/watchers/1.json") beat=$([ -f "$t/watchers/1.beat" ] && echo yes || echo no)"
+  rm -rf "$t"; }
 fires(){ local name=$1 want=$2 got; shift 2; got=$(loop "$@" | head -1)
   if [ "$got" = "$want" ]; then echo "ok   $name -> $got"; else echo "FAIL $name: want '$want', got '${got:-nothing in 120 s}'"; fail=1; fi; }
 w=$(mktemp -d); { head -14 "$F/boxed-envelope.screen"; tail -8 "$F/boxed-envelope.screen"; } > "$w/working"; tail -32 "$F/boxed-envelope.screen" > "$w/tall"
@@ -134,5 +136,11 @@ fires "envelope taller than the pane: read from the worker's transcript" "ENVELO
 fires "an old envelope in the transcript never fires" "TIMEOUT" 5 "$w/working" "$w/working" "$w/t1" "$w/t1"
 sed 's/ · 2 shells//' "$w/tall" > "$w/noshell"
 fires "idle on a screen whose only change is the status-line clock" "AGENT IDLE WITHOUT ENVELOPE" 20 "$w/noshell" "$w/noshell"
+# Liveness and self-heal: a beat beside the watcher's file every poll; on TIMEOUT it re-arms itself up to WATCH_REARM_MAX times
+# (3), counting them in its file, then still exits with TIMEOUT. 2 polls x 4 runs = 8 polls: under the 9 idle polls.
+got=$(STATE=1 loop 2 "$w/working" "$w/working" | tr '\n' ' ')
+if [ "$got" = "TIMEOUT rearms=3 beat=yes " ]; then echo "ok   TIMEOUT re-arms 3x, beats, then exits -> $got"; else echo "FAIL re-arm: want 'TIMEOUT rearms=3 beat=yes', got '$got'"; fail=1; fi
+got=$(STATE=1 loop 2 "$w/working" "$w/tall" "$w/t1" "$F/boxed-envelope.jsonl" | tail -1)
+if [ "$got" = "rearms=0 beat=yes" ]; then echo "ok   an envelope exits at once, never re-arming -> $got"; else echo "FAIL envelope re-armed or no beat: '$got'"; fail=1; fi
 rm -rf "$w"
 exit $fail
