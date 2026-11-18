@@ -24,6 +24,7 @@ CHECKS = [
     ("deck selftest", [sys.executable, "bin/boss-deck-data.py", "--selftest"]),
     ("plugin test", ["claude", "plugin", "test", "mods/boss-deck"]),
     ("plugin validate", ["claude", "plugin", "validate", "mods/boss-deck"]),
+    ("plugin validate boss", ["claude", "plugin", "validate", "."]),  # the marketplace and the boss plugin (the /boss skill)
     ("tsc", ["npm", "exec", "-y", "--package=typescript@5.6.3", "--", "tsc", "-p", "mods/boss-deck", "--noEmit"]),
 ]
 

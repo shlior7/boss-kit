@@ -48,7 +48,7 @@ flowchart LR
 |---|---|
 | `BOSS-template.md` | The boss prompt: role, hard rules, routing, the completion envelope, verification, merge discipline, reporting format. Generic, with `[PLACEHOLDERS]` |
 | `playbooks/` | **Playbooks:** the full wording of the template's sections 5 to 15, with their examples and steps (dispatch, watcher, verify, merge, layover, report, ledger, first actions, review page, mail, lessons, domain boss). The template keeps each rule as one short line and says when to read each playbook. A domain boss loads its playbook automatically; `bosskit.py instructions --full` prints the template with every playbook inlined |
-| `skills/boss/` | The `/boss` skill: onboarding on first run, then loads the template, the host's commands, the project's `BOSS.md`, and the project and shared lessons |
+| `skills/boss/` | The `/boss` skill, shipped by the `boss` plugin of the marketplace: onboarding on first run, then loads the template, the host's commands, the project's `BOSS.md`, and the project and shared lessons |
 | `hosts/<name>/` | The bundled host plugins, one folder each (`host.json`, `adapter.py`, `prompt.md`, its README and tests): see Host plugins |
 | `projects/_template/` | What `boss-init` copies into your data root: `BOSS.md` (project facts), `config.json`, `ledger.md`, `lessons.md`, `prompts/` |
 | `shared-lessons.example.md` | Seed for the shared lessons file: generic lessons every boss hits |
@@ -57,7 +57,7 @@ flowchart LR
 | `bin/boss-host` | The CLI the boss, the scripts and the pane use for everything done to workers: create, send, archive, watch, … |
 | `bin/boss-init` | Scaffolds a project in the data root |
 | `bin/boss-mail` | Messages between bosses |
-| `bin/boss-kit-update` | Updates the installed kit (`git pull --ff-only`) and mails every live boss to run `/reload-plugins`; types into no terminal |
+| `bin/boss-kit-update` | The one update command: pulls the kit, refreshes the plugins' cached copies, makes sure `/boss` is available, migrates, and mails every live boss to restart; types into no terminal |
 | `bin/boss-lesson` | Records and promotes lessons |
 | `bin/boss-migrate` | Moves an older kit's project data into the data root |
 | `bin/boss-status-ask` | Sends the standard six-question status check to a worker session before a cleanup (the status layover) |
@@ -185,19 +185,18 @@ bin/bosskit.py config set --level boss host=<plugin> models.strong=fable --apply
 
 Run `/boss` in the worktree that will be the boss. When no project resolves there, it onboards instead of loading. Onboarding is a form: the questions live in one file, [`skills/boss/questions.json`](skills/boss/questions.json), which the skill and `bin/boss-init` both read.
 
-1. **Detect** (`bin/bosskit.py onboard questions`, read-only): it runs `detect` (each installed host plugin, this session's id, the `gh` login, the git remote and default branch, the projects in `$BOSS_HOME`), answers what it can (host, project name, repo, base branch, login), and packs the rest into question pages of at most four, each with its current value first.
-2. **Ask** with Claude Code's question form: first **what should be posted on the PR** (two checkbox questions; none is a valid answer), then the PR knobs, the project, pages, cleanup, models and effort, wake on mail, deck buttons, the boss's name and whether it is a domain boss, and report style. Merging is not asked: the boss never merges without your OK, and it says so.
-3. **One open question:** "What are your expectations of me as the boss of your project?" Your answer goes to the project's `BOSS.md` under `## Expectations`, which every later session loads.
-4. **Show** (`bin/bosskit.py onboard apply <answers.json>`, a dry run): the full resolved config with the layer of each value, every file it would write, the expectations and the marker line.
-5. **Write** only once you say yes: `boss-init --answers` for a new project, `onboard apply --apply` for an existing one (each file merged, a `.bak` kept), the marker line. Nothing is overwritten.
+1. **Detect** (`bin/bosskit.py onboard questions`, read-only): it runs `detect` (each installed host plugin, this session's id, the `gh` login, the git remote and default branch, the projects in `$BOSS_HOME`) and answers what it can: host, project name, repo, base branch, login. Those are written as detected, never asked. A question whose value this machine already sets (pages from the org layer, say) is skipped too.
+2. **Ask** with Claude Code's question form, one call of at most four questions (two calls at most): **what should be posted on the PR** (check any, none is valid; a status note carries the proof links, boss notes are the verify and merge notes), where pages go, cleanup (ask each time, or archive and tell me), and report style; then whether this is the main boss or a domain boss, UI proof (demo or screenshots) and wake on mail. Models, effort, merge method, draft, PR body, comment style, ready, deck buttons and the boss's name keep their defaults. Merging is not asked: the boss never merges without your OK, and it says so.
+3. **One open question, in chat:** "Tell me your expectations of me as the boss of your project: how you want me to work, what to never do, what good looks like." Your free reply goes to the project's `BOSS.md` under `## Expectations`, as written, which every later session loads.
+4. **Write**, with no confirm step: answering is the consent. `boss-init --answers` for a new project, `onboard apply --apply` for an existing one: each config file and `BOSS.md` merged, the boss marker added to `CLAUDE.local.md`, every changed file copied to `<file>.bak-<time>` first. One short summary lists each file and the undo; change anything else later with `bosskit.py config set --level project KEY=VALUE` (see `bosskit.py config show`). Without `--apply`, `onboard apply` is a dry run that prints the full resolved config.
 
 The form ends with the boss's own words: "I'm a mere boss but you are the god. I hope to please you and get things done. Always let me know how I can be better."
 
-Re-run it any time with `/boss onboard`, or `/boss onboard user|project|boss` to land every change in one layer. Without a Claude session, `bin/boss-init --questions` prints the form and `bin/boss-init <name> --answers answers.json` takes the same answers from a file (`{"<id>": <answer>}`: an option's label or value, a list for a checkbox question, or your own text):
+Re-run it any time with `/boss onboard` (questions already set are skipped; `/boss onboard all` asks every one, current values first), or `/boss onboard user|project|boss` to land every change in one layer. Without a Claude session, `bin/boss-init --questions` prints the form and `bin/boss-init <name> --answers answers.json` takes the same answers from a file (`{"<id>": <answer>}`: an option's label or value, a list for a checkbox question, or your own text):
 
 ```json
-{"repo": "acme/widgets", "me": "jane", "comments_worker": ["Status comment"], "comments_boss": "none",
- "merge": "Squash", "expectations": "Small PRs, and tell me what needs me first."}
+{"repo": "acme/widgets", "me": "jane", "comments": ["Status note", "Demo video"], "cleanup": "Ask each time",
+ "report": "Short, action first", "expectations": "Small PRs, and tell me what needs me first."}
 ```
 
 ## Requirements
@@ -214,24 +213,31 @@ Re-run it any time with `/boss onboard`, or `/boss onboard user|project|boss` to
 git clone https://github.com/shlior7/boss-kit.git ~/.claude/boss-kit
 ```
 
-The pane is a plugin in this repo's marketplace. The `/boss` skill is a folder you link into your skills. From inside Claude Code:
+Both the `/boss` skill and the pane are plugins in this repo's marketplace. From inside Claude Code:
 
 ```
 /plugin marketplace add shlior7/boss-kit
+/plugin install boss@boss-kit
 /plugin install boss-deck@boss-kit
 ```
 
+Or from a shell: `claude plugin marketplace add shlior7/boss-kit && claude plugin install boss@boss-kit && claude plugin install boss-deck@boss-kit`. Restart Claude Code (or `/reload-plugins`) and `/boss` is there. If you made the old manual link (`ln -s ~/.claude/boss-kit/skills/boss ~/.claude/skills/boss`), remove it, or `/boss` shows twice: `rm ~/.claude/skills/boss` (`bin/boss-kit-update` does this for you once the plugin is installed, when the link points into the kit). The link still works without the plugin.
+
+## Update
+
+One command, from any directory, no boss session needed:
+
 ```bash
-mkdir -p ~/.claude/skills && ln -s ~/.claude/boss-kit/skills/boss ~/.claude/skills/boss
+~/.claude/boss-kit/bin/boss-kit-update
 ```
 
-To update later, run `~/.claude/boss-kit/bin/boss-kit-update`: it pulls the kit and mails every live boss to run `/reload-plugins`. A pane that sees the kit on disk move past the version it loaded shows `kit updated · run /reload-plugins` until it is reloaded.
+It pulls the kit (it refuses uncommitted changes, naming the files, and a kit that cannot fast-forward), refreshes the plugins' cached copies (`claude plugin marketplace update boss-kit`, then `claude plugin update` for each installed plugin, and `claude plugin install` for each one the marketplace lists that you have not installed; without the `claude` CLI it prints a skip), removes the old `~/.claude/skills/boss` link once the `boss` plugin is there (only a symlink into the kit; a real directory or a link elsewhere is left alone and named), runs `boss-migrate --apply`, mails the live bosses, and prints one block: the kit `old..new`, each plugin `old -> new`, and what to do next: restart each Claude Code session (exit, then `claude --continue`). `--dry-run` prints every step and changes nothing; `--no-mail` skips the mail. A pane that sees the kit on disk move past the version it loaded shows `kit updated · restart: claude --continue` until it is restarted.
 
 If you cloned the kit somewhere else, `export BOSS_KIT_HOME=/path/to/boss-kit`. For data somewhere else, `export BOSS_HOME=/path`. Every script, the skill and the pane read both.
 
 ## Quick start
 
-The short way: start Claude Code in the worktree that will be the boss and run `/boss`. With no project there it onboards (above) and does steps 1 to 3 for you, showing everything before it writes. By hand:
+The short way: start Claude Code in the worktree that will be the boss and run `/boss`. With no project there it onboards (above) and does steps 1 to 3 for you: a short form, then it writes everything and prints one summary. By hand:
 
 1. **Scaffold a project:**
 
@@ -431,7 +437,7 @@ Both files are append-only and numbered. An exact duplicate is refused; one that
 | `bin/bosskit.py onboard questions [--text] \| onboard apply FILE [--project N] [--level L] [--apply]` | The onboarding form with current values, packed into question pages; its answers as config, `BOSS.md`'s `## Expectations` and `Domain:` lines, a dry run until `--apply` |
 | `bin/bosshost.py kind \| self \| workers [ID...] \| send ID TEXT [TERM] \| rename ID NAME \| open ID \| screen ID TERM` | The host adapter from the shell: what the scripts and the pane call |
 | `bin/boss-mail send \| inbox \| read \| reply \| done \| sent` | Boss mail, above |
-| `bin/boss-kit-update` | `git pull --ff-only` in the kit (`$BOSS_KIT`, else `$BOSS_KIT_HOME`, else `~/.claude/boss-kit`), prints `old..new` and the one-line log, then drops one `fyi` mail (`kit updated old..new: run /reload-plugins`) in the inbox of every live boss in `bosses.json`. It refuses a kit with uncommitted changes to tracked files or one that cannot fast-forward. It writes inbox files only: no keys or text go to any terminal, so nothing lands in a boss's input box. Each boss runs `/reload-plugins` between turns, after its user's OK |
+| `bin/boss-kit-update` | `[--dry-run] [--no-mail]`: `git pull --ff-only` in the kit (`$BOSS_KIT`, else `$BOSS_KIT_HOME`, else the kit the script is in), `claude plugin marketplace update boss-kit` and `claude plugin update` for each installed plugin, `claude plugin install` for each uninstalled one, removal of the old `/boss` link into the kit once the plugin is installed, `boss-migrate --apply`, then one `fyi` mail (`kit updated old..new: restart the session (claude --continue) to load boss-deck <ver>`) in the inbox of every live boss in `bosses.json`, and a final block (kit `old..new`, each plugin `old -> new`). It refuses a kit with uncommitted changes to tracked files (naming them) or one that cannot fast-forward. It writes inbox files only: no keys or text go to any terminal, so nothing lands in a boss's input box. Each boss restarts its session (`claude --continue`) between turns, after its user's OK |
 | `bin/boss-lesson add \| list \| promote` | Lessons, above |
 | `bin/boss-migrate [--kit DIR] [--boss ID] [--apply]` | Moves a v0.4-or-older kit's project data into `$BOSS_HOME` and leaves a symlink at each old path, and adds the host plugin's prompt import after the template line of each boss's `CLAUDE.local.md` that lacks it. Dry run unless `--apply`; never overwrites a moved path. `--boss` names the boss that owned the old `state/<name>/` |
 | `bin/boss-event <ws> <stage> [note]` | Appends `{at, ws, stage, note}` to this boss's `events.jsonl`. The boss logs `sent` on each dispatch, `checked`, `ready` and `retired`; the watcher logs `DONE`, `BLOCKED`, `PR READY` and `merged` when it fires |
@@ -468,7 +474,7 @@ A quiet pane: grey by default, color only for what needs you. Here with a worksp
   Time in stage comes from the stage log, `events.jsonl` (`bin/boss-event`, and the watcher when it fires), else the PR's last update, else the ledger date. A tracked PR no workspace owns (another author, an extra repo) is an idle row too: its tag as the name, `—`, its status (`· ws#7  —  approved · 3h`). PRs idle for 10+ days fold into one line.
 - **Press a row** (or its key, `1`–`9`, once the pane has focus) to expand it. A workspace shows its timed stage history (`10:02  sent  watcher armed`, `10:31  DONE  PR #42 draft`) and the `next` step and who takes it; then, when it has a PR, the PR's title, CI (pass / fail / pending with the failing names), mergeability, reviews, size, branch → base and head; then its worker's own report: `tasks 3 of 5 · now <in-progress task>` (from `<worktree>/.boss-worker/status.json`, which the worker's pane writes) and the last two lines of its `.boss-worker/notes.md`; then what it's doing now, context use (yellow at 60% or more) and a missing watcher. Last comes one link row: its pages (each by title, from its `.boss-worker/pages.jsonl`), then any other proof (`page ↗`, `demo ↗`, `artifact ↗`, each URL once, from the ledger's Proof column and the PR body and comments: the host's pages (its `proof_links`), claude.ai artifacts, video files, GitHub attachments and Loom), **`open workspace ↗`** (`boss-host open`) and **`open on GitHub ↗`**. A PR-only row shows the PR part. Press again to fold it.
 - **Drift:** a workspace's PR that has fallen behind its base shows `3 behind main` (yellow) in its row, right after the stage; one GitHub says conflicts shows `conflicts with main` (red, with `, N behind` when both). The PR-only rows carry the same note, and an expanded PR gets a `drift` line from GitHub's live read. The behind count is GitHub's compare of the PR's head with its base, taken in the PR fetch and cached with it (first 20 PRs per fetch).
-- **A stale kit:** when the kit on disk (its git HEAD) is not the one the pane loaded, an attention line `› kit updated · run /reload-plugins` (yellow) shows until the plugins are reloaded. The same line joins the worker view's warning line. `bin/boss-kit-update` is what updates the kit.
+- **A stale kit:** when the kit on disk (its git HEAD) is not the one the pane loaded, an attention line `› kit updated · restart: claude --continue` (yellow) shows until the session is restarted. The same line joins the worker view's warning line. `bin/boss-kit-update` is what updates the kit.
 - **`review ↗ <date>`** at the top opens the latest review page (this boss's `review.txt`).
 - **The footer** shows `tracker: N mine · N P0/P1 · N in progress` when a tracker is synced (nothing otherwise), `N new shared lessons` added since this boss's last session, and when the pane last updated.
 - **Colors:** a working worker's dot is green, a blocked one's square red, your move's and waiting-on-you's `›` yellow, done today's `✓` green. A PR-only row's status: green approved, blue waiting on a reviewer, yellow conflict, red CI, grey draft. An approved, green PR with no proof shows **`no proof`** in yellow, the only proof-related color. A boss's `for you` count and a stale boss's age are yellow.
@@ -487,7 +493,7 @@ In a dispatched worker's own session the same pane shows that worker's status. I
 - **PAGES:** the pages this worker published (`.boss-worker/pages.jsonl`), newest first: age, then the title as a link. The header shows `pages → <provider>` under it when config names one.
 - **NOTES:** the last lines of the worktree's `.boss-worker/notes.md`, where the worker keeps its decisions and open questions; the boss's expanded row shows the last two.
 - **FROM BOSS** `N new`: what the boss sent this workspace, newest first, at most 3; new means since this session's last turn began.
-- **Warning line**, when it applies: context at 60% or more, the branch behind `origin/<base>`, CI red, the PR has no DONE comment after the agent went idle, `kit updated · run /reload-plugins` once the kit on disk is newer than the one this pane loaded.
+- **Warning line**, when it applies: context at 60% or more, the branch behind `origin/<base>`, CI red, the PR has no DONE comment after the agent went idle, `kit updated · restart: claude --continue` once the kit on disk is newer than the one this pane loaded.
 - **Links:** proof (`page ↗`, `demo ↗`), `PR ↗`, `boss ↗` (opens the boss's workspace), then context % and the refresh age.
 - **Files:** the worker's pane writes its task progress to `<worktree>/.boss-worker/status.json` on each refresh and turn end, and keeps `.boss-worker/` in the worktree's `.git/info/exclude`, so neither file is committed.
 

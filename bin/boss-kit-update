@@ -1,16 +1,29 @@
 #!/usr/bin/env python3
-"""boss-kit-update: pull the installed kit and tell every live boss by mail to reload its plugins.
+"""boss-kit-update: the one command that brings a machine to the latest kit. Run it from any directory; no boss session needed.
 
-  boss-kit-update          git pull --ff-only in the kit, print old..new, then mail each live boss
+  boss-kit-update [--dry-run] [--no-mail]
 
-The kit is $BOSS_KIT, else $BOSS_KIT_HOME, else ~/.claude/boss-kit. It refuses a kit with uncommitted
-changes to tracked files, or one that has diverged from its upstream. The mail is an 'fyi' (boss-mail's
-information kind) written straight to each live boss's inbox: the script never sends keys or text to a
-terminal, so nothing lands in a boss's input box. Each boss sees it in its pane's INBOX and runs
-/reload-plugins when it is between turns.
+Steps, in order, each printed:
+  1. git pull --ff-only in the kit. A kit with uncommitted changes to tracked files, or one that has diverged from its
+     upstream, is refused: it names the files and says how to stash.
+  2. claude plugin marketplace update boss-kit, then claude plugin update <plugin>@boss-kit for each installed plugin
+     in .claude-plugin/marketplace.json (the plugin cache pins a copy: only this refreshes it), and claude plugin install
+     for each one listed there that is not installed. A missing claude CLI is a printed skip, not a failure.
+  3. /boss is available: through the "boss" plugin once installed, which also removes the old ~/.claude/skills/boss link
+     when that is a symlink into the kit (a real directory, or a link pointing elsewhere, is left alone and named);
+     with no claude CLI and no plugin, the link is made.
+  4. bin/boss-migrate --apply (an old layout's project data into $BOSS_HOME, host prompt imports); prints what it changed.
+  5. One 'fyi' mail to each live boss (written straight to its inbox: the script types into no terminal, so nothing
+     lands in a boss's input box). Skipped by --no-mail.
+  6. One final block: kit old..new, each plugin old -> new, and the restart line.
+--dry-run prints every step and changes nothing (no pull, no plugin command, no write, no mail).
+
+The kit is $BOSS_KIT, else $BOSS_KIT_HOME, else the one this script is in.
 """
+import json
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -19,34 +32,128 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bosskit  # noqa: E402
 
 LOG_LINES = 10
+MARKET = "boss-kit"
+RESTART = "Restart each Claude Code session (exit, then `claude --continue`) to load it."
 
 
 def kit_dir():
-    return os.environ.get("BOSS_KIT") or os.environ.get("BOSS_KIT_HOME") or os.path.expanduser("~/.claude/boss-kit")
+    return os.environ.get("BOSS_KIT") or os.environ.get("BOSS_KIT_HOME") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def git(kit, *args):
     return subprocess.run(["git", "-C", kit, *args], capture_output=True, text=True)
 
 
-def pull(kit):
-    """Fast-forward the kit; (old, new) short shas. Exits on a dirty or diverged kit."""
-    if not os.path.isdir(os.path.join(kit, ".git")):
+def claude_home():
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+
+
+def installed():
+    """{plugin@marketplace: version} from Claude Code's installed_plugins.json ({} when unreadable)."""
+    try:
+        d = json.load(open(os.path.join(claude_home(), "plugins", "installed_plugins.json")))
+        return {k: (v[0].get("version") or "?") if v else "?" for k, v in d.get("plugins", {}).items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def marketplace(kit):
+    """{plugin name: version} the kit's marketplace lists."""
+    try:
+        m = json.load(open(os.path.join(kit, ".claude-plugin", "marketplace.json")))
+        return {p["name"]: p.get("version", "?") for p in m.get("plugins", [])}
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+def pull(kit, dry=False):
+    """Fast-forward the kit; (old, new) short shas. Exits on a dirty or diverged kit. A dry run checks and pulls nothing."""
+    if not os.path.exists(os.path.join(kit, ".git")):
         sys.exit(f"boss-kit-update: {kit} is not a git checkout")
-    if git(kit, "status", "--porcelain", "--untracked-files=no").stdout.strip():
-        sys.exit(f"boss-kit-update: {kit} has uncommitted changes; commit or discard them first")
+    dirty = git(kit, "status", "--porcelain", "--untracked-files=no").stdout.rstrip()
+    if dirty.strip():
+        sys.exit(f"boss-kit-update: {kit} has uncommitted changes:\n{dirty}\n"
+                 f"Stash them (git -C {kit} stash push -m before-update, then git -C {kit} stash pop after), or discard them, and run it again.")
     old = git(kit, "rev-parse", "--short", "HEAD").stdout.strip()
+    if dry:
+        return old, old
     r = git(kit, "pull", "--ff-only", "--quiet")
     if r.returncode:
-        sys.exit(f"boss-kit-update: {kit} cannot fast-forward (diverged from its upstream, or no upstream): {r.stderr.strip()}")
+        sys.exit(f"boss-kit-update: {kit} cannot fast-forward (diverged from its upstream, or no upstream): {r.stderr.strip()}\n"
+                 f"Rebase or reset it to its upstream yourself (git -C {kit} status), then run this again.")
     return old, git(kit, "rev-parse", "--short", "HEAD").stdout.strip()
 
 
-def notify(h, old, new, log, now=None):
+def claude(*args):
+    """Run the claude CLI: (ok, last output line)."""
+    r = subprocess.run(["claude", *args], capture_output=True, text=True)
+    tail = (r.stdout + r.stderr).strip().splitlines()
+    return r.returncode == 0, tail[-1] if tail else ""
+
+
+def update_plugins(kit, dry, before):
+    """Step 2: refresh the marketplace, update each installed plugin, install each one the marketplace lists that is not
+    installed. Returns (lines, failed)."""
+    names = marketplace(kit)
+    if not shutil.which("claude"):
+        return ["skip: the claude CLI is not on PATH. In Claude Code run /plugin marketplace update "
+                f"{MARKET}, then /plugin update (or /plugin install) <plugin>@{MARKET} for each of: {', '.join(names) or 'the kit plugins'}"], False
+    steps = [("run", ["plugin", "marketplace", "update", MARKET])]
+    steps += [("run", ["plugin", "update", f"{n}@{MARKET}"]) for n in names if f"{n}@{MARKET}" in before]
+    steps += [("install", ["plugin", "install", f"{n}@{MARKET}"]) for n in names if f"{n}@{MARKET}" not in before]
+    lines, failed = [], False
+    for kind, argv in steps:
+        if dry:
+            lines.append(f"would {kind}: claude " + " ".join(argv))
+            continue
+        ok, last = claude(*argv)
+        failed |= not ok
+        lines.append(f"{'ok  ' if ok else 'FAIL'} claude {' '.join(argv)}" + (f": {last[:120]}" if last else ""))
+    return lines, failed
+
+
+def ensure_boss_skill(kit, dry, planned=()):
+    """Step 3: say how /boss is provided. Once the boss plugin is there, the old link into the kit goes (a real directory, or
+    a link pointing elsewhere, is left alone and named). Without the plugin and without claude, link it. (lines, failed)"""
+    link = os.path.join(claude_home(), "skills", "boss")
+    plugin = f"boss@{MARKET}" in installed() or "boss" in planned
+    if not os.path.lexists(link):
+        if plugin:
+            return [f"/boss {'comes' if f'boss@{MARKET}' in installed() else 'will come'} from the boss plugin"], False
+        if shutil.which("claude"):
+            return ["/boss is not available: the boss plugin did not install (see step 2)"], True
+        if dry:
+            return [f"would link {link} to {kit}/skills/boss (no claude CLI to install the plugin)"], False
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        os.symlink(os.path.join(kit, "skills", "boss"), link)
+        return [f"linked {link} so /boss is available (no claude CLI to install the plugin)"], False
+    if not plugin:
+        return [f"/boss comes from the link {link} (the boss plugin, `claude plugin install boss@{MARKET}`, replaces it)"], False
+    real, root = os.path.realpath(link), os.path.realpath(kit)
+    if os.path.islink(link) and os.path.commonpath([real, root]) == root:
+        if dry:
+            return [f"would remove the old link {link} -> {os.readlink(link)}: /boss comes from the boss plugin"], False
+        target = os.readlink(link)
+        os.remove(link)
+        return [f"removed the old link {link} -> {target}: /boss comes from the boss plugin"], False
+    return [f"left {link} alone ({'a link pointing outside the kit' if os.path.islink(link) else 'a real directory'}): "
+            "/boss will show twice; remove it yourself"], False
+
+
+def migrate(kit, dry):
+    """Step 4: boss-migrate for the registered bosses; its own output, trimmed."""
+    argv = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "boss-migrate"), "--kit", kit] + ([] if dry else ["--apply"])
+    r = subprocess.run(argv, capture_output=True, text=True)
+    out = (r.stdout + r.stderr).strip().splitlines()
+    return ([f"{'would run' if dry else 'ran'} boss-migrate{'' if dry else ' --apply'}"] + [f"  {l}" for l in out[:8]]
+            + ([f"  … {len(out) - 8} more lines"] if len(out) > 8 else [])), r.returncode != 0
+
+
+def notify(h, subject, log, now=None):
     """Mail every live boss in the registry; the boss ids mailed. Writes inbox files only."""
     now = now or time.time()
     msg = {"id": time.strftime("%Y%m%d-%H%M%S-", time.localtime(now)) + secrets.token_hex(3), "from_boss": "boss-kit-update",
-           "from_project": "kit", "kind": "fyi", "subject": f"kit updated {old}..{new}: run /reload-plugins",
+           "from_project": "kit", "kind": "fyi", "subject": subject,
            "body": log, "reply_to": None, "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now))}
     sent = []
     for boss, b in sorted(bosskit.live(bosskit.registry(h), now).items()):
@@ -59,17 +166,59 @@ def notify(h, old, new, log, now=None):
     return sent
 
 
-def main():
+def main(argv):
+    if set(argv) - {"--dry-run", "--no-mail"}:
+        sys.exit(__doc__)
+    dry, no_mail = "--dry-run" in argv, "--no-mail" in argv
     kit = kit_dir()
-    old, new = pull(kit)
-    if old == new:
-        print(f"kit already up to date at {new}")
-        return
-    log = git(kit, "log", "--oneline", f"-{LOG_LINES}", f"{old}..{new}").stdout.strip()
-    sent = notify(bosskit.home(), old, new, log)
-    print(f"kit updated {old}..{new}\n{log}\nmailed {len(sent)} live boss{'' if len(sent) == 1 else 'es'}"
-          + (": " + ", ".join(sent) if sent else ""))
+    failed = False
+
+    def step(n, title, lines=()):
+        print(f"[{n}/5] {title}")
+        for l in lines:
+            print("  " + l)
+
+    print(f"boss-kit-update{' (dry run: nothing changes)' if dry else ''}: kit {kit}")
+    old, new = pull(kit, dry)
+    log = git(kit, "log", "--oneline", f"-{LOG_LINES}", f"{old}..{new}").stdout.strip() if old != new else ""
+    step(1, "kit", [f"would git pull --ff-only (now at {old})" if dry else f"updated {old}..{new}" if old != new else f"already at {new}"]
+         + [f"  {l}" for l in log.splitlines()])
+    before = installed()
+    lines, bad = update_plugins(kit, dry, before)
+    failed |= bad
+    step(2, "plugins", lines)
+    planned = {n for n in marketplace(kit) if f"{n}@{MARKET}" not in before} if dry and shutil.which("claude") else ()
+    lines, bad = ensure_boss_skill(kit, dry, planned)
+    failed |= bad
+    step(3, "/boss", lines)
+    lines, bad = migrate(kit, dry)
+    failed |= bad
+    step(4, "migrate", lines)
+    after = installed()
+    moved = {k: (before.get(k), v) for k, v in after.items() if k.endswith("@" + MARKET) and before.get(k) != v}
+    changed = old != new or bool(moved)
+    ver = lambda n: after.get(f"{n}@{MARKET}") or marketplace(kit).get(n, "?")
+    sent = []
+    if dry or no_mail:
+        mail = "would mail the live bosses" if dry else "skipped (--no-mail)"
+    elif not changed:
+        mail = "nothing changed: nobody mailed"
+    else:
+        sent = notify(bosskit.home(), f"kit updated {old}..{new}: restart the session (claude --continue) to load boss-deck {ver('boss-deck')}", log)
+        mail = f"mailed {len(sent)} live boss{'' if len(sent) == 1 else 'es'}" + (": " + ", ".join(sent) if sent else "")
+    step(5, "mail", [mail])
+    mine = {k.split("@")[0]: v for k, v in after.items() if k.endswith("@" + MARKET)}
+    if moved:
+        plugins = "; ".join(f"{k.split('@')[0]} {a or 'new'} -> {b}" for k, (a, b) in sorted(moved.items()))
+    else:
+        plugins = (", ".join(f"{k} {v}" for k, v in sorted(mine.items())) + " (unchanged)") if mine else "none installed from this marketplace"
+    print("\n" + "\n".join([
+        f"Kit:     {old}..{new}" if old != new else f"Kit:     {new} (up to date)",
+        f"Plugins: {plugins}",
+        "Dry run: nothing was changed." if dry else RESTART if changed else "Up to date: nothing to restart.",
+    ]))
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

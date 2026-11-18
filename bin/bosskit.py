@@ -21,10 +21,11 @@ usage: bosskit.py show            the resolved paths, as JSON
        bosskit.py config set --level user|project|boss KEY=VALUE... [--apply]
                                   shows the resolved config after the change; writes only with --apply
        bosskit.py detect          the environment, as JSON: host CLIs, gh, git, $BOSS_HOME (for onboarding)
-       bosskit.py onboard questions [--text]   the onboarding form (skills/boss/questions.json) with current values, packed
+       bosskit.py onboard questions [--text] [--all]   the onboarding form (skills/boss/questions.json) with current values, packed
                                   into AskUserQuestion calls; --text for people (bin/boss-init --questions)
        bosskit.py onboard apply FILE [--project NAME] [--level user|project|boss] [--apply]
-                                  the form's answers as config, BOSS.md ## Expectations and Domain lines; writes only with --apply
+                                  the form's answers as config, BOSS.md ## Expectations, Domain lines and the boss marker; a dry run until --apply,
+                                  which writes (backing each file up) and prints one summary
 """
 import hashlib
 import json
@@ -296,9 +297,10 @@ def parse_sets(pairs):
     return out
 
 
-def write_layers(layers, changes, apply=False, now=None):
+def write_layers(layers, changes, apply=False, now=None, done=None):
     """The resolved config with each {level: change} merged into that level's file, as text; with apply, writes each
-    changed file (merged into what is there, an existing file copied to <file>.bak-<time> first)."""
+    changed file (merged into what is there, an existing file copied to <file>.bak-<time> first); *done* collects
+    (path, backup or None, what changed) per file."""
     for level in changes:
         if not next((p for l, p, _ in layers if l == level), None):
             sys.exit(f"bosskit: no {level} layer here (boss needs a resolved boss, project a resolved project)")
@@ -312,9 +314,12 @@ def write_layers(layers, changes, apply=False, now=None):
         text += f"\n\n{'wrote' if apply else 'would write'} {path}:\n" + json.dumps(body, indent=1)
         if apply:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            if os.path.exists(path):
-                shutil.copy2(path, f"{path}.bak-{int(now or time.time())}")
+            bak = f"{path}.bak-{int(now or time.time())}" if os.path.exists(path) else None
+            if bak:
+                shutil.copy2(path, bak)
             save_json(path, body)
+            if done is not None:
+                done.append((path, bak, ", ".join(_flat(changes[level]))))
     return text
 
 
@@ -329,6 +334,11 @@ def _dig(d, key):
     for k in key.split("."):
         d = d.get(k) if isinstance(d, dict) else None
     return d
+
+
+def _flat(d, prefix=""):
+    """The dotted leaf keys of a nested change."""
+    return [k for key, v in d.items() for k in (_flat(v, prefix + key + ".") if isinstance(v, dict) and v else [prefix + key])]
 
 
 def _nest(key, value):
@@ -351,14 +361,21 @@ def _current(q, cfg, wt):
         return boss_domain(wt)
     if q["id"] == "folder":
         return boss_folder(wt)
+    if any("sets" in o for o in q.get("options") or []):  # one choice sets several keys: the option all of whose keys match
+        return next((o["value"] for o in q["options"] if all(_dig(cfg, k) == v for k, v in o["sets"].items())), None)
     keys = _keys(q)
     if not keys:
         return None
     cur = _dig(cfg, keys[0])
     if q.get("multiSelect"):
-        vals = [o["value"] for o in q["options"]]
+        vals = [v for o in q["options"] for v in _vals(o)]
         return [v for v in cur or [] if v in vals]
     return cur
+
+
+def _vals(o):
+    """An option's value as a list: a multiSelect option may stand for several config values."""
+    return o["value"] if isinstance(o["value"], list) else [o["value"]]
 
 
 def _derived(q, det, cfg):
@@ -391,11 +408,20 @@ def _host_options(det, cfg):
     return [{"label": n, "value": n, "description": hosts[n].get("description", "")} for n in names], len(names) > 4
 
 
-def onboard_questions(cfg, det, wt):
-    """The form as the skill asks it: AskUserQuestion calls of at most 4 questions (each current value first and marked),
-    the free-text questions, and what detect answered."""
+def _set_in(layers, q):
+    """The layer that already sets every config key a question owns above the kit defaults, else None."""
+    keys = _keys(q) or sorted({k for o in q.get("options") or [] for k in o.get("sets", {})})
+    src = sources(layers)
+    found = [next((l for k, (_, l) in src.items() if k == key or k.startswith(key + ".")), "kit") for key in keys]
+    return found[0] if keys and all(l != "kit" for l in found) else None
+
+
+def onboard_questions(cfg, det, wt, layers=None, ask_all=False):
+    """The form as the skill asks it: one AskUserQuestion call of at most 4 questions (each current value first and
+    marked), what detect answered, what is left unset, and what is skipped because this machine already sets it
+    (everything is asked with *ask_all*). The expectations are an open question in chat, not part of a call."""
     f = form()
-    ask, plain, derived = [], [], {}
+    ask, plain, derived, unset, skipped = [], [], {}, [], {}
     for q in f["questions"]:
         if q.get("derive"):
             v = _derived(q, det, cfg)
@@ -405,31 +431,32 @@ def onboard_questions(cfg, det, wt):
             if v not in (None, ""):
                 derived[q["id"]] = v
                 continue
+            if q.get("derive_only"):  # never asked: set later with config set
+                if _current(q, cfg, wt) in (None, ""):
+                    unset.append(q["id"])
+                continue
         cur = _current(q, cfg, wt)
         if q.get("free"):
             plain.append({"id": q["id"], "question": q["question"], "current": cur})
             continue
-        text, opts = q["question"], q.get("options")
-        if q.get("options_from") == "hosts":
-            opts, many = _host_options(det, cfg)
-            if len(opts) < 2:  # no plugin to pick from: typed in chat
-                plain.append({"id": q["id"], "question": text, "current": cur})
+        if not ask_all and layers:
+            where = _set_in(layers, q) if q["id"] != "domain" else "CLAUDE.local.md" if det.get("marker") is not None else None
+            if where:
+                skipped[q["id"]] = where
                 continue
-            text += " (Other: type a plugin name.)" if many else ""
         if q.get("multiSelect"):
-            out = [{"label": _label(o, o["value"] in cur), "description": o["description"]} for o in opts]
+            out = [{"label": _label(o, all(v in cur for v in _vals(o))), "description": o["description"]} for o in q["options"]]
         else:
-            match = [o for o in opts if o["value"] == cur or (o["value"] == "$default" and cur == _dig(DEFAULTS, _keys(q)[0]))]
-            rest = [o for o in opts if o not in match]
+            match = [o for o in q["options"] if o["value"] == cur or (o["value"] == "$default" and cur == _dig(DEFAULTS, _keys(q)[0]))]
+            rest = [o for o in q["options"] if o not in match]
             first = [{**match[0], "label": _label(match[0], True)}] if match else \
                 [] if cur in (None, "") else [{"label": f"{_short(cur)} (current)", "description": "keep the value set now"}]
             out = [{"label": o["label"], "description": o["description"]} for o in first + rest]
-            if len(out) > 4:  # the last options make room for the current one; Other still takes them
-                text += " (Other takes any value: " + ", ".join(o["label"] for o in out[4:]) + ", or your own.)"
-                out = out[:4]
-        ask.append({"id": q["id"], "question": text, "header": q["header"], "multiSelect": bool(q.get("multiSelect")), "options": out})
-    return {"calls": [ask[i:i + 4] for i in range(0, len(ask), 4)], "plain": plain, "derived": derived, "followups": f["followups"],
-            "expectations": f["expectations"], "fixed": f["fixed"], "closing": f["closing"]}
+        ask.append({"id": q["id"], "question": q["question"], "header": q["header"], "multiSelect": bool(q.get("multiSelect")), "options": out})
+    x = f["expectations"]
+    return {"calls": [ask[i:i + 4] for i in range(0, len(ask), 4)], "plain": plain, "derived": derived, "unset": unset, "skipped": skipped,
+            "followups": f["followups"], "expectations": {"question": x["question"], "ask": ask_all or not det.get("project")},
+            "fixed": f["fixed"], "defaults_note": f["defaults_note"], "closing": f["closing"]}
 
 
 def _value(q, a, parse=True):
@@ -450,7 +477,12 @@ def _values(q, a):
     """A multiSelect answer as a list: [] for none ('none', '', [])."""
     if isinstance(a, str):
         a = [] if a.strip().lower() in ("", "none") else [s for s in re.split(r"\s*,\s*", a.strip())]
-    return [_value(q, x) for x in a or [] if not (isinstance(x, str) and x.strip().lower() == "none")]
+    out = []
+    for x in a or []:
+        if not (isinstance(x, str) and x.strip().lower() == "none"):
+            v = _value(q, x)
+            out += v if isinstance(v, list) else [v]
+    return out
 
 
 def onboard_changes(answers, layers, level=None, wt=None):
@@ -460,12 +492,22 @@ def onboard_changes(answers, layers, level=None, wt=None):
     f, cfg = form(), merged(layers)
     qs = f["questions"] + f["followups"]
     extras, want = {}, {}
+    gone = sorted(set(answers) - {q["id"] for q in qs} - {"expectations"})
+    if gone:
+        extras["ignored"] = gone  # ids an older form asked: each keeps its current value
     for q in qs:
         if q["id"] not in answers:
             continue
         a = answers[q["id"]]
         if not q.get("multiSelect") and isinstance(a, str) and CURRENT.search(a):
             continue  # keep: a "(current)" label is a display, never a value
+        if any("sets" in o for o in q.get("options") or []):
+            o = next((o for o in q["options"] if o["value"] == _value(q, a)), None)
+            if not o:
+                sys.exit(f"bosskit: {q['id']}: answer one of " + ", ".join(o["label"] for o in q["options"]))
+            for key, v in o["sets"].items():
+                want[key] = (q, v)
+            continue
         if q["id"] in ("name", "domain", "folder"):
             extras.setdefault(q["id"], _value(q, a, parse=False))  # the question with options first: "Main boss" is ""
             continue
@@ -510,7 +552,9 @@ def set_section(text, heading, body):
 
 
 def onboard_apply(answers, name=None, level=None, apply=False, cwd=None, now=None):
-    """The resolved config, BOSS.md and CLAUDE.local.md after the answers, as text; with apply, writes them."""
+    """The resolved config, BOSS.md and CLAUDE.local.md after the answers, as text (a dry run). With apply (answering the
+    form is the consent: no further prompt), writes them and returns one short summary: each file, what changed, its
+    backup, and how to change anything later."""
     h, wt = home(), worktree(cwd)
     name = name or answers.get("name") or project_name(cwd, h)
     if os.path.isfile(layer_path(h, "project", name)):
@@ -518,34 +562,65 @@ def onboard_apply(answers, name=None, level=None, apply=False, cwd=None, now=Non
     else:  # a new project: boss-init writes its folder first
         layers = config_layers(h, name, boss_id(cwd, h))
     changes, extras = onboard_changes(answers, layers, level, wt)
-    text = write_layers(layers, changes, apply, now)
+    done = []
+    text = write_layers(layers, changes, apply, now, done)
+    verb = "wrote" if apply else "would write"
     if "expectations" in extras:
         path = os.path.join(h, name, "BOSS.md")
-        text += f"\n\n{'wrote' if apply else 'would write'} {path}, ## Expectations:\n{extras['expectations']}"
+        text += f"\n\n{verb} {path}, ## Expectations:\n{extras['expectations']}"
         if apply:
             old = _read(path)
-            if old:
-                shutil.copy2(path, f"{path}.bak-{int(now or time.time())}")
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            open(path, "w").write(set_section(old, form()["expectations"]["heading"], extras["expectations"]))
+            new = set_section(old, form()["expectations"]["heading"], extras["expectations"])
+            if new != old:  # the same words again write nothing
+                bak = f"{path}.bak-{int(now or time.time())}" if old else None
+                if bak:
+                    shutil.copy2(path, bak)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                open(path, "w").write(new)
+                done.append((path, bak, "## Expectations"))
+    local, have = os.path.join(wt, "CLAUDE.local.md"), boss_domain(wt)
+    lines, note = "", ""
     if extras.get("domain"):
-        local, have = os.path.join(wt, "CLAUDE.local.md"), boss_domain(wt)
         lines = f"Domain: {extras['domain']}\n" + (f"Folder: {extras['folder']}\n" if extras.get("folder") not in (None, "", extras["domain"]) else "")
         if have and have != extras["domain"]:
-            text += f"\n\n{local} already says Domain: {have}; not changed (edit it yourself to make this boss {extras['domain']})"
-        elif not have:
-            text += f"\n\n{'added to' if apply else 'would add to'} {local}:\n{lines}"
-            if apply:
-                old = _read(local)
-                open(local, "w").write(old + ("\n" if old and not old.endswith("\n") else "") + lines)
-    return text + ("" if apply else "\n\n(dry run: nothing written; add --apply to write)")
+            note += f"\n\n{local} already says Domain: {have}; not changed (edit it yourself to make this boss {extras['domain']})"
+            lines = ""
+        elif have:
+            lines = ""
+    mark = boss_marker(wt)
+    if mark is None:  # this worktree becomes the boss: the marker, bound to this session when it has one
+        bid = boss_id(cwd, h)
+        lines += "# Boss workspace" + ("" if bid.startswith("wt-") else f" {bid}") + "\n"
+    elif mark != "" and mark != boss_id(cwd, h):
+        note += f"\n\n{local} binds the boss to workspace {mark}, not this session; not changed"
+    if lines:
+        text += f"\n\n{'added to' if apply else 'would add to'} {local}:\n{lines}"
+        if apply:
+            old = _read(local)
+            bak = f"{local}.bak-{int(now or time.time())}" if old else None
+            if bak:
+                shutil.copy2(local, bak)
+            open(local, "w").write(old + ("\n" if old and not old.endswith("\n") else "") + lines)
+            done.append((local, bak, " ".join(l.split(":")[0] for l in lines.splitlines())))
+    text += note
+    if extras.get("ignored"):
+        ign = f"ignored, no longer asked (each keeps its current value): {', '.join(extras['ignored'])}"
+        text += f"\n\n{ign}"
+    if not apply:
+        return text + "\n\n(dry run: nothing written; add --apply to write)"
+    out = [f"Onboarded {name}. " + ("Wrote:" if done else "Nothing to write: every answer matches what is set.")]
+    out += [f"  {p}  ({what})" + (f"  backup {b}" if b else "  (new)") for p, b, what in done]
+    out += [n.strip() for n in note.split("\n\n") if n.strip()]
+    out += [ign] if extras.get("ignored") else []
+    return "\n".join(out + [("Undo: copy a .bak-<time> over its file. " if any(b for _, b, _ in done) else "") + form()["defaults_note"]])
 
 
 def questions_text(q_out):
     """The form as plain text, for bin/boss-init --questions: each question's id, options and current value."""
     f = form()
     out = ["The /boss onboarding form. Answer in a JSON file, {\"<id>\": <answer>, ...}: an option's label or value, a list for a",
-           "check-any question ([] or \"none\" for none), or your own text. Leave an id out to keep its current value. Then:",
+           "check-any question ([] or \"none\" for none), or your own text; expectations is your own words. Leave an id out to keep",
+           "its current value. There is no confirm step: applying the answers writes them. Then:",
            "  boss-init <name> --answers FILE    (a new project)",
            "  bosskit.py onboard apply FILE [--level user|project|boss] [--apply]    (an existing one)", ""]
     for line in f["fixed"]:
@@ -553,7 +628,8 @@ def questions_text(q_out):
     for k, v in q_out["derived"].items():
         out.append(f"Derived: {k} = {json.dumps(v)}")
     for q in f["questions"] + f["followups"] + [f["expectations"]]:
-        where = ", ".join(_keys(q) + [q["level"]] if _keys(q) else []) or ("BOSS.md " + q["heading"] if q.get("heading") else q["id"])
+        ks = _keys(q) or sorted({k for o in q.get("options") or [] for k in o.get("sets", {})})
+        where = ", ".join(ks + [q["level"]] if ks else []) or ("BOSS.md " + q["heading"] if q.get("heading") else q["id"])
         out.append(f"\n{q['id']}  [{where}{', any of' if q.get('multiSelect') else ''}]  {q['question']}")
         out += [f"    {json.dumps(o['value']):<16} {o['label']}: {o['description']}".rstrip(": ") for o in q.get("options") or []]
     return "\n".join(out + ["", f["closing"]]) + "\n"
@@ -969,14 +1045,15 @@ def detect(cwd=None):
 
 
 def onboard_cmd(args):
-    """bosskit.py onboard questions [--text] | apply FILE [--project NAME] [--level L] [--apply]"""
+    """bosskit.py onboard questions [--text] [--all] | apply FILE [--project NAME] [--level L] [--apply]"""
     sub = args[0] if args else ""
     if sub == "questions":
         try:
-            cfg = load(make=False, resolve_host=False).cfg
+            layers = load(make=False, resolve_host=False).layers
         except SystemExit:  # no project yet: the shared layers
-            cfg = merged(base_layers(home()))
-        q = onboard_questions(cfg, detect(), worktree())
+            layers = base_layers(home())
+        cfg = merged(layers)
+        q = onboard_questions(cfg, detect(), worktree(), layers, "--all" in args)
         return questions_text(q) if "--text" in args else json.dumps(q, indent=1)
     if sub == "apply" and len(args) > 1:
         level = args[args.index("--level") + 1] if "--level" in args[:-1] else None

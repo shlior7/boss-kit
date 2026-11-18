@@ -116,11 +116,11 @@ test('the boss pane shows an attention line once the kit on disk moves past the 
   await run()
   const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const texts = async () => (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
-  expect(await texts()).not.toContain('kit updated · run /reload-plugins')
+  expect(await texts()).not.toContain('kit updated · restart: claude --continue')
   kit = 'e4f5a6b'
   await run()
   const after = await texts()
-  expect(after).toContain('kit updated · run /reload-plugins')
+  expect(after).toContain('kit updated · restart: claude --continue')
   expect(after.find(t => t.startsWith('web-login'))?.replace(/ +/g, ' ')).toBe('web-login #57 in review · 3 behind main · waiting on review')
 })
 
