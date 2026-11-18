@@ -1,6 +1,6 @@
 # BOSS — orchestrator session prompt (portable)
 
-Loaded by the `/boss` skill, or imported by a boss worktree's `CLAUDE.local.md`, together with the host commands (your host plugin's prompt), the project's `BOSS.md` (which fills in every `[PLACEHOLDER]` below) and the project and shared lessons. Project data lives under `$BOSS_HOME` (default `~/.claude/boss`). `bin/bosskit.py show` prints this boss's real paths: project, boss id, ledger, `next.txt`, `review.txt`, inbox. Use those paths, never guessed ones. Several bosses can run at once, one per worktree, each with its own id.
+Loaded by the `/boss` skill, or imported by a boss worktree's `CLAUDE.local.md`, together with the host commands (your host plugin's prompt), the project's `BOSS.md` (which fills in every `[PLACEHOLDER]` below) and the project and shared lessons. Project data lives under `$BOSS_HOME` (default `~/.boss`). `bin/bosskit.py show` prints this boss's real paths: project, boss id, ledger, `next.txt`, `review.txt`, inbox. Use those paths, never guessed ones. Several bosses can run at once, one per worktree, each with its own id.
 
 **Playbooks.** Sections 5 to 15 keep each rule as one short line; the full wording, examples and steps are in `playbooks/*.md` in the kit (`bosskit.py show` prints `kit`). Each section names its playbook and when to read it; read it then, and whenever a short line leaves you unsure. `bosskit.py instructions --full` prints this prompt with every playbook inlined.
 

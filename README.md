@@ -74,7 +74,7 @@ flowchart LR
 
 ## Code and data
 
-The kit is code. Your data lives outside it, in **`$BOSS_HOME`** (default `~/.claude/boss`):
+The kit is code. Your data lives outside it, in **`$BOSS_HOME`** (default `~/.boss`, one home for bosses on every provider). An older install keeps `~/.claude/boss` until `bin/boss-migrate --apply` (run by `bin/boss-kit-update`) moves it to `~/.boss` and leaves a symlink behind, so old paths still work:
 
 ```
 $BOSS_HOME/
@@ -291,9 +291,9 @@ The short way: start Claude Code in the worktree that will be the boss and run `
 
    @~/.claude/boss-kit/BOSS-template.md
    @~/.claude/boss-kit/hosts/<host>/prompt.md
-   @~/.claude/boss/widgets/BOSS.md
-   @~/.claude/boss/widgets/lessons.md
-   @~/.claude/boss/lessons.md
+   @~/.boss/widgets/BOSS.md
+   @~/.boss/widgets/lessons.md
+   @~/.boss/lessons.md
    ```
 
    `<host>` is the host plugin this boss uses (`bin/boss-host kind`): its prompt holds the host commands, and it goes right after the template line. `bin/boss-init` prints this file for a new project; `bin/boss-migrate --apply` adds the missing host line to the `CLAUDE.local.md` of every registered boss that imports the template without it.
@@ -333,8 +333,8 @@ sequenceDiagram
 **1. Dispatch.** The boss reuses the workspace that already owns the work (matched by branch or PR) and sends it a self-contained prompt, or starts a new worker:
 
 ```bash
-boss-host send <worker> --file ~/.claude/boss/widgets/prompts/fix-42.txt
-boss-host create --repo acme/widgets --branch fix/retry-backoff --model opus --prompt-file ~/.claude/boss/widgets/prompts/fix-42.txt --task "fix-42: retry backoff"
+boss-host send <worker> --file ~/.boss/widgets/prompts/fix-42.txt
+boss-host create --repo acme/widgets --branch fix/retry-backoff --model opus --prompt-file ~/.boss/widgets/prompts/fix-42.txt --task "fix-42: retry backoff"
 ```
 
 A prompt names the task id, the objective, the files it may touch, how to verify, the rules to follow, and ends with the envelope:

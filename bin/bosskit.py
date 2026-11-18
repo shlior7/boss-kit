@@ -3,7 +3,7 @@
 lessons, and the instruction loader. Every bin/ script imports it.
 
 Code is the kit ($BOSS_KIT_HOME, else the folder above bin/). Data is $BOSS_HOME (default
-~/.claude/boss):
+~/.boss, shared by bosses on every provider; ~/.claude/boss until bin/boss-migrate moves it):
 
   bosses.json                     registry: boss id -> project, workspace, worktree, host, heartbeat
   lessons.md                      shared lessons, for every boss
@@ -117,7 +117,11 @@ QUESTIONS = os.path.join(KIT, "skills", "boss", "questions.json")  # the onboard
 
 
 def home():
-    return os.environ.get("BOSS_HOME") or os.path.expanduser("~/.claude/boss")
+    if os.environ.get("BOSS_HOME"):
+        return os.environ["BOSS_HOME"]
+    new, old = os.path.expanduser("~/.boss"), os.path.expanduser("~/.claude/boss")
+    # Until boss-migrate moves it, data in the old default stays where it is. Mirrored in bin/boss-init.
+    return old if not os.path.exists(new) and os.path.isdir(old) else new
 
 
 def _git(cwd, *args):

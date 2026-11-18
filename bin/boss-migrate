@@ -3,6 +3,9 @@
 
   boss-migrate [--kit DIR] [--boss ID] [--apply]
 
+First, unless $BOSS_HOME is set: the old default data folder ~/.claude/boss -> ~/.boss (when ~/.boss is missing or
+empty), with a symlink back. When both hold data it says so and changes neither.
+
 Finds, in the old kit (default: this kit):
   projects/<name>/      (v0.3-v0.4 layout)          -> $BOSS_HOME/<name>/
   state/<name>/         (v0.3-v0.4 runtime state)   -> $BOSS_HOME/<name>/bosses/<boss>/
@@ -45,6 +48,26 @@ def plan(kit, home, boss):
     return ops
 
 
+def move_home(apply):
+    """Move the old default data folder ~/.claude/boss to ~/.boss and leave a symlink back, so running bosses,
+    absolute paths in ledgers and @~/.claude/boss/... imports keep working. Never overwrites. True when there is a move."""
+    if os.environ.get("BOSS_HOME"):
+        return False
+    old, new = os.path.expanduser("~/.claude/boss"), os.path.expanduser("~/.boss")
+    if os.path.islink(old) or not os.path.isdir(old):
+        return False
+    if os.path.lexists(new) and not (os.path.isdir(new) and not os.path.islink(new) and not os.listdir(new)):
+        print(f"skip  {old}  ({new} already exists: both have data, merge them by hand, then ln -s {new} {old})")
+        return False
+    print(f"{'move' if apply else 'would move'}  {old}  ->  {new}  (+ symlink back)")
+    if apply:
+        if os.path.isdir(new):
+            os.rmdir(new)
+        os.rename(old, new)
+        os.symlink(new, old)
+    return True
+
+
 def host_imports(home, cwd=None):
     """[(CLAUDE.local.md path, its text with the host prompt import)] for the boss worktrees that lack it."""
     wts = {}
@@ -77,6 +100,7 @@ def main():
     ap.add_argument("--boss", default=bosskit.self_id() or "migrated")
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args()
+    moved = move_home(args.apply)
     kit, home = os.path.abspath(args.kit), bosskit.home()
     ops, fixes = plan(kit, home, args.boss), host_imports(home)
     for path, text in fixes:
@@ -95,7 +119,7 @@ def main():
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.move(src, dst)
             os.symlink(dst, src)
-    if (ops or fixes) and not args.apply:
+    if (moved or ops or fixes) and not args.apply:
         print("dry run: nothing changed. Re-run with --apply.")
 
 

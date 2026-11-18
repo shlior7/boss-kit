@@ -439,6 +439,83 @@ class Migrate(unittest.TestCase):
         self.assertIn("nothing to move", run("--apply").stdout)
 
 
+class BossHome(unittest.TestCase):
+    """~/.boss is the default; ~/.claude/boss until boss-migrate moves it. Every test runs on a temp $HOME."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.new, self.old = os.path.join(self.tmp, ".boss"), os.path.join(self.tmp, ".claude", "boss")
+        self.kit = os.path.join(self.tmp, "kit")
+        os.makedirs(self.kit)
+        self.env = {k: v for k, v in os.environ.items() if k != "BOSS_HOME"} | {"HOME": self.tmp}
+
+    def home(self, **extra):
+        with mock.patch.dict(os.environ, {**self.env, **extra}, clear=True):
+            return bosskit.home()
+
+    def migrate(self, *a, **extra):
+        return subprocess.run([sys.executable, os.path.join(BIN, "boss-migrate"), "--kit", self.kit, "--boss", "b1", *a],
+                              env={**self.env, **extra}, cwd=self.tmp, capture_output=True, text=True)
+
+    def old_data(self):
+        os.makedirs(os.path.join(self.old, "widgets"))
+        open(os.path.join(self.old, "widgets", "BOSS.md"), "w").write("w")
+
+    def test_default_is_dot_boss_and_the_old_folder_until_it_moves(self):
+        self.assertEqual(self.home(), self.new)
+        self.old_data()
+        self.assertEqual(self.home(), self.old)
+        os.makedirs(self.new)
+        self.assertEqual(self.home(), self.new)
+        self.assertEqual(self.home(BOSS_HOME="/x/y"), "/x/y")
+
+    def test_boss_init_resolves_the_same_home(self):
+        init = lambda: subprocess.run(["bash", os.path.join(BIN, "boss-init"), "widgets"], env=self.env,
+                                      capture_output=True, text=True).stderr
+        self.old_data()
+        self.assertIn(f"{self.old}/widgets already exists", init())
+        os.makedirs(os.path.join(self.new, "widgets"))
+        self.assertIn(f"{self.new}/widgets already exists", init())
+
+    def test_migrate_moves_the_folder_and_links_back_then_is_a_no_op(self):
+        self.old_data()
+        out = self.migrate().stdout
+        self.assertIn(f"would move  {self.old}  ->  {self.new}", out)
+        self.assertIn("dry run", out)
+        self.assertFalse(os.path.exists(self.new))
+        self.migrate("--apply")
+        self.assertEqual(os.readlink(self.old), self.new)
+        self.assertEqual(open(os.path.join(self.new, "widgets", "BOSS.md")).read(), "w")
+        self.assertEqual(open(os.path.join(self.old, "widgets", "BOSS.md")).read(), "w")  # old paths still work
+        self.assertEqual(self.home(), self.new)
+        again = self.migrate("--apply").stdout
+        self.assertNotIn("move  ", again)
+        self.assertIn("nothing to move", again)
+
+    def test_migrate_replaces_an_empty_dot_boss(self):
+        self.old_data()
+        os.makedirs(self.new)
+        self.migrate("--apply")
+        self.assertTrue(os.path.islink(self.old))
+        self.assertTrue(os.path.isfile(os.path.join(self.new, "widgets", "BOSS.md")))
+
+    def test_migrate_refuses_when_both_hold_data(self):
+        self.old_data()
+        os.makedirs(self.new)
+        open(os.path.join(self.new, "lessons.md"), "w").write("mine")
+        out = self.migrate("--apply").stdout
+        self.assertIn("both have data", out)
+        self.assertFalse(os.path.islink(self.old))
+        self.assertEqual(sorted(os.listdir(self.new)), ["lessons.md"])
+
+    def test_migrate_leaves_an_explicit_boss_home_alone(self):
+        self.old_data()
+        out = self.migrate("--apply", BOSS_HOME=os.path.join(self.tmp, "custom")).stdout
+        self.assertNotIn(self.new, out)
+        self.assertFalse(os.path.exists(self.new))
+        self.assertFalse(os.path.islink(self.old))
+
+
 class Lessons(Home):
     def lesson(self, *args):
         out = io.StringIO()
