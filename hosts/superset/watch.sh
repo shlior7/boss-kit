@@ -6,19 +6,23 @@
 #     outside a `--max-lines 30` window (a one-line regex timed out at 30 and matched at once at 60).
 #  2. Workers wrap the envelope: `BOSS_WORKER_DONE` on one line, `task: x` on the next, so a one-line regex never matches.
 #     (The older token SUPERSET_WORKER_DONE / _BLOCKED counts the same, everywhere below.)
-#  3. `terminals read` returns only the visible screen (64 rows) even with `--max-lines 600`; an envelope taller than the
-#     screen loses its first line before a 20 s poll sees it.
+#  3. `terminals read` returns only the visible screen, which is as tall as the worker's pane (often 32 rows) even with
+#     `--max-lines 600`; an envelope taller than the pane never shows its first line (a 46-row reply box in a 32-row pane
+#     fired 17.7 h late, once the pane had grown taller).
 # So: (a) `sig` strips the box and side pane, joins the token with the next non-empty line, and counts an envelope only when
 # the token is directly followed by `task: <id>` (prose like "the BOSS_WORKER_DONE envelope for task x" never fires;
 # templates whose field value is <placeholder> or literally "..." are skipped, and so is the PR comment's hidden marker
 # <!-- BOSS_WORKER_DONE task: x -->, which a dispatch prompt quotes with the real id); (b) the optional <branch> adds a check that does not depend on the screen:
 # about every 3rd poll, `gh pr list --head <branch> --state all` fires "PR READY #n" when a PR gets a comment holding a DONE
 # envelope or its hidden marker, becomes non-draft or merges, and was not so at start (run from the repo, or set GH_REPO).
+# (c) When the screen shows no new envelope, `said` reads the worker's last replies from its Claude Code transcript
+# ($CLAUDE_CONFIG_DIR or ~/.claude, projects/<worktree path with every non-alphanumeric as ->/<newest>.jsonl) through the same `sig`,
+# against its own baseline, so an envelope taller than the pane still fires.
 # Workers keep their PR draft and post a status comment ending with the marker there; the boss marks it ready. `--ready < pr-list.json` prints the numbers (tests/test-watch.sh).
-# Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen, 135 (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
+# Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen (digits ignored: a status-line clock ticks every minute), 135 (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
 # On a fire it logs the stage to the boss's events.jsonl through bin/boss-event (DONE, BLOCKED, PR READY or merged), for the boss-deck stages.
 # Env: BOSS_HOST (default: first host), BOSS_HOST_CLI (default: superset); boss-host sets both to what the adapter resolved.
-# Poll 20 s, timeout 3 h. Needs the superset CLI, jq (gh for <branch>).
+# Poll 20 s, timeout 3 h (BOSS_WATCH_POLL_S, BOSS_WATCH_POLLS: 540). Needs the superset CLI, jq (gh for <branch>).
 # It reads the screen: this host's workers leave the envelope there.
 # `sig` ignores any line whose box border starts past column 20 (the boss's own message box, which may quote a done-message with real values).
 # `sig` is "DONE|<id>|<first 30 chars of summary>" (or BLOCKED), so a new envelope with an already-seen task id still differs from the
@@ -48,17 +52,25 @@ W=$1; T=$2; B=$3
 ev(){ "${BOSS_BIN:-$(dirname "$0")/../../bin}/boss-event" "$W" "$@" >/dev/null 2>&1 || true; }
 S=${BOSS_HOST_CLI:-superset}
 H=${BOSS_HOST:-$("$S" hosts list --json | jq -r 'if type=="array" then .[0].id else .hosts[0].id end')}
+WT=$("$S" workspaces list --host "$H" --json 2>/dev/null | jq -r --arg w "$W" '(if type == "array" then . else .workspaces end)[]? | select(.id == $w) | .worktreePath // empty')
+TD=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$(printf %s "$WT" | sed 's/[^A-Za-z0-9]/-/g')
+said(){ local f; [ -n "$WT" ] && f=$(ls -t "$TD"/*.jsonl 2>/dev/null | head -1) && [ -n "$f" ] || return 0
+  tail -n 400 "$f" | jq -Rrn '[inputs | fromjson? | select(.type? == "assistant") | .message.content[]? | select(.type? == "text") | .text] | .[-5:][]' 2>/dev/null | tr -d '*`'; }
 scr(){ "$S" terminals read --workspace "$W" --host "$H" --terminal "$T" --max-lines 600 --json 2>/dev/null | jq -r '.text // empty'; }
 # numbers of this branch's PRs that count as done (pick); fails when gh does
 ready(){ local j; j=$(gh pr list --head "$B" --state all --json number,isDraft,state,comments 2>/dev/null) || return 1
   echo "$j" | pick; }
-base=$(scr | sig); idle=0; lasth=""; prbase=""; prok=0
+base=$(scr | sig); tbase=$(said | sig); idle=0; lasth=""; prbase=""; prok=0
 [ -n "$B" ] && prbase=$(ready) && prok=1
-for i in $(seq 1 540); do
-  sleep 20
+for i in $(seq 1 "${BOSS_WATCH_POLLS:-540}"); do
+  sleep "${BOSS_WATCH_POLL_S:-20}"
   txt=$(scr); [ -z "$txt" ] && { echo "TERMINAL GONE (session ended or host restarted)"; exit 0; }
   cur=$(echo "$txt" | sig)
-  if [ -n "$cur" ] && [ "$cur" != "$base" ]; then
+  if [ -z "$cur" ] || [ "$cur" = "$base" ]; then   # not on the screen: the transcript (an envelope taller than the pane)
+    t=$(said); cur=$(echo "$t" | sig)
+    if [ -n "$cur" ] && [ "$cur" != "$tbase" ]; then txt=$t; else cur=; fi
+  fi
+  if [ -n "$cur" ]; then
     n=$(echo "$txt" | grep -nE "(BOSS|SUPERSET)_WORKER_" | tail -1 | cut -d: -f1)
     ev "${cur%%|*}" "$(echo "${cur#*|}" | sed 's/|/: /')"
     echo "ENVELOPE $cur"; echo "$txt" | tail -n +$n | sed 's/││.*$//' | head -60; exit 0
@@ -72,7 +84,7 @@ for i in $(seq 1 540); do
   fi
   st=$("$S" snapshot --host "$H" --json 2>/dev/null | jq -r --arg t "$T" '.. | objects | select(.terminalId? == $t or .id? == $t) | .agent.state // empty' | head -1)
   if [ "$st" = blocked ]; then ev BLOCKED "blocked on input"; echo "AGENT BLOCKED ON INPUT"; echo "$txt" | tail -30 | sed 's/││.*$//'; exit 0; fi
-  h=$(echo "$txt" | tail -25 | cksum)
+  h=$(echo "$txt" | tail -25 | tr -d 0-9 | cksum)
   if [ "$st" = idle ] && [ "$h" = "$lasth" ]; then idle=$((idle+1)); else idle=0; fi
   lasth=$h
   need=9; echo "$txt" | tail -12 | grep -qE "[0-9]+ (shells?|monitors?)|Monitor event" && need=135
