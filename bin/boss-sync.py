@@ -33,7 +33,9 @@ REPO = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=Tr
 if not REPO:
     sys.exit("run inside the git repo")
 DEFAULT = json.loads(sh("gh", "repo", "view", "--json", "defaultBranchRef").stdout)["defaultBranchRef"]["name"]
-STATE_DIR = os.path.join(os.environ.get("BOSS_HOME") or os.path.expanduser("~/.claude/boss"), "sync")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosskit  # noqa: E402
+STATE_DIR = os.path.join(bosskit.home(), "sync")
 os.makedirs(STATE_DIR, exist_ok=True)
 STATE = os.path.join(STATE_DIR, REPO.strip("/").replace("/", "_") + ".json")
 try:
