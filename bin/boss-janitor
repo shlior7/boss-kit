@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""boss-janitor: a safe, idempotent cleanup sweep that makes room on the machine, for this boss's project only.
+
+  boss-janitor status                            memory numbers, and what a sweep would do now
+  boss-janitor sweep [--apply] [--reason TEXT]   a dry run unless --apply AND config `janitor` is "apply"
+
+What a sweep does, each rule keeping anything it is not sure of:
+  orphans    processes of yours with ppid 1, <1% CPU (theirs and their children's), at least 30 min old, whose cwd is in
+             the worktree of one of this boss's workers with an idle agent, and whose command is next, jest-worker,
+             playwright, chromium, vitest, tsc, yarn, or node running jest-worker or next: SIGTERM, a short wait, then
+             SIGKILL, by exact pid, children first
+  dead tabs  bin/boss-close --dead for this boss's own workers (the ledger rows naming this boss)
+  temp       /private/tmp/review-* git worktrees that no process holds, with nothing uncommitted or unpushed
+             (git worktree remove); and the entries of claude-<uid> under /private/tmp and $TMPDIR older than 7 days
+             that no process holds (removed by exact resolved path, never through a symlink)
+
+Each action is one line in <data home>/<project>/janitor.log (pid or path, owner, age, reason); a sweep that changed
+something adds one line to the project's ledger. A file `janitor.off` in the data home turns sweeps off.
+"""
+import glob
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosshost  # noqa: E402
+import bosskit  # noqa: E402
+
+BIN = os.path.dirname(os.path.abspath(__file__))
+TOOLS = {"next", "next-server", "jest-worker", "playwright", "chromium", "vitest", "tsc", "yarn"}
+MIN_AGE_S = 30 * 60
+MAX_CPU = 1.0
+TEMP_AGE_S = 7 * 86400
+TMP = "/private/tmp"
+TERM_WAIT_S = 5
+
+
+def sh(argv, timeout=30):
+    """stdout, or None when the command failed or is missing."""
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def memory():
+    """The numbers bin/mem-gate --status reads: pressure level (1 normal, 2 warn, 4 critical), available %, swap %."""
+    swap = re.findall(r"(total|used) = ([\d.]+)M", sh(["sysctl", "-n", "vm.swapusage"]) or "")
+    s = {k: float(v) for k, v in swap}
+    return {"level": (sh(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"]) or "?").strip(),
+            "free": (sh(["sysctl", "-n", "kern.memorystatus_level"]) or "?").strip(),
+            "swap": int(s["used"] * 100 / s["total"]) if s.get("total") else 0,
+            "swap_gb": round(s.get("used", 0) / 1024, 1)}
+
+
+def etime_s(t):
+    """ps etime ([[dd-]hh:]mm:ss) in seconds."""
+    days, _, rest = t.rpartition("-")
+    parts = [int(p) for p in rest.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    return int(days or 0) * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
+def procs():
+    """{pid: {pid, ppid, cpu, age, args}} of this user's processes."""
+    out = {}
+    for line in (sh(["ps", "-xo", "pid=,ppid=,pcpu=,etime=,args="]) or "").splitlines():
+        f = line.split(None, 4)
+        if len(f) == 5:
+            out[int(f[0])] = {"pid": int(f[0]), "ppid": int(f[1]), "cpu": float(f[2]), "age": etime_s(f[3]), "args": f[4]}
+    return out
+
+
+def cwds(pids):
+    """{pid: cwd} from lsof; a pid lsof cannot read is missing (its cwd is unknown)."""
+    out, pid = {}, None
+    for line in (sh(["lsof", "-a", "-d", "cwd", "-p", ",".join(map(str, pids)), "-Fpn"]) or "").splitlines() if pids else ():
+        if line.startswith("p"):
+            pid = int(line[1:])
+        elif line.startswith("n") and pid:
+            out[pid] = line[1:]
+    return out
+
+
+def open_paths():
+    """Every path any process has open (cwds included), or None when lsof cannot say: then nothing counts as unheld."""
+    raw = sh(["lsof", "-n", "-P", "-Fn"], timeout=120)
+    return None if raw is None else {line[1:] for line in raw.splitlines() if line.startswith("n/")}
+
+
+def tool(args):
+    """Whether a command line is one of the dev tools a finished worker leaves behind."""
+    name = os.path.basename(args.split()[0]) if args.split() else ""
+    if name == "node":
+        return "jest-worker" in args or "/next/" in args or "/.bin/next" in args
+    return name in TOOLS
+
+
+def under(path, root):
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def age_txt(s):
+    s = int(s)
+    return f"{s // 86400}d{s % 86400 // 3600}h" if s >= 86400 else f"{s // 3600}h{s % 3600 // 60:02d}m"
+
+
+# ---- whose: this boss's workers and their worktrees ------------------------------------------
+
+def _deck():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("boss_deck_data", os.path.join(BIN, "boss-deck-data.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def own_workers(ctx):
+    """This boss's workers, as the host lists them: the ledger rows naming this boss (or no boss), never its own workspace.
+    [] when the host cannot be read, so nothing is touched."""
+    deck = _deck()
+    tasks = deck.ledger_tasks(os.path.join(ctx.pdir, ctx.cfg.get("ledger", "ledger.md")))
+    ids = [p for p, row in tasks.items() if deck.is_mine(row[4], ctx.bid) and not (ctx.workspace and p == ctx.workspace[:8])]
+    if not ids:
+        return []
+    try:
+        return [w for w in bosshost.get(ctx.cfg).workers(ids) or [] if w.get("id", "")[:8] in ids]
+    except (SystemExit, Exception) as e:  # an unreadable host: act on nothing
+        print(f"boss-janitor: cannot list workers ({e}); orphans and dead tabs skipped")
+        return []
+
+
+def roots(workers):
+    """{resolved worktree: {id, name, idle}}; idle = no agent terminal is working or blocked."""
+    out = {}
+    for w in workers:
+        if w.get("worktree"):
+            states = [t["agent"].get("state") for t in w.get("terminals", []) if t.get("agent")]
+            out[os.path.realpath(w["worktree"])] = {"id": w["id"][:8], "name": w.get("name", ""),
+                                                     "idle": all(s == "idle" for s in states)}
+    return out
+
+
+# ---- rule 1: orphans -------------------------------------------------------------------------
+
+def tree(table, pid):
+    """pid and its descendants, children first."""
+    out = []
+    for c in sorted(p for p, r in table.items() if r["ppid"] == pid):
+        out += tree(table, c)
+    return out + [pid]
+
+
+def orphans(table, cwd_of, own):
+    """(act, keep): act = [{pid, pids (children first), owner, age, reason}], keep = [(pid, why)] for the tool orphans left alone."""
+    act, keep = [], []
+    for pid, p in sorted(table.items()):
+        if p["ppid"] != 1 or not tool(p["args"]):
+            continue
+        name = os.path.basename(p["args"].split()[0])
+        pids = tree(table, pid)
+        # shortcut: ps %cpu is the kernel's decaying average (about a minute), not a sampled window; sample twice if it misfires
+        busy = max(table[q]["cpu"] for q in pids)
+        cwd = cwd_of.get(pid)
+        root = next((r for r in own if cwd and under(os.path.realpath(cwd), r)), None)
+        why = ("young" if p["age"] < MIN_AGE_S else f"busy ({busy:.1f}% CPU)" if busy >= MAX_CPU else "unknown cwd" if not cwd
+               else f"not this boss's worktree ({cwd})" if not root else f"agent not idle ({own[root]['id']})" if not own[root]["idle"]
+               else "")
+        if why:
+            keep.append((pid, f"{name}: {why}"))
+        else:
+            act.append({"pid": pid, "pids": pids, "owner": own[root]["id"], "age": p["age"],
+                        "reason": f"idle orphan {name} in {cwd}" + (f" (+{len(pids) - 1} children)" if len(pids) > 1 else "")})
+    return act, keep
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def kill(pids, wait=TERM_WAIT_S):
+    """SIGTERM each exact pid (children first), wait, SIGKILL the ones still there. Never pkill or killall."""
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    end = time.time() + wait
+    while time.time() < end and any(alive(p) for p in pids):
+        time.sleep(0.2)
+    for pid in pids:
+        if alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+# ---- rule 3: temp ----------------------------------------------------------------------------
+
+def held(path, opened):
+    return opened is None or any(under(o, path) for o in opened)
+
+
+def newest_mtime(path):
+    """The newest mtime in a tree, never following a symlink."""
+    best = os.lstat(path).st_mtime
+    for d, dirs, files in os.walk(path, followlinks=False):
+        for n in dirs + files:
+            try:
+                best = max(best, os.lstat(os.path.join(d, n)).st_mtime)
+            except OSError:
+                pass
+    return best
+
+
+def temp_roots():
+    """The resolved claude-<uid> session roots under /private/tmp and $TMPDIR that exist."""
+    found = [os.path.join(TMP, f"claude-{os.getuid()}")] + \
+            ([os.path.join(os.environ["TMPDIR"], f"claude-{os.getuid()}")] if os.environ.get("TMPDIR") else [])
+    return sorted({os.path.realpath(r) for r in found if os.path.isdir(r) and not os.path.islink(r)})
+
+
+def temp(opened, now=None):
+    """(act, keep): act = [{path, kind (worktree | dir), root, age, reason}], keep = [(path, why)]."""
+    now = now or time.time()
+    act, keep = [], []
+    for wt in sorted(glob.glob(os.path.join(TMP, "review-*"))):
+        if os.path.islink(wt) or not os.path.isfile(os.path.join(wt, ".git")):
+            continue  # not a git worktree: not ours to judge
+        status = sh(["git", "-C", wt, "status", "--porcelain"])
+        unpushed = sh(["git", "-C", wt, "log", "--oneline", "HEAD", "--not", "--remotes"])
+        why = ("held open" if held(wt, opened) else "git unreadable" if status is None or unpushed is None
+               else "uncommitted work" if status.strip() else "unpushed commits" if unpushed.strip() else "")
+        if why:
+            keep.append((wt, why))
+        else:
+            act.append({"path": wt, "kind": "worktree", "root": TMP, "age": now - os.lstat(wt).st_mtime,
+                        "reason": "review worktree no process holds"})
+    young = 0
+    for root in temp_roots():
+        for name in sorted(os.listdir(root)):
+            path = os.path.join(root, name)
+            if os.path.islink(path):
+                keep.append((path, "symlink"))
+                continue
+            if not os.path.isdir(path):
+                continue  # session dirs only
+            age = now - newest_mtime(path)
+            if age < TEMP_AGE_S:
+                young += 1
+            elif held(path, opened):
+                keep.append((path, "held open"))
+            else:
+                act.append({"path": path, "kind": "dir", "root": root, "age": age, "reason": "session dir untouched 7+ days"})
+    return act, keep + ([(f"{young} session dir(s)", "younger than 7 days")] if young else [])
+
+
+def remove(a):
+    """Remove one temp entry; returns an error line or ''."""
+    if a["kind"] == "worktree":
+        common = (sh(["git", "-C", a["path"], "rev-parse", "--path-format=absolute", "--git-common-dir"]) or "").strip()
+        if not common:
+            return "git common dir unreadable"
+        r = subprocess.run(["git", f"--git-dir={common}", "worktree", "remove", a["path"]], capture_output=True, text=True)
+        return r.stderr.strip() if r.returncode else ""
+    real = os.path.realpath(a["path"])
+    if os.path.islink(a["path"]) or os.path.dirname(real) != os.path.realpath(a["root"]):
+        return "outside its root, kept"
+    if os.path.isdir(real):
+        shutil.rmtree(real)
+    else:
+        os.remove(real)
+    return ""
+
+
+# ---- rule 2: dead tabs -----------------------------------------------------------------------
+
+def close_dead(ids, apply):
+    """bin/boss-close --dead for these workers: its output lines."""
+    if not ids:
+        return []
+    r = subprocess.run([sys.executable, os.path.join(BIN, "boss-close"), *([] if apply else ["--dry-run"]), "--dead", *ids],
+                       capture_output=True, text=True)
+    return [line for line in (r.stdout + r.stderr).splitlines() if line.strip()]
+
+
+# ---- the sweep -------------------------------------------------------------------------------
+
+def plan(ctx):
+    workers = own_workers(ctx)
+    own = roots(workers)
+    table = procs()
+    cand = [pid for pid, p in table.items() if p["ppid"] == 1 and tool(p["args"])]
+    o_act, o_keep = orphans(table, cwds(cand), own)
+    t_act, t_keep = temp(open_paths())
+    return {"workers": [w["id"][:8] for w in workers], "orphans": o_act, "temp": t_act, "keep": o_keep + t_keep}
+
+
+def log(ctx, line, reason):
+    with open(os.path.join(ctx.pdir, "janitor.log"), "a") as f:
+        f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {line}" + (f" reason={reason}" if reason else "") + "\n")
+
+
+def ledger_line(ctx, text):
+    path = os.path.join(ctx.pdir, ctx.cfg.get("ledger", "ledger.md"))
+    last = bosskit._read(path).rstrip("\n").rsplit("\n", 1)[-1]
+    with open(path, "a") as f:
+        f.write(("\n" if last.startswith("|") else "") + f"- {time.strftime('%Y-%m-%d %H:%M')} {text}\n")
+
+
+def sweep(ctx, apply, reason="", p=None, record=True):
+    """Run (or, without apply, describe) one sweep; returns its lines. record=False (status) writes no log line."""
+    p = p or plan(ctx)
+    note = log if record else (lambda *a: None)
+    verb = "" if apply else "would "
+    out, done = [], 0
+    for a in p["orphans"]:
+        line = f"{verb}kill pid={a['pid']} owner={ctx.name}/{a['owner']} age={age_txt(a['age'])} {a['reason']} pids={','.join(map(str, a['pids']))}"
+        if apply:
+            kill(a["pids"])
+            done += 1
+        out.append(line)
+        note(ctx, line, reason)
+    for line in close_dead(p["workers"], apply):
+        out.append(f"dead tabs: {line}")
+        if re.match(r"(closed|would close) [1-9]", line):
+            done += int(apply)
+            note(ctx, f"dead tabs owner={ctx.name}: {line}", reason)
+    for a in p["temp"]:
+        err = remove(a) if apply else ""
+        line = f"{verb}remove {a['kind']} {a['path']} owner={ctx.name} age={age_txt(a['age'])} {a['reason']}" + (f" FAILED: {err}" if err else "")
+        done += int(apply and not err)
+        out.append(line)
+        note(ctx, line, reason)
+    out +=[f"keep {k}: {why}" for k, why in p["keep"]]
+    if done:
+        ledger_line(ctx, f"janitor: {done} cleanup action(s) ({len(p['orphans'])} orphan trees, {len(p['temp'])} temp entries)"
+                         + (f", reason {reason}" if reason else "") + "; see janitor.log")
+    return out + [f"{'swept' if apply else 'dry run'}: {len(p['orphans'])} orphan tree(s), {len(p['temp'])} temp entr(ies)"
+                  f", {len(p['keep'])} kept"]
+
+
+def main(argv):
+    if not argv or argv[0] not in ("status", "sweep"):
+        print(__doc__)
+        return 0 if argv[:1] in (["-h"], ["--help"]) else 2
+    off = os.path.exists(os.path.join(bosskit.home(), "janitor.off"))
+    ctx = bosskit.load(make=False, resolve_host=False)
+    if argv[0] == "status":
+        m = memory()
+        print(f"memory: pressure_level={m['level']} free={m['free']}% swap={m['swap']}% ({m['swap_gb']} GB)")
+        print(f"janitor: {'off (janitor.off)' if off else ctx.cfg.get('janitor', 'dry-run')}; a sweep now would:")
+        print("\n".join("  " + line for line in sweep(ctx, False, record=False)))
+        return 0
+    if off:
+        print("off")
+        return 0
+    reason = argv[argv.index("--reason") + 1] if "--reason" in argv[:-1] else ""
+    apply = "--apply" in argv and ctx.cfg.get("janitor") == "apply"
+    if "--apply" in argv and not apply:
+        print(f"boss-janitor: dry run: config janitor is {ctx.cfg.get('janitor')!r}; "
+              "set it to \"apply\" (bosskit.py config set) to act")
+    print("\n".join(sweep(ctx, apply, reason)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

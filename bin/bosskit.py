@@ -98,6 +98,7 @@ DEFAULTS = {
     "github": {"comments": ["status", "proof", "demo", "review_replies"], "draft": True, "body": ["tracker", "proof"],
                "ready": "boss", "merge": "squash", "style": "short"},
     "proof": "demo",            # UI proof: demo (a recorded demo, mandatory when UI-heavy) | screenshots (screenshots on a page do)
+    "janitor": "dry-run",       # bin/boss-janitor sweep: dry-run (only says what it would do) | apply (acts when run with --apply)
     "cleanup": "ask",           # finished workspaces: ask before archiving each | auto (a standing OK, section 8)
     "report": {"style": "action-first", "verbosity": "short"},  # section 9: action-first | voice; short | normal | detailed
 }
