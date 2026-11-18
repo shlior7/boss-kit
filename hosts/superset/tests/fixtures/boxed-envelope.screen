@@ -1,0 +1,64 @@
+                                                                                              │                                                                    
+                                                                                              │                                                                    
+                                                                                              │                                                                    
+                                                                                              │                                                                    
+                                                                                              │                                                                    
+                                                                                              │                                                                    
+                                                                                              │                                                                    
+                                                                                              │                                                                    
+                                                                                              │                                                                    
+                                                                                              │                                                                    
+  Thread replied. Last step: bring the PR body, status comment, proof page and notes up to    │                                                                    
+  head 4c1e9a2.                                                                               │                                                                    
+                                                                                              │                                                                    
+  Ran 6 commands · last: gh pr edit 12 --body-file /tmp/pr-body.md                            │                                                                    
+                                                                                              │                                                                    
+⬤  Claude                                                                                     │ FROM BOSS                                                          
+╭────────────────────────────────────────────────────────────────────────────────────────────╮│                                                                    
+│ SUPERSET_WORKER_DONE task: widgets-12                                                      ││ 16:46 the bot reviewed 9f8e7d6; 2 threads                          
+│                                                                                            ││       open: reply to both, then post                               
+│ • summary: The bot's summary on 4c1e9a2 does not say "No open findings remain": its last   ││       your envelope.                                               
+│   finding, "Treat plugin text as untrusted data" (loader.js:580), is still open. Bot runs  ││                                                                    
+│   on a1b2c3d, b2c3d4e and 4c1e9a2 all passed; the earlier run on 9f8e7d6 failed as a run,  ││                                                                    
+│   not a finding. That finding asks for a strict format instead of prose, or tool limits    ││                                                                    
+│   outside the prompt. I didn't do either: a plugin is a prose file by jane's contract,     ││                                                                    
+│   and tool limits belong to the agent harness. The full reason is in the thread. A human   ││                                                                    
+│   reviewer should decide whether that is enough. Everything else is fixed with tests:      ││                                                                    
+│   ◦ only plugins in plugins.csv or the current repo load, and others are never cloned;     ││                                                                    
+│   ◦ each plugin is printed as data under a plugin_rule= line, framed with its repo, commit ││                                                                    
+│     and a per-run token;                                                                   ││                                                                    
+│   ◦ PLG-001 rejects every YAML spelling the loader reads differently;                      ││                                                                    
+│   ◦ the README PLG-001 row lists ask.                                                      ││                                                                    
+│ • files: src/loader/loader.js, src/loader/README.md, docs/ask.md, docs/lifecycle.md,       ││                                                                    
+│   packages/validate/src/utils/plugins.ts, packages/validate/src/validators/plugins.ts,     ││                                                                    
+│   packages/validate/README.md, plus tests: loader.test.cjs, validators/plugins.test.ts,    ││                                                                    
+│   lifecycle.test.ts.                                                                       ││                                                                    
+│ • checks:                                                                                  ││                                                                    
+│   ◦ yarn build passes.                                                                     ││                                                                    
+│   ◦ Vitest 464/464.                                                                        ││                                                                    
+│   ◦ lint has the 2 known errors.                                                           ││                                                                    
+│   ◦ test:scripts 358/360: the same 2 tests fail on the base branch, and #11 on main        ││                                                                    
+│     fixes them.                                                                            ││                                                                    
+│ • proof: https://pages.example.com/acme/widgets-12-proof/ (v3, verified publish, with live ││                                                                    
+│   runs of the guard). The link is in the PR body.                                          ││                                                                    
+│ • handoff:                                                                                 ││                                                                    
+│   ◦ Head is 4c1e9a2. I pushed 5 commits with no force; a1b2c3d is an empty commit to rerun ││                                                                    
+│     the bot, because the re-run API returned 404.                                          ││                                                                    
+│   ◦ Threads answered: 3/3 original, plus 2 new ones from the bot; 4 resolved by the bot, 1 ││                                                                    
+│     open with my reply.                                                                    ││                                                                    
+│   ◦ I removed a stale index.lock (from 03:30, no git process running) that was blocking    ││                                                                    
+│     commits.                                                                               ││                                                                    
+│   ◦ Status comment edited, and .boss-worker/notes.md updated.                              ││                                                                    
+│                                                                                            ││                                                                    
+│ [17/11/2026 16:47:40]                                                                      ││                                                                    
+│                                                                                            ││                                                                    
+│                                                                           [ ⧉ copy reply ] ││                                                                    
+╰────────────────────────────────────────────────────────────────────────────────────────────╯│                                                                    
+✻ Brewed for 1m 19s                                                                           │                                                                    
+           new task? /clear to save 206.8k tokens · ✘ Auto-update failed · Run claude doctor  │                                                                    
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  widgets-12 (widgets-12) Opus 5.5 206k/1000k (21%)
+  ⏱️ 16:48 [00000000-0000-4000-8000-000000000012]
+  ⏵⏵ bypass permissions on · 2 shells · PR #12 · ← 1 agent

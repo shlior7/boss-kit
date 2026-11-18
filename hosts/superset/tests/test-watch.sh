@@ -95,8 +95,43 @@ t=$(mktemp -d); mkdir "$t/bin" "$t/cli"; ln -s "$(command -v jq)" "$t/bin/jq"
 printf '#!/bin/sh\necho "$*" >> "%s/calls"\necho "{\\"text\\": \\"hi\\"}"\n' "$t" > "$t/cli/the-cli"; chmod +x "$t/cli/the-cli"
 PATH="$t/bin:/usr/bin:/bin" BOSS_HOST=m-7 BOSS_HOST_CLI="$t/cli/the-cli" "$S" w1 t1 >/dev/null 2>&1 & pid=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$t/calls" ] && break; sleep 0.2; done; kill $pid 2>/dev/null; wait $pid 2>/dev/null
-got=$(head -1 "$t/calls" 2>/dev/null)
+got=$(grep -m1 '^terminals read' "$t/calls" 2>/dev/null)
 if [ "$got" = "terminals read --workspace w1 --host m-7 --terminal t1 --max-lines 600 --json" ]; then echo "ok   resolved CLI and machine -> $got"
 else echo "FAIL resolved CLI and machine: got '${got:-no call}'"; fail=1; fi
 rm -rf "$t"
+# The whole poll loop on a fake CLI (BOSS_WATCH_POLL_S=0). fixtures/boxed-envelope.screen is a real incident's screen, scrubbed:
+# a 46-row reply box holding the envelope, the side pane, "2 shells" and a status-line clock, at 64 rows. The worker's pane
+# was 32 rows, so the envelope's first line was never on the screen.
+F="$(dirname "$S")/tests/fixtures"
+check "boxed envelope, side pane, 2 shells, 64-row pane" "DONE|widgets-12|The bot's summary on 4c1e9a2 d" < "$F/boxed-envelope.screen"
+check "the same screen in a 32-row pane: its first line is off the top" "" < <(tail -32 "$F/boxed-envelope.screen")
+# loop <polls> <screen before> <screen from the 2nd poll> [<transcript before> <transcript from the 2nd poll>]: the watcher's
+# output. Each read ticks the status-line clock a minute; the agent is idle; killed after 20 s.
+loop(){ local t; t=$(mktemp -d); mkdir -p "$t/claude/projects/-work-acme-widgets"
+  cp "$2" "$t/s1"; cp "$3" "$t/s2"; [ -n "$4" ] && cp "$4" "$t/claude/projects/-work-acme-widgets/s.jsonl" && cp "$5" "$t/t2"
+  cat > "$t/cli" <<'C'
+#!/bin/bash
+d=$(dirname "$0")
+case "$1 $2" in
+  "workspaces list") echo '[{"id":"w1","worktreePath":"/work/acme/widgets"}]' ;;
+  "terminals read") n=$(($(cat "$d/n" 2>/dev/null || echo 0) + 1)); echo $n > "$d/n"; f=$d/s1
+    [ $n -ge 3 ] && { f=$d/s2; [ -f "$d/t2" ] && mv "$d/t2" "$d/claude/projects/-work-acme-widgets/s.jsonl"; }
+    sed "s/⏱️ 16:48/⏱️ $((10 + n / 60)):$((10 + n % 60))/" "$f" | jq -Rs '{text: .}' ;;
+  "snapshot --host") echo '{"workspaces":[{"terminals":[{"id":"t1","agent":{"state":"idle"}}]}]}' ;;
+esac
+C
+  chmod +x "$t/cli"
+  CLAUDE_CONFIG_DIR=$t/claude BOSS_HOST=m-7 BOSS_HOST_CLI=$t/cli BOSS_BIN=$t/none BOSS_WATCH_POLL_S=0 BOSS_WATCH_POLLS=$1 "$S" w1 t1 > "$t/out" 2>&1 & local pid=$!
+  for _ in $(seq 100); do kill -0 $pid 2>/dev/null || break; sleep 0.2; done; kill $pid 2>/dev/null; wait $pid 2>/dev/null
+  cat "$t/out"; rm -rf "$t"; }
+fires(){ local name=$1 want=$2 got; shift 2; got=$(loop "$@" | head -1)
+  if [ "$got" = "$want" ]; then echo "ok   $name -> $got"; else echo "FAIL $name: want '$want', got '${got:-nothing in 20 s}'"; fail=1; fi; }
+w=$(mktemp -d); { head -14 "$F/boxed-envelope.screen"; tail -8 "$F/boxed-envelope.screen"; } > "$w/working"; tail -32 "$F/boxed-envelope.screen" > "$w/tall"
+head -4 "$F/boxed-envelope.jsonl" > "$w/t1"   # the worker's earlier envelope, then the boss's follow-up: the baseline
+fires "envelope taller than the pane: read from the worker's transcript" "ENVELOPE DONE|widgets-12|The bot's summary on 4c1e9a2 d" \
+  20 "$w/working" "$w/tall" "$w/t1" "$F/boxed-envelope.jsonl"
+fires "an old envelope in the transcript never fires" "TIMEOUT" 5 "$w/working" "$w/working" "$w/t1" "$w/t1"
+sed 's/ · 2 shells//' "$w/tall" > "$w/noshell"
+fires "idle on a screen whose only change is the status-line clock" "AGENT IDLE WITHOUT ENVELOPE" 20 "$w/noshell" "$w/noshell"
+rm -rf "$w"
 exit $fail
