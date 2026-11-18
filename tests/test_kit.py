@@ -514,14 +514,33 @@ class BossHome(TempHome):
         self.old_data()
         os.makedirs(self.new)
         open(os.path.join(self.new, "lessons.md"), "w").write("mine")
-        out = self.migrate("--apply").stdout
-        self.assertIn("both have data", out)
+        os.makedirs(os.path.join(self.kit, "projects", "gadgets"))  # a later step would move this into ~/.boss
+        r = self.migrate("--apply")
+        self.assertIn("both have data", r.stdout)
+        self.assertIn("rmdir the emptied", r.stdout)
+        self.assertNotIn("rm -r", r.stdout)
+        self.assertEqual(r.returncode, 1)
         self.assertFalse(os.path.islink(self.old))
         self.assertEqual(sorted(os.listdir(self.new)), ["lessons.md"])
+        self.assertTrue(os.path.isdir(os.path.join(self.kit, "projects", "gadgets")))  # stopped before the later steps
+
+    def test_a_failed_link_moves_the_folder_back(self):
+        self.old_data()
+        mig = load_script("boss-migrate")
+        with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(mig.os, "symlink", side_effect=OSError("denied")), \
+                redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(mig.move_default("BOSS_HOME", "~/.claude/boss", "~/.boss", True), mig.STOP)
+        self.assertIn("moved it back", out.getvalue())
+        self.assertTrue(os.path.isfile(os.path.join(self.old, "widgets", "BOSS.md")))
+        self.assertFalse(os.path.lexists(self.new))
+        self.migrate("--apply")  # the next run, with links working, does the move
+        self.assertEqual(os.readlink(self.old), self.new)
 
     def test_migrate_leaves_an_explicit_boss_home_alone(self):
         self.old_data()
-        out = self.migrate("--apply", BOSS_HOME=os.path.join(self.tmp, "custom")).stdout
+        r = self.migrate("--apply", BOSS_HOME=os.path.join(self.tmp, "custom"))
+        self.assertEqual(r.returncode, 0, r.stderr)  # an ordinary skip, not a stop
+        out = r.stdout
         self.assertNotIn(self.new, out)
         self.assertFalse(os.path.exists(self.new))
         self.assertFalse(os.path.islink(self.old))
@@ -580,9 +599,13 @@ class KitHomeDefault(TempHome):
     def test_migrate_refuses_when_both_kits_exist(self):
         self.old_kit()
         os.makedirs(os.path.join(self.new, "bin"))
-        self.assertIn("both have data", self.migrate("--apply").stdout)
+        os.makedirs(os.path.join(self.kit, "projects", "gadgets"))  # a later step would move this
+        r = self.migrate("--apply")
+        self.assertIn("both have data", r.stdout)
+        self.assertEqual(r.returncode, 1)
         self.assertFalse(os.path.islink(self.old))
         self.assertEqual(os.listdir(self.new), ["bin"])
+        self.assertTrue(os.path.isdir(os.path.join(self.kit, "projects", "gadgets")))  # stopped before the later steps
 
     def test_migrate_leaves_an_explicit_kit_home_alone(self):
         self.old_kit()

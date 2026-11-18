@@ -284,7 +284,7 @@ The short way: start Claude Code in the worktree that will be the boss and run `
    At the start of every session, run the /boss skill and follow what it loads.
    ```
 
-   Or with imports (explicit paths, no budget: the whole shared lessons file loads):
+   Or with imports (explicit paths, no budget: the whole shared lessons file loads; the paths assume the default home, so use the ones `bin/bosskit.py show` prints):
 
    ```markdown
    # Boss workspace <workspace id>
@@ -330,7 +330,7 @@ sequenceDiagram
   Boss->>You: Your move: merge 42?
 ```
 
-**1. Dispatch.** The boss reuses the workspace that already owns the work (matched by branch or PR) and sends it a self-contained prompt, or starts a new worker:
+**1. Dispatch.** The boss reuses the workspace that already owns the work (matched by branch or PR) and sends it a self-contained prompt, or starts a new worker (the prompt paths below assume the default home; use the ones `bin/bosskit.py show` prints):
 
 ```bash
 boss-host send <worker> --file ~/.boss/widgets/prompts/fix-42.txt

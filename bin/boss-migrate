@@ -4,8 +4,8 @@
   boss-migrate [--kit DIR] [--boss ID] [--apply]
 
 First, unless $BOSS_HOME is set: the old default data folder ~/.claude/boss -> ~/.boss (when ~/.boss is missing or
-empty), with a symlink back. When both hold data it says so and changes neither. The same, unless $BOSS_KIT_HOME is
-set, for the kit checkout: ~/.claude/boss-kit -> ~/.boss-kit.
+empty), with a symlink back. The same, unless $BOSS_KIT_HOME is set, for the kit checkout: ~/.claude/boss-kit ->
+~/.boss-kit. When both folders of a pair hold data it says so, changes nothing there and exits 1 before any later step.
 
 Finds, in the old kit (default: this kit):
   projects/<name>/      (v0.3-v0.4 layout)          -> $BOSS_HOME/<name>/
@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bosskit  # noqa: E402
 
+STOP = "stop"
 KIT_DIRS = {"bin", "mods", "projects", "state", "skills", ".git", ".claude-plugin", "tests"}
 
 
@@ -53,21 +54,28 @@ def move_default(env, old, new, apply, marker=None):
     """Move an old default folder (~/.claude/boss, ~/.claude/boss-kit) to its new place and leave a symlink back, so
     running bosses, absolute paths in ledgers, settings.json hooks and @~/.claude/... imports keep working. A rename on
     the same filesystem keeps a script running from the old kit alive; its later paths resolve through the symlink.
-    Never overwrites; skipped when $env is set or old lacks marker. True when there is a move."""
+    Never overwrites; skipped when $env is set or old lacks marker.
+    True when there is a move, False when there is none, STOP when it cannot move: then no later step may run."""
     if os.environ.get(env):
         return False
     old, new = os.path.expanduser(old), os.path.expanduser(new)
     if os.path.islink(old) or not os.path.isdir(old) or (marker and not os.path.exists(os.path.join(old, marker))):
         return False
     if not bosskit.vacant(new):
-        print(f"skip  {old}  ({new} already exists: both have data, merge them by hand, then ln -s {new} {old})")
-        return False
+        print(f"stop  {old} and {new} both have data: merge them by hand into {new}, then rmdir the emptied {old}"
+              f" (or move it aside) and ln -s {new} {old}. Nothing changed.")
+        return STOP
     print(f"{'move' if apply else 'would move'}  {old}  ->  {new}  (+ symlink back)")
     if apply:
         if os.path.isdir(new):
             os.rmdir(new)
         os.rename(old, new)
-        os.symlink(new, old)
+        try:
+            os.symlink(new, old)
+        except OSError as e:
+            os.rename(new, old)  # a moved folder with no link back would break every running boss
+            print(f"stop  could not link {old} -> {new} ({e}): moved it back to {old}. Nothing changed.")
+            return STOP
     return True
 
 
@@ -105,6 +113,8 @@ def main():
     args = ap.parse_args()
     moved = [move_default("BOSS_HOME", "~/.claude/boss", "~/.boss", args.apply),
              move_default("BOSS_KIT_HOME", "~/.claude/boss-kit", "~/.boss-kit", args.apply, marker=".git")]
+    if STOP in moved:  # the later steps would write into a home or read a kit that is not settled yet
+        sys.exit(1)
     moved = any(moved)
     kit, home = os.path.abspath(args.kit), bosskit.home()
     ops, fixes = plan(kit, home, args.boss), host_imports(home)
