@@ -1570,6 +1570,13 @@ class LedgerCells(Home):
         self.assertEqual(self.deck.ledger_terms(self.led, "1a2b3c4d"), {"5e6f": "fix-1: split a | b"})
         self.assertEqual(self.deck.cells("| a \\| b | c |"), ["", "a | b", "c", ""])
 
+    def test_a_workspace_cell_written_ws_id_term_id_is_read(self):
+        # Bosses write "ws <id> term <id>, branch <b>" in the Workspace cell; the deck dropped every such row.
+        got = self.rows("| 2026-01-02 | fix-7: x | ws 66fd49c8 term 59a449ee, branch feat/x | mid | WORKING | | boss-b |\n"
+                        "| 2026-01-02 | fix-8: y | WS 1a2b3c4d-0000 | mid | DISPATCHED | | boss-b |\n")
+        self.assertEqual(sorted(got), ["1a2b3c4d", "66fd49c8"])
+        self.assertEqual((got["66fd49c8"][0], got["66fd49c8"][1], got["66fd49c8"][4]), ("fix-7", "WORKING", "boss-b"))
+
     def test_boss_cells_prefix_and_malformed(self):
         self.assertTrue(self.deck.is_mine("bbbbbbbb", self.BOSS) and self.deck.is_mine(self.BOSS, self.BOSS) and self.deck.is_mine("", self.BOSS))
         self.assertFalse(self.deck.is_mine("cccccccc", self.BOSS))
