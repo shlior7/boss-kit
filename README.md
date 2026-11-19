@@ -62,6 +62,7 @@ flowchart LR
 | `bin/boss-migrate` | Moves an older kit's project data into the data root |
 | `bin/boss-status-ask` | Sends the standard six-question status check to a worker session before a cleanup (the status layover) |
 | `bin/boss-close` | `boss-host close` and `close-dead` under their old name: closes a worker's terminals the way its host does |
+| `bin/boss-janitor` | Makes room on the machine for this boss's project: `status` (memory, swap, what a sweep would do) and `sweep` (idle orphan dev processes, dead tabs, old temp worktrees and session dirs); a dry run unless `--apply` and config `janitor` is `apply`; `janitor.off` in the data home turns it off |
 | `bin/boss-watch-done.sh` | `boss-host watch` under its old name and argument order (`<worker> <terminal> [<branch>]`), for bosses still on the old prompt |
 | `bin/boss-merge` | Squash-merges one PR only when it is safe: verified head, mergeable, review threads answered, checks green |
 | `bin/verify` | Runs the kit's own checks, one line each, plus a junk guard on committed files |
