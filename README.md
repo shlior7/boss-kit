@@ -52,7 +52,7 @@ flowchart LR
 | `hosts/<name>/` | The bundled host plugins, one folder each (`host.json`, `adapter.py`, `prompt.md`, its README and tests): see Host plugins |
 | `projects/_template/` | What `boss-init` copies into your data root: `BOSS.md` (project facts), `config.json`, `ledger.md`, `lessons.md`, `prompts/` |
 | `shared-lessons.example.md` | Seed for the shared lessons file: generic lessons every boss hits |
-| `bin/bosskit.py` | Core: paths, project resolution, boss id, host kind, layered config, registry, lessons loader (`show`, `instructions`, `config`, `detect`) |
+| `bin/bosskit.py` | Core: paths, project resolution, boss id, host kind, layered config, registry, lessons loader (`show`, `instructions`, `config`, `detect`, `next`: writes `next.txt`, refusing a shorthand line) |
 | `bin/bosshost.py` | The host plugin system: finds, resolves and loads the one host a boss uses; the `Host` base class |
 | `bin/boss-host` | The CLI the boss, the scripts and the pane use for everything done to workers: create, send, archive, watch, … |
 | `bin/boss-init` | Scaffolds a project in the data root |
@@ -68,6 +68,7 @@ flowchart LR
 | `bin/verify` | Runs the kit's own checks, one line each, plus a junk guard on committed files |
 | `evals/` | Behaviour evals of the boss itself: replayed incidents graded with `claude plugin eval` (see Evals) |
 | `bin/boss-event` | Logs a workspace's stage (sent, DONE, checked, ready, merged, retired) for the pane's stages and timeline |
+| `bin/boss-next-hook` | The boss plugin's Stop hook (`hooks/hooks.json`): in a boss session only, blocks a reply whose last "Your move:" line is shorthand (`bosskit.py next`'s check), with the reason, so the boss rewrites it once |
 | `bin/boss-sync.py` | Keeps your open PRs conflict-free: merges each base into its branch in a throwaway worktree |
 | `bin/boss-tasks.py` | Read-only tracker sync: `none`, or any HTTP endpoint that returns `{"tasks": [...]}` |
 | `bin/boss-deck-data.py` | Collects the data the pane shows |

@@ -974,10 +974,12 @@ class Bosses(Home):
             self.assertEqual(out.returncode, 1)
             self.assertIn(why, out.stderr)
         self.assertEqual(open(os.path.join(ctx.bdir, "next.txt")).readline().strip(), good)  # a refused line writes nothing
+        self.assertEqual(nxt("Your move: nothing needed.").returncode, 0)  # section 9: "nothing needed" is a whole line
 
     def test_lint_next_on_real_lines(self):
         for line in ('Reply "merge 38" to merge the janitor cleanup PR (#38), which is verified; on no it stays open.',
-                     "Your move: say yes to merge the eval harness PR (#42) that adds evals/run; on no it stays a draft."):
+                     "Your move: say yes to merge the eval harness PR (#42) that adds evals/run; on no it stays a draft.",
+                     "Your move: nothing needed.", "nothing for you now, both workers are still running"):
             self.assertEqual(bosskit.lint_next(line), "", line)
         for line, why in (("go 1", "go N"), ("merge #57 then #63", "words"), ("(0)", "(N)"),
                           ("kit #34 is ready for you to look at today", "kit #N"),
