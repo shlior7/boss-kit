@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""boss-guard: the boss plugin's PreToolUse hook. Turns BOSS-template hard rules into code.
+
+Reads the hook input JSON on stdin. Only a Bash call in a boss session (bosskit.is_boss for its cwd) can be denied;
+anything else is allowed silently. It denies, with one line naming the rule and the allowed path:
+  gh pr merge (any form, --auto too), gh pr close, gh pr edit --base/-B             (section 3, 8: bin/boss-merge)
+  git push with -f/--force*/--mirror/+refspec, git push to the base branch or --all  (section 3)
+  git rebase (any; --help/-h alone is allowed: it changes nothing)                  (section 3: merge the base in)
+  boss-host watch without run_in_background, or with a trailing &                  (section 6)
+Compound commands (&&, ||, ;, |, &, subshells, backticks, bash -c "...") are checked part by part; heredoc bodies and
+quoted strings are text, not commands. When the command does not parse, it is allowed: no false blocks.
+Cost: a command naming none of gh, git or boss-host exits before any parsing; bosskit is imported only when a rule matches.
+"""
+import functools
+import json
+import os
+import re
+import shlex
+import sys
+
+CHEAP = re.compile(r"\b(gh|git|boss-host)\b")
+WRAPPERS = {"rtk", "proxy", "env", "command", "exec", "time", "nohup", "sudo", "builtin"}
+SHELLS = {"bash", "sh", "zsh"}
+HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def strip_heredocs(cmd):
+    """Drop heredoc bodies (a commit message may say 'git rebase'); the << line itself stays."""
+    out, lines, i = [], cmd.split("\n"), 0
+    while i < len(lines):
+        out.append(lines[i])
+        ends = [m.group(2) for m in HEREDOC.finditer(lines[i])]
+        i += 1
+        for word in ends:
+            while i < len(lines) and lines[i].strip() != word:
+                i += 1
+            i += 1
+    return "\n".join(out)
+
+
+def segments(cmd):
+    """[(argv, background)] for each simple command; None when the command does not parse."""
+    text = strip_heredocs(cmd).replace("\n", " ; ").replace("`", " ; ")
+    try:
+        lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        toks = list(lex)
+    except ValueError:
+        return None
+    segs, cur, skip = [], [], False
+    for t in toks:
+        if skip:
+            skip = False
+        elif t and set(t) <= set("();<>|&"):
+            if "<" in t or ">" in t:  # a redirection: drop its target, keep the command going
+                skip = not t.endswith("&")
+                continue
+            if cur:
+                segs.append((cur, t == "&"))
+            cur = []
+        else:
+            cur.append(t)
+    if cur:
+        segs.append((cur, False))
+    return segs
+
+
+def program(argv):
+    """(name, args) past env assignments and wrappers like rtk or env."""
+    while argv and (argv[0] in WRAPPERS or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0])):
+        argv = argv[1:]
+    return (os.path.basename(argv[0]), argv[1:]) if argv else ("", [])
+
+
+def gh_rule(args):
+    while args and args[0] in ("-R", "--repo"):
+        args = args[2:]
+    args = [a for a in args if not a.startswith("--repo=")]
+    if args[:1] != ["pr"] or len(args) < 2:
+        return None
+    sub, rest = args[1], args[2:]
+    if sub == "merge":
+        if "--auto" in rest:
+            return "gh pr merge --auto is blocked in a boss session (section 3: never --auto). Use bin/boss-merge N after the user's OK."
+        return "gh pr merge is blocked in a boss session (sections 3, 8: merge only with the user's OK). Use bin/boss-merge N."
+    if sub == "close":
+        return "gh pr close is blocked in a boss session (section 3: close a PR only with the user's OK). Ask the user first; playbooks/merge.md has the close steps."
+    if sub == "edit" and any(a in ("--base", "-B") or a.startswith("--base=") for a in rest):
+        return "gh pr edit --base is blocked in a boss session (section 3: change PR bases only with the user's OK). Ask the user first."
+    return None
+
+
+def git_rule(args, cwd, base):
+    while args and args[0].startswith("-"):  # git's own options; -C and -c take a value
+        args = args[2:] if args[0] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") else args[1:]
+    if not args:
+        return None
+    sub, rest = args[0], args[1:]
+    if sub == "rebase":
+        if rest in (["--help"], ["-h"]):
+            return None
+        return "git rebase is blocked in a boss session (section 3: never rebase shared branches). Merge the base into the branch: bin/boss-sync.py."
+    if sub != "push":
+        return None
+    pos, i, every = [], 0, False
+    while i < len(rest):
+        a = rest[i]
+        if a in ("-f", "--force", "--mirror") or a.startswith("--force-with-lease") or (re.match(r"^-[a-zA-Z]+$", a) and "f" in a.split("o")[0]):
+            return "git push --force is blocked in a boss session (section 3: never force-push). Push plainly; bin/boss-sync.py merges the base in."
+        if a == "--all":
+            every = True
+        elif a in ("-o", "--push-option", "--repo", "--receive-pack", "--exec"):
+            i += 1
+        elif not a.startswith("-"):
+            pos.append(a)
+        i += 1
+    if any(r.startswith("+") for r in pos[1:]):
+        return "git push +refspec is blocked in a boss session (section 3: never force-push). Push plainly; bin/boss-sync.py merges the base in."
+    b = base()
+    if not b:
+        return None
+    dsts = [r.split(":")[-1].removeprefix("refs/heads/") for r in pos[1:]]
+    if "HEAD" in dsts or not dsts:  # HEAD, or a bare push, is the current branch
+        dsts.append(current_branch(cwd))
+    if every or b in dsts:
+        return f"git push to the base branch {b} is blocked in a boss session (section 3: only with the user's OK). Land changes through a PR and bin/boss-merge."
+    return None
+
+
+def watch_rule(args, background, bg_flag):
+    if args[:1] == ["watch"] and (background or not bg_flag):
+        return "boss-host watch must run with run_in_background and no trailing & (section 6). Rerun it through Bash with run_in_background: true."
+    return None
+
+
+def current_branch(cwd):
+    import subprocess
+    r = subprocess.run(["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+def violation(cmd, cwd=".", bg_flag=False, base=lambda: "main"):
+    """The deny reason for the first part of cmd that breaks a rule, else None. base() is the base branch, or '' to skip
+    the base check (outside a boss session: no config is read for an ordinary push)."""
+    for argv, background in segments(cmd) or []:
+        name, args = program(argv)
+        if name in SHELLS and "-c" in args[:-1]:
+            r = violation(args[args.index("-c") + 1], cwd, bg_flag, base)
+        elif name == "gh":
+            r = gh_rule(args)
+        elif name == "git":
+            r = git_rule(args, cwd, base)
+        elif name == "boss-host":
+            r = watch_rule(args, background, bg_flag)
+        else:
+            r = None
+        if r:
+            return r
+    return None
+
+
+def boss_base(cwd):
+    """bosskit's resolved base_branch for cwd's project, else main."""
+    import bosskit
+    try:
+        return bosskit.load(cwd, make=False, resolve_host=False).cfg.get("base_branch") or "main"
+    except (Exception, SystemExit):
+        return "main"
+
+
+def in_boss(cwd):
+    import bosskit
+    from types import SimpleNamespace
+    try:
+        return bosskit.is_boss(SimpleNamespace(worktree=bosskit.worktree(cwd)))
+    except (Exception, SystemExit):
+        return False
+
+
+def main():
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        return
+    ti = data.get("tool_input") or {}
+    cmd = ti.get("command") or ""
+    if data.get("tool_name") != "Bash" or not CHEAP.search(cmd):
+        return
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    cwd = data.get("cwd") or os.getcwd()
+    boss = functools.cache(lambda: in_boss(cwd))
+    base = functools.cache(lambda: boss_base(cwd) if boss() else "")
+    reason = violation(cmd, cwd, bool(ti.get("run_in_background")), base)
+    if reason and boss():
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                 "permissionDecisionReason": "boss-guard: " + reason}}))
+
+
+if __name__ == "__main__":
+    main()
