@@ -7,5 +7,7 @@
 KIT=$(cd "$(dirname "$0")/.." && pwd)
 allow=()
 for c in boss-host boss-merge boss-mail boss-event boss-status-ask boss-lesson boss-sync.py; do allow+=("Bash(bin/$c:*)"); done
-allow+=("Bash(bin/bosskit.py next:*)" "Bash(python3 bin/bosskit.py next:*)")
+allow+=("Bash(bin/bosskit.py next:*)" "Bash(python3 bin/bosskit.py next:*)" "Bash(bosskit.py next:*)")
+# relative on purpose: each run's cwd is its scaffold, so the bare `bosskit.py next` the template prescribes is its stub
+export PATH="bin:$PATH"
 exec claude plugin eval "$KIT" --scaffold --trust-plugin --ablation none --no-publish --allow-tools "${allow[@]}" "$@"

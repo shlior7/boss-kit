@@ -2852,6 +2852,12 @@ class EvalScaffold(unittest.TestCase):
             good = subprocess.run([kit, "next", "Nothing needed, the worker is still running."], capture_output=True, text=True)
             self.assertEqual((good.returncode, good.stdout), (0, "replay: recorded, not run\n"))
             self.assertIn("bosskit.py next go 1\n", open(os.path.join(cwd, "calls.log")).read())
+            # evals/run puts a relative "bin" first on PATH, so the bare form the template prescribes is the stub
+            bare = subprocess.run("bosskit.py next 'go 2'", shell=True, cwd=cwd, capture_output=True, text=True,
+                                  env={**os.environ, "PATH": "bin:" + os.environ["PATH"]})
+            self.assertEqual(bare.returncode, 1)
+            self.assertIn("next refused, shorthand", bare.stderr)
+            self.assertIn("bosskit.py next go 2\n", open(os.path.join(cwd, "calls.log")).read())
 
     def test_refuses_a_real_home(self):
         with tempfile.TemporaryDirectory() as t:
