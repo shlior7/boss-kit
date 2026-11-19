@@ -1,0 +1,3 @@
+- `boss-mail-inbox.txt`: `bin/boss-mail inbox`, run a minute ago.
+- `gh-pr-view-57.json`: `gh pr view 57 --json ...`, run a minute ago.
+- `events.txt`: this boss's stage log.

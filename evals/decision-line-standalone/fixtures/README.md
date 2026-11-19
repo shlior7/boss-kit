@@ -1,0 +1,3 @@
+- `gh-pr-list.json`: `gh pr list --state open --json number,title,isDraft,mergeable,headRefName,statusCheckRollup`, run just now.
+- `events.txt`: this boss's stage log.
+- `notes.md`: this boss's open concerns.

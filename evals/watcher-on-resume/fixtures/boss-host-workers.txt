@@ -1,0 +1,2 @@
+0a40f19d-11e3-4d28-ac42-0b204c14a220  working  feat/hybrid-search  ~/wt/widgets/hybrid-search  Search
+7d2c9a41-5e6f-4a1b-9c3d-2e8f7a6b5c4d  idle     feat/csv-export     ~/wt/widgets/csv-export     Export
