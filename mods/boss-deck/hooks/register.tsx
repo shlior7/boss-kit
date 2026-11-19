@@ -34,6 +34,7 @@ const live = atom({ plugin: 'boss-deck', key: 'live' } as const, null, { shape: 
 // Which pane this session draws: the boss's, a dispatched worker's own, or none. session.start sets it again on a reload.
 let role: 'boss' | 'worker' | undefined
 let workerShown = false
+let workerTimer: ReturnType<EngineInterface['clock']['every']> | undefined
 // The kit's HEAD when this module loaded (the first one a refresh reports); the pane warns once the disk moves past it.
 let loadedKit: string | undefined
 
@@ -172,16 +173,34 @@ async function start($: EngineInterface) {
     loadedKit = undefined
     await $.command.register({ name: 'boss-deck', description: 'Open this worker\'s pane and refresh it now' })
     void workerRefresh($)
-    $.clock.every(REFRESH_MS, () => void workerRefresh($))
+    workerTimer = $.clock.every(REFRESH_MS, () => void promote($).then(p => p || role !== 'worker' || workerRefresh($)))
     return
   }
+  await startBoss($)
+}
 
+async function startBoss($: EngineInterface) {
   role = 'boss'
   loadedKit = undefined
   await $.command.register({ name: 'boss-deck', description: 'Open the boss pane and refresh it now' })
   void $.ui.open({ id: PANE, title: TITLE })
   void refresh($, true)
   $.clock.every(REFRESH_MS, () => void refresh($))
+}
+
+/** A worker session whose CLAUDE.local.md now marks it the boss (`/boss onboard` mid-session) becomes the boss, as
+ * start() would have made it; never the reverse. True when it switched. */
+async function promote($: EngineInterface) {
+  if (role !== 'worker') return false
+  const local = await $.fs.read('CLAUDE.local.md').catch(() => '')
+  const me = await self($)
+  // Re-checked after the awaits: a tick and /boss-deck may race here, and only the first switches.
+  if (role !== 'worker' || !isBoss(local, me.id)) return false
+  workerTimer?.cancel()
+  workerTimer = undefined
+  void update($, mine, () => null)
+  await startBoss($)
+  return true
 }
 
 export const register: Register = on => {
@@ -192,6 +211,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'boss-deck' }, async $ => {
+    if (await promote($)) return { text: 'Boss pane opened.' }
     if (role === 'worker') {
       await workerRefresh($)
       if (!(await read($, mine))?.worker) return { text: 'No boss ledger has a dispatch row for this workspace.' }
