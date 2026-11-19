@@ -1209,10 +1209,12 @@ def lint_next(line):
     words = re.findall(r"[\w#'-]+", text)
     if len(words) < 8:
         return f"{len(words)} words: say what is decided, the options and what happens on each answer (8 words or more)"
-    refs = NEXT_REF.findall(text)
-    # shortcut: words per PR reference stand in for "says what the PR is"; a reader still judges the words themselves
-    if refs and len(words) - len(refs) < 4 + 6 * len(refs):
-        return f"{', '.join(refs)} without a few words saying what each PR is"
+    # shortcut: "says what the PR is" is checked by form only: the reference in parentheses after its words, or followed by
+    # them in parentheses; whether those words are a good description is left to the reader
+    for m in NEXT_REF.finditer(text):
+        if not (re.search(r"\(\s*$", text[:m.start()]) or re.match(r"\s*\(", text[m.end():])):
+            ref = m.group(0)
+            return f"{ref} without saying what the PR is: write 'the <what> PR ({ref})' or '{ref} (<what>)'"
     if not NEXT_VERBS & {w.lower() for w in words}:
         return f"names no action (one of: {', '.join(sorted(NEXT_VERBS))})"
     return ""
