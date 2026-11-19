@@ -168,9 +168,10 @@ def check_owner(ctx, wid):
 
 
 def ctx_or_none():
+    """The boss project here, or None when none loads (no project, or one whose config.json is missing or broken)."""
     try:
         return bosskit.load()
-    except SystemExit:
+    except (SystemExit, OSError, ValueError):
         return None
 
 
