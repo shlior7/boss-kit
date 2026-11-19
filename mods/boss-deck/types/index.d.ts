@@ -112,6 +112,8 @@ export type Deck = {
   mail?: { count: number; dir: string; items: MailItem[] }
   lessonsNew?: number
   next: string
+  /** next.txt was not written by `bosskit.py next`, so nothing checked it for shorthand */
+  nextUnlinted?: boolean
   review?: { url: string; date: string } | null
   /** config's page provider, when `pages` names one */
   pagesTo?: string

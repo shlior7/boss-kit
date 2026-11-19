@@ -953,6 +953,37 @@ class Bosses(Home):
         entry = bosskit.registry()[ctx.bid]
         self.assertEqual((entry["domain"], entry["next"]), ("checkout", "Your move: merge #61"))
         self.assertEqual([(b["domain"], b["me"]) for b in json.loads(out.stdout)["bosses"]], [("checkout", True)])
+        self.assertTrue(json.loads(out.stdout)["nextUnlinted"])  # hand-written: the pane shows a quiet note
+
+    def test_next_writes_a_standalone_line_and_refuses_shorthand_with_the_reason(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        json.dump({"repo": "acme/widgets", "me": "octocat"}, open(os.path.join(self.home, "widgets", "config.json"), "w"))
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace\n")
+        ctx = bosskit.load(self.wt)
+        nxt = lambda line: subprocess.run([sys.executable, os.path.join(BIN, "bosskit.py"), "next", line], cwd=self.wt,
+                                          capture_output=True, text=True)
+        good = 'Reply "merge 38" to merge the janitor cleanup PR (#38), which is verified; on no it stays open.'
+        out = nxt(good)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(open(os.path.join(ctx.bdir, "next.txt")).read(), f"{good}\n{bosskit.NEXT_MARK}\n")
+        json.dump([], open(os.path.join(self.fixdir, "prs.json"), "w"))
+        deck = deck_json(self.wt, stub_tools(self.tmp, self.fixdir))
+        self.assertEqual((deck["next"], deck["nextUnlinted"]), (good, False))
+        for bad, why in (("go 1", '"go N"'), ("merge #57 then #63", "4 words"), ("(0)", '"(N)"')):
+            out = nxt(bad)
+            self.assertEqual(out.returncode, 1)
+            self.assertIn(why, out.stderr)
+        self.assertEqual(open(os.path.join(ctx.bdir, "next.txt")).readline().strip(), good)  # a refused line writes nothing
+
+    def test_lint_next_on_real_lines(self):
+        for line in ('Reply "merge 38" to merge the janitor cleanup PR (#38), which is verified; on no it stays open.',
+                     "Your move: say yes to merge the eval harness PR (#42) that adds evals/run; on no it stays a draft."):
+            self.assertEqual(bosskit.lint_next(line), "", line)
+        for line, why in (("go 1", "go N"), ("merge #57 then #63", "words"), ("(0)", "(N)"),
+                          ("kit #34 is ready for you to look at today", "kit #N"),
+                          ("Merge PR 57 now because it is green and approved", "PR 57 without"),
+                          ("The rate limiter work is finished and quietly sitting there", "no action")):
+            self.assertIn(why, bosskit.lint_next(line), line)
 
 
 def stub_tools(tmp, fix):

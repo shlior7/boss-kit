@@ -189,3 +189,14 @@ test('no provider set: no pages line', async ($, on) => {
   const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   expect((await ui.findAll({ type: 'Text' })).some(t => (t.text ?? '').startsWith('pages →'))).toBe(false)
 })
+
+test('a next line not written with bosskit.py next gets a quiet note under it', async ($, on) => {
+  mock.clock(on)
+  on('session.cwd', async () => ({ value: '/w/boss' }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('process.run', async (_$, e) => (e.argv.includes('boss-host-session') ? out(SESSION) : out({ ...DECK, next: 'go 1', nextUnlinted: true })))
+  await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
+  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
+  expect(texts.slice(texts.indexOf('go 1'), texts.indexOf('go 1') + 2)).toEqual(['go 1', 'not written with bosskit.py next'])
+})

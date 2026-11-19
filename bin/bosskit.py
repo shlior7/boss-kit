@@ -24,6 +24,7 @@ usage: bosskit.py show            the resolved paths, as JSON
        bosskit.py buttons [--worker] [--json]                          the pane's resolved buttons and the layer each came from
        bosskit.py buttons set --level user|project|boss [--worker] LABEL="prompt"... [--apply]
                                   override one button's prompt (LABEL=null hides it, a new label adds one); a dry run until --apply
+       bosskit.py next "<line>"   writes this boss's next.txt; refuses a shorthand line (template section 9) with the reason, exit 1
        bosskit.py detect          the environment, as JSON: host CLIs, gh, git, $BOSS_HOME (for onboarding)
        bosskit.py onboard questions [--text] [--all]   the onboarding form (skills/boss/questions.json) with current values, packed
                                   into AskUserQuestion calls; --text for people (bin/boss-init --questions)
@@ -1185,6 +1186,49 @@ def detect(cwd=None):
     }
 
 
+NEXT_MARK = "# written by bosskit.py next"  # second line of next.txt; the deck reads only the first, and flags a file without it
+NEXT_SHORTHAND = [(re.compile(r"\bgo\s+#?\d+\b", re.I), '"go N" is a code, not a decision'),
+                  (re.compile(r"\(\s*\d+\s*\)"), '"(N)" is a code, not a decision'),
+                  (re.compile(r"\bkit\s+#\d+", re.I), '"kit #N" does not say what the PR is')]
+NEXT_REF = re.compile(r"\bPR\s*#?\d+|#\d+", re.I)
+# shortcut: a fixed verb list; a line whose action verb is missing here is refused, add the verb when that happens
+NEXT_VERBS = set("""approve answer ask check choose close confirm decide deploy dispatch fix keep land merge open pick publish
+    rebase reply read rerun retire retry review revert run say send ship start stop tell test try update verify wait write""".split())
+
+
+def lint_next(line):
+    """Why a "Your move" line is shorthand (BOSS-template.md section 9), or "" when it stands alone."""
+    text = re.sub(r"^\s*your move:\s*", "", line.strip(), flags=re.I)
+    for pat, why in NEXT_SHORTHAND:
+        if pat.search(text):
+            return why
+    words = re.findall(r"[\w#'-]+", text)
+    if len(words) < 8:
+        return f"{len(words)} words: say what is decided, the options and what happens on each answer (8 words or more)"
+    refs = NEXT_REF.findall(text)
+    # shortcut: words per PR reference stand in for "says what the PR is"; a reader still judges the words themselves
+    if refs and len(words) - len(refs) < 4 + 6 * len(refs):
+        return f"{', '.join(refs)} without a few words saying what each PR is"
+    if not NEXT_VERBS & {w.lower() for w in words}:
+        return f"names no action (one of: {', '.join(sorted(NEXT_VERBS))})"
+    return ""
+
+
+def next_cmd(ctx, args):
+    """bosskit.py next "<line>": one Your move line, written to next.txt unless it is shorthand"""
+    line = " ".join(args).strip()
+    if not line or "\n" in line:
+        sys.exit(next_cmd.__doc__ + "  (one line)")
+    why = lint_next(line)
+    if why:
+        sys.exit(f"bosskit: next refused, shorthand: {why}\n  {line}")
+    path = os.path.join(ctx.bdir, "next.txt")
+    os.makedirs(ctx.bdir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"{line}\n{NEXT_MARK}\n")
+    return path
+
+
 def onboard_cmd(args):
     """bosskit.py onboard questions [--text] [--all] | apply FILE [--project NAME] [--level L] [--apply]"""
     sub = args[0] if args else ""
@@ -1246,6 +1290,8 @@ def main():
                           "boss_dir": ctx.bdir, "next": os.path.join(ctx.bdir, "next.txt"),
                           "review": os.path.join(ctx.bdir, "review.txt"), "inbox": ctx.inbox, "is_boss": is_boss(ctx),
                           "host": ctx.host, **({"org": org_files(ctx.home)} if org_files(ctx.home) else {})}, indent=1))
+    elif cmd == "next":
+        print(next_cmd(ctx, sys.argv[2:]))
     elif cmd == "instructions":
         print(instructions(ctx, "--full" in sys.argv[2:]) if is_boss(ctx) else not_boss_note(ctx))
     else:
