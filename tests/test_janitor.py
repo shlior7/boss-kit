@@ -249,6 +249,48 @@ class Temp(Base):
         self.assertEqual(J.remove(by["still"], set()), "")
         self.assertFalse(os.path.exists(by["still"]["path"]))
 
+    def test_remove_rechecks_unpushed_commits(self):
+        wt = self.review("review-1")
+        self.old(wt)
+        act, _ = J.temp(set(), J.common_dir(wt))
+        self.assertEqual([a["path"] for a in act], [wt])
+        # A commit after the plan moves HEAD (stored outside the worktree) without touching its files.
+        git(wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "late")
+        self.old(wt)
+        self.assertEqual(J.remove(act[0], set()), "unpushed commits or git unreadable, kept")
+        self.assertTrue(os.path.isdir(wt))
+        git(wt, "push", "-q", "origin", "HEAD:refs/heads/late")
+        git(wt, "fetch", "-q", "origin")  # the remote-tracking ref --remotes reads
+        self.assertEqual(J.remove(act[0], set()), "")
+        self.assertFalse(os.path.exists(wt))
+
+    def test_git_location_vars_are_ignored(self):
+        wt = self.review("review-1")
+        real = J.common_dir(wt)
+        other = os.path.join(self.tmp, "other-repo")
+        subprocess.run(["git", "init", "-q", other], check=True)
+        with mock.patch.dict(os.environ, {"GIT_DIR": os.path.join(other, ".git")}):
+            raw = subprocess.run(["git", "-C", wt, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                 capture_output=True, text=True).stdout.strip()
+            self.assertEqual(os.path.realpath(raw), os.path.realpath(os.path.join(other, ".git")))  # what GIT_DIR does
+            self.assertEqual(J.common_dir(wt), real)
+            self.assertNotIn("GIT_DIR", J.clean_env())
+
+    def test_status_writes_no_index(self):
+        wt = self.review("review-1")
+        open(os.path.join(wt, "a.txt"), "w").write("x")
+        git(wt, "add", "a.txt")
+        git(wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "a")
+        git(wt, "push", "-q", "origin", "HEAD:refs/heads/a")
+        index = subprocess.run(["git", "-C", wt, "rev-parse", "--path-format=absolute", "--git-path", "index"],
+                               capture_output=True, text=True).stdout.strip()
+        self.old(wt)  # a.txt's stat no longer matches the index: a plain status would refresh and write it
+        before = open(index, "rb").read()
+        J.temp(set(), J.common_dir(wt))
+        self.assertEqual(open(index, "rb").read(), before)
+        git(wt, "status", "--porcelain")
+        self.assertNotEqual(open(index, "rb").read(), before)  # the negative: plain status writes it
+
     def test_unknown_open_files_hold_everything(self):
         self.old(self.review("review-1"))
         os.makedirs(os.path.join(self.sess, "old"))
@@ -341,6 +383,20 @@ class Sweep(Base):
         with mock.patch.multiple(J, procs=lambda: fresh, cwds=lambda pids: {10: self.wt}, own_workers=lambda ctx: []):
             self.assertFalse(J.still_orphan(None, a))  # host unreadable
 
+    def test_unreadable_host_stops_the_applied_sweep(self):
+        self.apply_config()
+        self.plan["host_ok"] = False
+        self.plan["temp"] = [{"path": "/x/claude-1/s", "kind": "dir", "root": "/x/claude-1", "age": 8 * 86400, "reason": "old"}]
+        with mock.patch.object(J, "remove") as remove:
+            code, out = self.run_main("sweep", "--apply")
+            remove.assert_not_called()
+        self.kill.assert_not_called()
+        J.close_dead.assert_not_called()
+        self.assertIn("host unreadable: applied sweep stopped, nothing touched", out)
+        self.assertNotIn("janitor:", bosskit._read(os.path.join(self.pdir, "ledger.md")))
+        code, out = self.run_main("sweep")  # a dry run still shows the plan
+        self.assertIn("would remove dir /x/claude-1/s", out)
+
     def test_kill_switch(self):
         open(os.path.join(self.home, "janitor.off"), "w").close()
         code, out = self.run_main("sweep", "--apply")
@@ -388,7 +444,17 @@ class Whose(Base):
         open(os.path.join(self.pdir, "ledger.md"), "w").write("| 2026-11-18 | mine: x | aaaa1111 / 1 | m | DONE | | |\n")
         ctx = bosskit.load(make=False, resolve_host=False)
         with mock.patch.object(J.bosshost, "get", side_effect=SystemExit("no host")), redirect_stdout(io.StringIO()):
+            self.assertIsNone(J.own_workers(ctx))  # unreadable, not "no workers"
+        with mock.patch.object(J.bosshost, "get", return_value=mock.Mock(**{"workers.return_value": []})):
             self.assertEqual(J.own_workers(ctx), [])
+
+    def test_plan_marks_an_unreadable_host(self):
+        stubs = {"procs": dict, "cwds": lambda pids: {}, "open_paths": set, "temp": lambda opened, repo: ([], []),
+                 "common_dir": lambda path: ""}
+        with mock.patch.multiple(J, own_workers=lambda ctx: None, **stubs):
+            self.assertFalse(J.plan(mock.Mock(worktree=self.wt))["host_ok"])
+        with mock.patch.multiple(J, own_workers=lambda ctx: [], **stubs):
+            self.assertTrue(J.plan(mock.Mock(worktree=self.wt))["host_ok"])
 
     def test_plan_hands_full_workspace_ids_to_the_host(self):
         full = "756fc5fa-1111-2222-3333-444455556666"

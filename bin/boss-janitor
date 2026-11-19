@@ -40,10 +40,15 @@ TMP = "/private/tmp"
 TERM_WAIT_S = 5
 
 
+def clean_env():
+    """os.environ without the variables that point git at another repository than the path it is given."""
+    return {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")}
+
+
 def sh(argv, timeout=30):
     """stdout, or None when the command failed or is missing."""
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=clean_env())
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.stdout if r.returncode == 0 else None
@@ -131,7 +136,7 @@ def _deck():
 
 def own_workers(ctx):
     """This boss's workers, as the host lists them: the ledger rows naming this boss (or no boss), never its own workspace.
-    [] when the host cannot be read, so nothing is touched."""
+    None when the host cannot be read (distinct from [], no workers): then an applied sweep touches nothing."""
     deck = _deck()
     tasks = deck.ledger_tasks(os.path.join(ctx.pdir, ctx.cfg.get("ledger", "ledger.md")))
     ids = [p for p, row in tasks.items() if deck.is_mine(row[4], ctx.bid) and not (ctx.workspace and p == ctx.workspace[:8])]
@@ -142,8 +147,8 @@ def own_workers(ctx):
         return [w for w in bosshost.get(ctx.cfg).workers(ids) or []
                 if w.get("id", "")[:8] in ids and deck.in_folder(w.get("tags"), folder)]
     except (SystemExit, Exception) as e:  # an unreadable host: act on nothing
-        print(f"boss-janitor: cannot list workers ({e}); orphans and dead tabs skipped")
-        return []
+        print(f"boss-janitor: cannot list workers ({e}); an applied sweep touches nothing")
+        return None
 
 
 def roots(workers):
@@ -203,7 +208,7 @@ def alive(pid):
 
 def still_orphan(ctx, a):
     """Whether planned tree *a* still passes the orphan rule on fresh ps, lsof and host state (unreadable: no)."""
-    act, _ = orphans(procs(), cwds([a["pid"]]), roots(own_workers(ctx)))
+    act, _ = orphans(procs(), cwds([a["pid"]]), roots(own_workers(ctx) or []))
     return any(f["pid"] == a["pid"] for f in act)
 
 
@@ -271,6 +276,11 @@ def recent(path, now=None):
         return True
 
 
+def unpushed(wt):
+    """The commits at HEAD that no remote branch has (one per line), or None when git cannot say."""
+    return sh(["git", "-C", wt, "log", "--oneline", "HEAD", "--not", "--remotes"])
+
+
 def temp(opened, repo, now=None):
     """(act, keep): act = [{path, kind (worktree | dir), root, age, reason}], keep = [(path, why)].
     *repo* is this project's git common dir: review worktrees of any other repo are not ours."""
@@ -286,10 +296,10 @@ def temp(opened, repo, now=None):
         if not repo or common_dir(wt) != repo:
             keep.append((wt, "not this project's repo"))
             continue
-        status = sh(["git", "-C", wt, "status", "--porcelain"])
-        unpushed = sh(["git", "-C", wt, "log", "--oneline", "HEAD", "--not", "--remotes"])
-        why = ("held open" if held(wt, opened) else "git unreadable" if status is None or unpushed is None
-               else "uncommitted work" if status.strip() else "unpushed commits" if unpushed.strip() else "")
+        status = sh(["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"])  # read-only: no index refresh
+        ahead = unpushed(wt)
+        why = ("held open" if held(wt, opened) else "git unreadable" if status is None or ahead is None
+               else "uncommitted work" if status.strip() else "unpushed commits" if ahead.strip() else "")
         if why:
             keep.append((wt, why))
         else:
@@ -324,7 +334,11 @@ def remove(a, opened):
         common = common_dir(a["path"])
         if not common:
             return "git common dir unreadable"
-        r = subprocess.run(["git", f"--git-dir={common}", "worktree", "remove", a["path"]], capture_output=True, text=True)
+        ahead = unpushed(a["path"])  # a commit since the plan moves HEAD without touching the worktree's files
+        if ahead is None or ahead.strip():
+            return "unpushed commits or git unreadable, kept"
+        r = subprocess.run(["git", f"--git-dir={common}", "worktree", "remove", a["path"]], capture_output=True, text=True,
+                           env=clean_env())
         return r.stderr.strip() if r.returncode else ""
     if os.path.isdir(real):
         shutil.rmtree(real)
@@ -347,14 +361,16 @@ def close_dead(ids, apply):
 # ---- the sweep -------------------------------------------------------------------------------
 
 def plan(ctx):
-    workers = own_workers(ctx)
+    found = own_workers(ctx)
+    workers = found or []
     own = roots(workers)
     table = procs()
     cand = [pid for pid, p in table.items() if p["ppid"] == 1 and tool(p["args"])]
     o_act, o_keep = orphans(table, cwds(cand), own)
     t_act, t_keep = temp(open_paths(), common_dir(ctx.worktree))
     # Full workspace ids: hosts need them; the short id is only for log text.
-    return {"workers": [w["id"] for w in workers], "orphans": o_act, "temp": t_act, "keep": o_keep + t_keep}
+    return {"workers": [w["id"] for w in workers], "orphans": o_act, "temp": t_act, "keep": o_keep + t_keep,
+            "host_ok": found is not None}
 
 
 def log(ctx, line, reason):
@@ -372,6 +388,8 @@ def ledger_line(ctx, text):
 def sweep(ctx, apply, reason="", p=None, record=True):
     """Run (or, without apply, describe) one sweep; returns its lines. record=False (status) writes no log line."""
     p = p or plan(ctx)
+    if apply and not p.get("host_ok", True):
+        return ["host unreadable: applied sweep stopped, nothing touched (no kills, no dead tabs, no temp removal)"]
     note = log if record else (lambda *a: None)
     verb = "" if apply else "would "
     out, done = [], 0
