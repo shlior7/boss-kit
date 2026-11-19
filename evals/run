@@ -7,4 +7,5 @@
 KIT=$(cd "$(dirname "$0")/.." && pwd)
 allow=()
 for c in boss-host boss-merge boss-mail boss-event boss-status-ask boss-lesson boss-sync.py; do allow+=("Bash(bin/$c:*)"); done
+allow+=("Bash(bin/bosskit.py next:*)" "Bash(python3 bin/bosskit.py next:*)")
 exec claude plugin eval "$KIT" --scaffold --trust-plugin --ablation none --no-publish --allow-tools "${allow[@]}" "$@"

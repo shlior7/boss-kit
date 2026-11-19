@@ -61,7 +61,8 @@ def verdict(inp):
     if not why:
         return ""
     return (f'The "Your move" line is shorthand ({why}): "{moves[-1]}". Rewrite it as one sentence that stands alone: '
-            "what is being decided, the options, your recommendation, and what happens on each answer (template section 9).")
+            "what is being decided, the options, your recommendation, and what happens on each answer (template section 9). "
+            "Then send your whole reply again with that line, not only the line: the user reads only your last message.")
 
 
 def blocks_file(inp):

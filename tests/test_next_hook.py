@@ -48,6 +48,7 @@ class NextHook(unittest.TestCase):
         self.assertEqual(got["decision"], "block")
         self.assertIn("merge #57 then #63", got["reason"])
         self.assertIn("4 words", got["reason"])
+        self.assertIn("whole reply again", got["reason"])  # a resend that is only the line drops the report
         self.assertEqual(self.run_hook("- Your move: (0)")["decision"], "block")
 
     def test_a_standalone_or_nothing_needed_line_and_no_line_pass(self):

@@ -544,8 +544,8 @@ In a dispatched worker's own session the same pane shows that worker's status. I
 `bin/verify` tests the scripts; `evals/` tests the boss's behaviour. Each case replays one real incident: the scaffold
 (`evals/lib/setup.sh`) builds a throwaway boss worktree under the eval's temp HOME (never your `~/.boss`), renders what
 `/boss` loads into `BOSS-INSTRUCTIONS.md`, and copies the case's `fixtures/` (the captured `gh` and worker output) to `./state/`. The
-kit's commands under `./bin/` are stubs that only record the call; every other command is refused and still shows in
-the trace. Graders check the tool calls (no merge, no force-push, the watcher armed with `run_in_background`, the full
+kit's commands under `./bin/` are stubs that only record the call (`bosskit.py next` also runs the real lint, so a
+shorthand line is still refused); every other command is refused and still shows in the trace. Graders check the tool calls (no merge, no force-push, the watcher armed with `run_in_background`, the full
 id and the branch) and the reply (an LLM judge, haiku, for one claim each).
 
 ```bash
