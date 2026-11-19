@@ -1474,6 +1474,14 @@ class Hosts(Home):
         self.assertEqual(r.returncode, 3)
         self.assertIn("other: closing terminals is not supported", r.stdout)
 
+    def test_boss_host_and_close_run_without_a_project_where_the_cwd_names_one_with_no_config(self):
+        open(os.path.join(self.wt, ".boss"), "w").write("project: ghost\n")  # no <BOSS_HOME>/ghost/config.json
+        for cmd in (["boss-host", "close"], ["boss-close"]):
+            r = subprocess.run([os.path.join(BIN, cmd[0]), *cmd[1:], "w1", "t1"], cwd=self.wt, capture_output=True, text=True,
+                               env={**os.environ, "BOSS_HOST_KIND": "other"})
+            self.assertEqual(r.returncode, 3, (cmd, r.stderr))
+            self.assertIn("other: closing terminals is not supported", r.stdout + r.stderr)
+
     def test_boss_host_create_and_send_log_the_stage_and_the_message(self):
         os.environ["BOSS_PROJECT"] = "widgets"
         os.environ["FAKE_SESSION"] = "boss-1"

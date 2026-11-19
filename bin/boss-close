@@ -24,7 +24,7 @@ def main(argv):
         return 0 if argv[:1] in (["-h"], ["--help"]) else 2
     try:
         cfg = bosskit.load().cfg
-    except SystemExit:
+    except (SystemExit, OSError, ValueError):  # no project here, or one whose config.json is missing or broken
         cfg = {}
     host = bosshost.get(cfg)
     try:
