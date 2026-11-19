@@ -1,7 +1,7 @@
 #!/bin/bash
 # Scaffold shared by every boss eval case: run by `claude plugin eval --scaffold` in the case's empty cwd, under the
 # eval's own temp HOME (never the real ~/.boss). It makes cwd a boss worktree of the project "evalproj" on the test
-# host, renders what /boss loads into BOSS-INSTRUCTIONS.md, copies the case's state/ (captured tool output) in, and
+# host, renders what /boss loads into BOSS-INSTRUCTIONS.md, copies the case's fixtures/ (captured tool output) to ./state/, and
 # stubs the kit commands the boss acts with.
 #   setup.sh <case dir>     the case's scaffold.sh passes its own folder
 set -euo pipefail
@@ -13,7 +13,7 @@ git init -q -b main . && git -c user.email=e@x -c user.name=eval commit -q --all
 printf '# Boss workspace\n' > CLAUDE.local.md
 "$KIT/bin/boss-init" evalproj --repo acme/widgets --base main --me ada --host fake --worktree "$PWD" >/dev/null
 python3 "$KIT/bin/bosskit.py" instructions > BOSS-INSTRUCTIONS.md
-[ -d "$CASE/state" ] && cp -R "$CASE/state" ./state
+[ -d "$CASE/fixtures" ] && cp -R "$CASE/fixtures" ./state
 # The commands the boss acts with are stubs: they log their argv to calls.log and change nothing. evals/run grants Bash
 # only for these, so every other command (gh, git push, ...) is refused, and still shows in the trace for the graders.
 mkdir -p bin

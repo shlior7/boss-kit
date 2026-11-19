@@ -1,0 +1,5 @@
+{"number": 61, "title": "Notes: tag filter chips", "isDraft": true, "headRefName": "feat/tag-filter",
+ "headRefOid": "2d81f03b6a5c4e9d8f7a6b5c4d3e2f1a0b9c8d7e", "mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED",
+ "statusCheckRollup": [{"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"},
+  {"name": "typecheck", "status": "QUEUED", "conclusion": null}],
+ "files": [{"path": "apps/web/src/notes/TagFilter.tsx"}, {"path": "apps/web/src/notes/list.ts"}]}

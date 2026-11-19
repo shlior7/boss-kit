@@ -1,0 +1,3 @@
+⏺ Running the ranking benchmark (3 of 5 corpora)…
+  ⎿  bun test apps/api/test/rank.bench.ts
+✻ Working… (4m 12s · esc to interrupt)

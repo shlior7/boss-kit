@@ -1,0 +1,5 @@
+{"number": 57, "title": "Export: CSV export of the notes table", "state": "OPEN", "isDraft": false,
+ "headRefName": "feat/csv-export", "baseRefName": "main", "headRefOid": "5be0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8",
+ "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+ "statusCheckRollup": [{"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"},
+  {"name": "typecheck", "status": "COMPLETED", "conclusion": "SUCCESS"}]}

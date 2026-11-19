@@ -540,7 +540,7 @@ In a dispatched worker's own session the same pane shows that worker's status. I
 
 `bin/verify` tests the scripts; `evals/` tests the boss's behaviour. Each case replays one real incident: the scaffold
 (`evals/lib/setup.sh`) builds a throwaway boss worktree under the eval's temp HOME (never your `~/.boss`), renders what
-`/boss` loads into `BOSS-INSTRUCTIONS.md`, and copies the case's `state/` (the captured `gh` and worker output) in. The
+`/boss` loads into `BOSS-INSTRUCTIONS.md`, and copies the case's `fixtures/` (the captured `gh` and worker output) to `./state/`. The
 kit's commands under `./bin/` are stubs that only record the call; every other command is refused and still shows in
 the trace. Graders check the tool calls (no merge, no force-push, the watcher armed with `run_in_background`, the full
 id and the branch) and the reply (an LLM judge, haiku, for one claim each).
@@ -564,7 +564,7 @@ money, so it is not part of `bin/verify`.
 | `watcher-on-resume` | shared lessons 3, 21, 22, quack 2026-11-11: watchers reaped by a restart and never re-armed | `boss-host watch <full id> <branch>` with `run_in_background`, no `&`, sees the envelope that landed |
 | `decision-line-standalone` | shared lesson 54, PR #39: "Your move" lines in shorthand | no bare codes or PR numbers, the line stands alone |
 
-A new case: copy a folder, edit `case.yaml` (the incident in its comment, the user's words in the prompt), `state/`
+A new case: copy a folder, edit `case.yaml` (the incident in its comment, the user's words in the prompt), `fixtures/`
 (what the boss would read) and `graders/`. Grade with `tool_used` (`input_match` is a regex over the call's JSON
 input) and `regex` wherever you can; keep each `llm` grader to one claim.
 

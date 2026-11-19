@@ -1,0 +1,1 @@
+- Open decision: XLSX export pulls in the `exceljs` dependency (1.1 MB). Alternative: write CSV only and let users open it in Excel. Recommendation: keep exceljs, the users asked for real XLSX with column types.
