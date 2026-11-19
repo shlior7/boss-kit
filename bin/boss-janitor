@@ -583,10 +583,11 @@ def ledger(pdir, cfg, apply, today=None):
             sizes[a] = os.path.getsize(a) if os.path.exists(a) else None
             with open(a, "a") as f:
                 f.write(block)
-        now = os.stat(path)
-        if (now.st_mtime_ns, now.st_size) != (st.st_mtime_ns, st.st_size):
-            raise Changed(f"{path} changed while compacting (another boss wrote it); nothing changed")
-        os.replace(tmp, path)
+        with bosskit.locked(path):  # boss-host create's row write takes it too: none lands between the check and the replace
+            now = os.stat(path)
+            if (now.st_mtime_ns, now.st_size) != (st.st_mtime_ns, st.st_size):
+                raise Changed(f"{path} changed while compacting (another boss wrote it); nothing changed")
+            os.replace(tmp, path)
     except BaseException:
         for a, size in sizes.items():  # undo the archive appends
             if size is None:
@@ -622,8 +623,8 @@ def log(ctx, line, reason):
 
 def ledger_line(ctx, text):
     path = os.path.join(ctx.pdir, ctx.cfg.get("ledger", "ledger.md"))
-    last = bosskit._read(path).rstrip("\n").rsplit("\n", 1)[-1]
-    with open(path, "a") as f:
+    with bosskit.locked(path), open(path, "a") as f:
+        last = bosskit._read(path).rstrip("\n").rsplit("\n", 1)[-1]
         f.write(("\n" if last.startswith("|") else "") + f"- {time.strftime('%Y-%m-%d %H:%M')} {text}\n")
 
 

@@ -101,7 +101,7 @@ Playbook: `playbooks/report.md`. Read it before your first report in a session.
 
 ## 10. Ledger and memory
 Playbook: `playbooks/ledger.md` (the dispatch table). Read it before your first ledger write in a session.
-Keep the project's shared `ledger.md` current on every dispatch, merge and decision, one dispatch row each with your boss id; lessons go in section 14, not here. Re-verify any ledger fact before acting on it.
+Keep the project's shared `ledger.md` current on every dispatch, merge and decision, one dispatch row each with your boss id; lessons go in section 14, not here. `bin/boss-host create` writes that row; you keep its Status and Proof current. Re-verify any ledger fact before acting on it.
 
 ## 11. First actions in a new project
 Playbook: `playbooks/first-actions.md`. Read it when you start in a project that has no ledger yet: map the work, build the stack and merge order, `bin/boss-init`, write the ledger, report.
