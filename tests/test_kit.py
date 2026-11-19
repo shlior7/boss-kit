@@ -2712,5 +2712,39 @@ class HumanPrComments(Home):
         self.assertEqual(deck.pr_row("a/b", {"number": 9, "title": "t", "comments": self.pr("<!-- BOSS_WORKER_DONE task: <id> -->")[0]["comments"]}, True)["doneAt"], 0)
 
 
+class EvalScaffold(unittest.TestCase):
+    """evals/lib/setup.sh, the scaffold every boss eval case runs: it renders what /boss loads and stubs the kit's commands."""
+    SETUP = os.path.join(os.path.dirname(BIN), "evals", "lib", "setup.sh")
+
+    def run_setup(self, home, cwd, case):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("BOSS_")}
+        env["HOME"] = home
+        return subprocess.run([self.SETUP, case], cwd=cwd, env=env, capture_output=True, text=True)
+
+    def test_renders_instructions_and_stubs(self):
+        with tempfile.TemporaryDirectory() as t:
+            home, case = os.path.join(t, "home"), os.path.join(t, "case")
+            cwd = os.path.join(home, "cwd")
+            os.makedirs(cwd)
+            os.makedirs(os.path.join(case, "state"))
+            open(os.path.join(case, "state", "x.json"), "w").write("{}")
+            p = self.run_setup(home, cwd, case)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            text = open(os.path.join(cwd, "BOSS-INSTRUCTIONS.md")).read()
+            for part in ("## 3. Hard rules", "# Host commands: fakehost", "# Shared boss lessons"):
+                self.assertIn(part, text)
+            self.assertTrue(os.path.exists(os.path.join(cwd, "state", "x.json")))
+            stub = subprocess.run([os.path.join(cwd, "bin", "boss-merge"), "57"], capture_output=True, text=True)
+            self.assertIn("not run", stub.stdout)
+            self.assertEqual(open(os.path.join(cwd, "calls.log")).read(), "boss-merge 57\n")
+
+    def test_refuses_a_real_home(self):
+        with tempfile.TemporaryDirectory() as t:
+            p = self.run_setup(os.path.expanduser("~"), t, t)
+            self.assertEqual(p.returncode, 1)
+            self.assertIn("not a temp home", p.stderr)
+            self.assertFalse(os.path.exists(os.path.join(t, ".boss")))
+
+
 if __name__ == "__main__":
     unittest.main()
