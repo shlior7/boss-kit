@@ -21,4 +21,18 @@ for c in boss-host boss-merge boss-mail boss-event boss-status-ask boss-lesson b
   printf '#!/bin/sh\necho "%s $*" >> "%s/calls.log"\necho "replay: recorded, not run"\n' "$c" "$PWD" > "bin/$c"
   chmod +x "bin/$c"
 done
+# bosskit.py is stubbed too, but `next` runs the kit's real lint, so a shorthand "Your move" line is refused with its reason.
+cat > bin/bosskit.py <<EOF
+#!/usr/bin/env python3
+import sys
+sys.path.insert(0, "$KIT/bin")
+import bosskit
+args = sys.argv[1:]
+open("$PWD/calls.log", "a").write(" ".join(["bosskit.py"] + args) + "\\n")
+why = args[:1] == ["next"] and bosskit.lint_next(" ".join(args[1:]))
+if why:
+    sys.exit(f"bosskit: next refused, shorthand: {why}")
+print("replay: recorded, not run")
+EOF
+chmod +x bin/bosskit.py
 echo "scaffold ok: $(wc -c < BOSS-INSTRUCTIONS.md) bytes of instructions"

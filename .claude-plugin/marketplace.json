@@ -10,7 +10,7 @@
       "name": "boss",
       "source": "./",
       "description": "The /boss skill: onboards a project in a short form, then loads the boss prompt, the host's commands, the project's facts and lessons",
-      "version": "0.9.2"
+      "version": "0.9.3"
     },
     {
       "name": "boss-deck",

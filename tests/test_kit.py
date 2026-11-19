@@ -2845,6 +2845,19 @@ class EvalScaffold(unittest.TestCase):
             stub = subprocess.run([os.path.join(cwd, "bin", "boss-merge"), "57"], capture_output=True, text=True)
             self.assertIn("not run", stub.stdout)
             self.assertEqual(open(os.path.join(cwd, "calls.log")).read(), "boss-merge 57\n")
+            kit = os.path.join(cwd, "bin", "bosskit.py")
+            bad = subprocess.run([kit, "next", "go 1"], capture_output=True, text=True)
+            self.assertEqual(bad.returncode, 1)
+            self.assertIn("next refused, shorthand", bad.stderr)
+            good = subprocess.run([kit, "next", "Nothing needed, the worker is still running."], capture_output=True, text=True)
+            self.assertEqual((good.returncode, good.stdout), (0, "replay: recorded, not run\n"))
+            self.assertIn("bosskit.py next go 1\n", open(os.path.join(cwd, "calls.log")).read())
+            # evals/run puts a relative "bin" first on PATH, so the bare form the template prescribes is the stub
+            bare = subprocess.run("bosskit.py next 'go 2'", shell=True, cwd=cwd, capture_output=True, text=True,
+                                  env={**os.environ, "PATH": "bin:" + os.environ["PATH"]})
+            self.assertEqual(bare.returncode, 1)
+            self.assertIn("next refused, shorthand", bare.stderr)
+            self.assertIn("bosskit.py next go 2\n", open(os.path.join(cwd, "calls.log")).read())
 
     def test_refuses_a_real_home(self):
         with tempfile.TemporaryDirectory() as t:

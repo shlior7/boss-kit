@@ -1,6 +1,6 @@
 ---
 type: regex
-pattern: '\bgo \d\b|\(\d\)|kit #\d+|Your move:[^\n]*#\d+(?![^\n]*(export|CSV|XLSX))'
+pattern: '\bgo \d\b|\(\d\)|kit #\d+|Your move:(?![^\n]*(export|CSV|XLSX))[^\n]*#\d+'
 flags: i
 match: not_contains
 ---
