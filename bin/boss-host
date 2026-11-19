@@ -6,10 +6,13 @@
   boss-host session                          JSON {kind, id, terminal}: this session on its host, {} outside any (the pane asks)
   boss-host workers [ID...] | show ID        workers as JSON (state, branch, worktree, folder)
   boss-host create --repo R --branch B (--prompt-file F | --prompt T) [--model M] [--effort E] [--name N] [--folder F] [--task T]
-                                             start a worker; prints its id and logs `sent` (--task, else the prompt's first line)
+                                             start a worker; prints its id, logs `sent` (--task, else the prompt's first line)
+                                             and writes its DISPATCHED row first in the ledger's "## Dispatches <today>" table
   boss-host send ID (--text T | --file F) [--terminal T]   message a worker; logs it as the worker's `msg` event
   boss-host rename ID NAME | move ID FOLDER | open ID | archive ID | archive-cmd ID | screen ID TERMINAL
   boss-host close [--dry-run] ID TERMINAL... | close-dead [--dry-run] [ID...]
+send, close and archive refuse a worker whose newest ledger row names another boss (ask it with boss-mail);
+--force-owner overrides that, for the user.
   boss-host watch ID [BRANCH] [--terminal T] the watcher (run with run_in_background). A plugin with its own watcher runs
                                              that; otherwise this one: every 20 s, for up to 3 h, it exits (waking the boss) on a
                                              new envelope message from the worker, PR READY on BRANCH, a blocked agent, 9 idle
@@ -143,6 +146,27 @@ def flag(args, name, default=None):
     return default
 
 
+def deck():
+    """bin/boss-deck-data.py as a module: the ledger parser the pane reads rows with."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("boss_deck_data", os.path.join(os.path.dirname(os.path.abspath(__file__)), "boss-deck-data.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def ledger(ctx):
+    return os.path.join(ctx.pdir, ctx.cfg.get("ledger", "ledger.md"))
+
+
+def check_owner(ctx, wid):
+    """Exit when the newest ledger row for *wid* names another boss; no row, or no Boss cell, is anyone's."""
+    d = deck()
+    row = d.ledger_tasks(ledger(ctx)).get(wid[:8])
+    if row and not d.is_mine(row[4], ctx.bid):
+        sys.exit(f"boss-host: {wid} is owned by {row[4]}, use boss-mail (or --force-owner)")
+
+
 def ctx_or_none():
     try:
         return bosskit.load()
@@ -169,8 +193,10 @@ def main(argv):
         return 0
     ctx = ctx_or_none()
     host = bosshost.get(ctx.cfg if ctx else {}, ctx.host if ctx else None)
-    dry = "--dry-run" in args
-    args = [a for a in args if a != "--dry-run"]
+    dry, force = "--dry-run" in args, "--force-owner" in args
+    args = [a for a in args if a not in ("--dry-run", "--force-owner")]
+    if ctx and not force and cmd in ("send", "close", "archive") and args:
+        check_owner(ctx, args[0])
     try:
         if cmd == "plugins":
             for n, m in bosshost.plugins().items():
@@ -195,10 +221,13 @@ def main(argv):
             prompt = bosskit._read(pf) if pf else prompt
             if not (repo and branch and prompt):
                 sys.exit("boss-host create: needs --repo, --branch and --prompt-file (or --prompt)")
-            task = flag(args, "--task") or prompt.strip().splitlines()[0][:120]
-            wid = host.create(repo, branch, prompt, flag(args, "--model", ""), flag(args, "--effort", ""), flag(args, "--name", ""), flag(args, "--folder", ""))
+            given, name, model = flag(args, "--task"), flag(args, "--name", ""), flag(args, "--model", "")
+            task = given or prompt.strip().splitlines()[0][:120]
+            wid = host.create(repo, branch, prompt, model, flag(args, "--effort", ""), name, flag(args, "--folder", ""))
             if ctx:
                 bosskit.add_event(ctx, wid, "sent", task)
+                row = [time.strftime("%Y-%m-%d"), f"{given}: {name}" if given and name else task, wid, model, "DISPATCHED", "", ctx.bid]
+                bosskit.add_dispatch(ledger(ctx), row, row[0])
             print(wid)
         elif cmd == "send" and args:
             wid = args.pop(0)

@@ -1491,6 +1491,59 @@ class Hosts(Home):
                          [("new00001", "sent", "fix-42: retry webhooks"), ("new00001", "msg", "also cover 429")])
         self.assertEqual(json.loads(run("session").stdout), {"kind": "fake", "id": "boss-1", "terminal": ""})
 
+    def test_boss_host_create_writes_the_dispatch_row_first_in_todays_section(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        os.environ["FAKE_SESSION"] = "boss-1"
+        path = os.path.join(self.home, "widgets", "ledger.md")
+        old = "## Dispatches 2026-01-01\n\n| Date | Task | Workspace | Model | Status | Proof | Boss |\n|---|---|---|---|---|---|---|\n" \
+              "| 2026-01-01 | old-1 | aaaa1111 | opus | MERGED | | boss-1 |\n"
+        open(path, "w").write("# ledger\n\n## Stack\n\nmain\n\n" + old)
+        run = lambda *a: subprocess.run([os.path.join(BIN, "boss-host"), "create", "--repo", "acme/widgets", *a], cwd=self.wt, capture_output=True, text=True)
+        r = run("--branch", "fix/retry", "--prompt", "do it", "--task", "fix-42", "--name", "retry webhooks", "--model", "opus")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = run("--branch", "fix/two", "--prompt", "fix-43: second\nmore")  # no --task: the prompt's first line
+        self.assertEqual(r.returncode, 0, r.stderr)
+        today = time.strftime("%Y-%m-%d")
+        self.assertEqual(bosskit._read(path), "# ledger\n\n## Stack\n\nmain\n\n"
+                         f"## Dispatches {today}\n\n" + "\n".join(bosskit.DISPATCH_HEAD) + "\n"
+                         f"| {today} | fix-43: second | new00001 |  | DISPATCHED |  | boss-1 |\n"
+                         f"| {today} | fix-42: retry webhooks | new00001 | opus | DISPATCHED |  | boss-1 |\n\n" + old)
+
+    def test_add_dispatch_makes_the_ledger_and_fills_a_heading_without_a_table(self):
+        path = os.path.join(self.tmp, "ledger.md")
+        bosskit.add_dispatch(path, ["2026-01-02", "a|b", "aaaa1111", "", "DISPATCHED", "", "b1"], "2026-01-02")
+        row = "| 2026-01-02 | a\\|b | aaaa1111 |  | DISPATCHED |  | b1 |"
+        self.assertEqual(bosskit._read(path), "## Dispatches 2026-01-02\n\n" + "\n".join(bosskit.DISPATCH_HEAD) + f"\n{row}\n")
+        open(path, "w").write("## Dispatches 2026-01-03\n\n## Decisions\n")
+        bosskit.add_dispatch(path, ["2026-01-03", "t", "bbbb2222", "", "DISPATCHED", "", "b1"], "2026-01-03")
+        self.assertEqual(bosskit._read(path).splitlines()[:5], ["## Dispatches 2026-01-03", "", *bosskit.DISPATCH_HEAD,
+                                                                "| 2026-01-03 | t | bbbb2222 |  | DISPATCHED |  | b1 |"])
+        self.assertFalse([f for f in os.listdir(self.tmp) if f.endswith(".tmp")])
+
+    def test_send_close_and_archive_refuse_another_bosses_workspace(self):
+        os.environ["BOSS_PROJECT"] = "widgets"
+        os.environ["FAKE_SESSION"] = "boss-1"
+        open(os.path.join(self.home, "widgets", "ledger.md"), "w").write(
+            "## Dispatches 2026-01-02\n\n| Date | Task | Workspace | Model | Status | Proof | Boss |\n|---|---|---|---|---|---|---|\n"
+            "| 2026-01-02 | a | aaaa1111 | opus | DISPATCHED | | boss-2 |\n"
+            "| 2026-01-02 | b | bbbb2222 | opus | DISPATCHED | | boss-1 |\n"
+            "| 2026-01-02 | d | dddd4444 | opus | DISPATCHED | | boss-1 |\n"  # newest row for dddd: this boss's
+            "| 2026-01-02 | c | cccc3333 | opus | DISPATCHED | |\n"  # no Boss cell: every boss's
+            "\n## Dispatches 2026-01-01\n\n| Date | Task | Workspace | Model | Status | Proof | Boss |\n|---|---|---|---|---|---|---|\n"
+            "| 2026-01-01 | d | dddd4444 | opus | DISPATCHED | | boss-2 |\n")
+        run = lambda *a: subprocess.run([os.path.join(BIN, "boss-host"), *a], cwd=self.wt, capture_output=True, text=True)
+        for args in (["send", "aaaa1111", "--text", "hi"], ["close", "aaaa1111", "t1"], ["archive", "aaaa1111"]):
+            r = run(*args)
+            self.assertEqual(r.returncode, 1, args)
+            self.assertIn("aaaa1111 is owned by boss-2, use boss-mail", r.stderr)
+        self.assertEqual(self.logged(), [])
+        self.assertEqual(run("archive", "aaaa1111", "--force-owner").returncode, 0)  # the user's override
+        for ws in ("bbbb2222", "cccc3333", "dddd4444", "eeee5555"):  # this boss's, no Boss cell, newest row mine, no row
+            r = run("send", ws, "--text", "hi")
+            self.assertEqual(r.returncode, 0, (ws, r.stderr))
+        self.assertEqual([c[:3] for c in self.logged()], [["fake", "archive", "aaaa1111"], *(["fake", "send", w] for w in
+                                                          ("bbbb2222", "cccc3333", "dddd4444", "eeee5555"))])
+
     def test_boss_host_workers_lists_only_the_named_ones(self):
         json.dump({"workspaces": [{"id": i, "terminals": []} for i in ("aaaa1111", "bbbb2222", "cccc3333")]},
                   open(os.path.join(self.fixdir, "snapshot.json"), "w"))  # fake lists every worker whatever ids it gets
