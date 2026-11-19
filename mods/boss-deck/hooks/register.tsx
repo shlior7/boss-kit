@@ -469,6 +469,7 @@ export const register: Register = on => {
         <Text bold wrap="wrap">
           {d.next || 'Nothing needs you.'}
         </Text>
+        {d.nextUnlinted && text('not written with bosskit.py next', true)}
         {d.pagesTo && text(`pages → ${d.pagesTo}`, true)}
         {askRow('', buttons(d.buttons))}
         {kitStale(loadedKit, d.kit) && (

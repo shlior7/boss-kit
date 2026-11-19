@@ -802,9 +802,10 @@ def main():
         idle = states.get(w["ws"][:8]) not in ("working", None)
         w["stale"] = w["ageS"] > STALE_AGE_S or (idle and w["ageS"] > IDLE_STALE_S)
     try:
-        now_line = open(os.path.join(ctx.bdir, "next.txt")).read().strip().splitlines()[0][:120]
+        now_lines = open(os.path.join(ctx.bdir, "next.txt")).read().strip().splitlines()
+        now_line = now_lines[0][:120]
     except (OSError, IndexError):
-        now_line = ""
+        now_lines, now_line = [], ""
     review = None
     rpath = os.path.join(ctx.bdir, "review.txt")
     try:
@@ -822,6 +823,7 @@ def main():
         name_boss_workspace(host, cfg)
     print(json.dumps({
         "at": int(time.time()), "kit": kit_head(), "me": {"id": ctx.bid, "project": ctx.name}, "next": now_line, "review": review,
+        "nextUnlinted": bool(now_line) and bosskit.NEXT_MARK not in now_lines,
         "pagesTo": page_provider(cfg),
         "attention": todo, "workers": workers, "watchers": armed, "prs": pr_rows, "board": board(cfg, bosskit.tracker_snapshot(ctx)),
         "others": others(bosskit.registry(ctx.home), ctx.bid, workspace=ctx.workspace, wt=ctx.worktree), "mail": box,
