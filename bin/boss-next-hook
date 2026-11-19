@@ -3,17 +3,20 @@
 
 Reads the hook input JSON on stdin. Only in a boss session (the worktree's boss marker binds this session) it finds the last
 "Your move:" line of the final assistant message (last_assistant_message, else the transcript since the last user prompt),
-runs bosskit.lint_next on it, and on shorthand blocks the stop with the reason so the boss rewrites the line. No
-"Your move" line, not a boss, or anything unreadable: it allows, silently.
+runs bosskit.lint_next on it, and on shorthand blocks the stop with the reason so the boss rewrites the line; a rewrite is
+checked again, up to MAX_BLOCKS blocks in a row per session. No "Your move" line, not a boss, or anything unreadable: it
+allows, silently.
 """
 import json
 import os
 import re
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bosskit  # noqa: E402
 
+MAX_BLOCKS = 3
 YOUR_MOVE = re.compile(r"your move\W*:\W*(.*)", re.I)
 
 
@@ -45,8 +48,6 @@ def last_reply(inp):
 
 def verdict(inp):
     """The block reason, or "" to allow."""
-    if inp.get("stop_hook_active"):  # already rewriting once after a block: never loop
-        return ""
     if not is_boss(inp.get("cwd") or os.getcwd()):
         return ""
     moves = [m.group(1).strip(" *_`") for m in YOUR_MOVE.finditer(last_reply(inp))]
@@ -59,13 +60,27 @@ def verdict(inp):
             "what is being decided, the options, your recommendation, and what happens on each answer (template section 9).")
 
 
+def blocks_file(inp):
+    sid = re.sub(r"[^\w-]", "", str(inp.get("session_id") or "none"))[:64]
+    return os.path.join(tempfile.gettempdir(), f"boss-next-hook-{sid}")
+
+
 def main():
     try:
-        why = verdict(json.load(sys.stdin))
+        inp = json.load(sys.stdin)
+        why = verdict(inp)
+        count = blocks_file(inp)
+        # consecutive blocks in this session: after MAX_BLOCKS rewrites it lets the reply through, so it can never loop
+        n = int(open(count).read() or 0) if inp.get("stop_hook_active") and os.path.exists(count) else 0
+        if not why or n >= MAX_BLOCKS:
+            if os.path.exists(count):
+                os.remove(count)
+            return
+        with open(count, "w") as f:
+            f.write(str(n + 1))
     except Exception:  # a hook that crashes must never trap the session
         return
-    if why:
-        print(json.dumps({"decision": "block", "reason": why}))
+    print(json.dumps({"decision": "block", "reason": why}))
 
 
 if __name__ == "__main__":

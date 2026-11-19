@@ -63,11 +63,19 @@ class NextHook(unittest.TestCase):
     def test_the_hook_field_wins_over_the_transcript(self):
         self.assertEqual(self.run_hook(GOOD, last_assistant_message="Your move: kit #34")["decision"], "block")
 
-    def test_not_a_boss_a_second_stop_or_bad_input_allows(self):
+    def test_not_a_boss_or_bad_input_allows(self):
         other = os.path.join(self.tmp, "other")
         os.makedirs(other)
         self.assertIsNone(self.run_hook("Your move: go 1", cwd=other))
-        self.assertIsNone(self.run_hook("Your move: go 1", stop_hook_active=True))
+
+    def test_a_rewrite_is_checked_again_up_to_three_blocks_then_allowed(self):
+        sid = {"session_id": f"t{os.getpid()}"}
+        self.assertEqual(self.run_hook("Your move: go 1", **sid)["decision"], "block")
+        self.assertEqual(self.run_hook("Your move: go 2", stop_hook_active=True, **sid)["decision"], "block")
+        self.assertEqual(self.run_hook("Your move: go 3", stop_hook_active=True, **sid)["decision"], "block")
+        self.assertIsNone(self.run_hook("Your move: go 4", stop_hook_active=True, **sid))
+        self.assertEqual(self.run_hook("Your move: go 5", **sid)["decision"], "block")  # a new reply starts over
+        self.assertIsNone(self.run_hook(GOOD, stop_hook_active=True, **sid))
         out = subprocess.run([sys.executable, HOOK], input="{", capture_output=True, text=True)
         self.assertEqual((out.returncode, out.stdout), (0, ""))
 
