@@ -31,6 +31,8 @@ usage: bosskit.py show            the resolved paths, as JSON
                                   the form's answers as config, BOSS.md ## Expectations, Domain lines and the boss marker; a dry run until --apply,
                                   which writes (backing each file up) and prints one summary
 """
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -851,13 +853,26 @@ def save_json(path, data):
     save_text(path, json.dumps(data, indent=1))
 
 
+@contextlib.contextmanager
+def locked(path):
+    """Hold an exclusive lock on <path>.lock: every read-modify-replace of a shared file (the ledger) takes it, so
+    two bosses writing at once both land."""
+    with open(path + ".lock", "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield  # closing the file releases the lock
+
+
 DISPATCH_HEAD = ["| Date | Task: objective | Workspace / terminal | Model (why) | Status | Proof | Boss |", "|---|---|---|---|---|---|---|"]
 
 
 def add_dispatch(path, cells, day):
     """Put a row of *cells* first in the ledger's "## Dispatches <day>" table (playbooks/ledger.md), adding that section
     above the other dispatch sections when it is missing."""
-    # shortcut: read-modify-write without a lock; two bosses dispatching in the same instant can drop a row
+    with locked(path):
+        _add_dispatch(path, cells, day)
+
+
+def _add_dispatch(path, cells, day):
     lines = _read(path).splitlines()
     row = "| " + " | ".join(str(c).replace("|", "\\|") for c in cells) + " |"
     head = f"## Dispatches {day}"

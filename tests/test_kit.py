@@ -1520,6 +1520,16 @@ class Hosts(Home):
                                                                 "| 2026-01-03 | t | bbbb2222 |  | DISPATCHED |  | b1 |"])
         self.assertFalse([f for f in os.listdir(self.tmp) if f.endswith(".tmp")])
 
+    def test_concurrent_dispatch_writers_all_land_their_rows(self):
+        path = os.path.join(self.tmp, "ledger.md")
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import bosskit\n"
+                "for n in range(25): bosskit.add_dispatch(sys.argv[2], ['2026-01-02', f'{sys.argv[3]}-{n}', 'aaaa1111', '', 'DISPATCHED', '', 'b'], '2026-01-02')")
+        procs = [subprocess.Popen([sys.executable, "-c", code, BIN, path, f"w{i}"]) for i in range(6)]
+        self.assertEqual([p.wait() for p in procs], [0] * 6)
+        rows = [l for l in bosskit._read(path).splitlines() if l.startswith("| 2026-01-02 ")]
+        self.assertEqual(sorted(rows), sorted(f"| 2026-01-02 | w{i}-{n} | aaaa1111 |  | DISPATCHED |  | b |" for i in range(6) for n in range(25)))
+        self.assertEqual(bosskit._read(path).count("## Dispatches"), 1)
+
     def test_send_close_and_archive_refuse_another_bosses_workspace(self):
         os.environ["BOSS_PROJECT"] = "widgets"
         os.environ["FAKE_SESSION"] = "boss-1"
