@@ -3,6 +3,7 @@
 
   boss-janitor status                            memory numbers, and what a sweep would do now
   boss-janitor sweep [--apply] [--reason TEXT]   a dry run unless --apply AND config `janitor` is "apply"
+  boss-janitor ledger [--apply] [--project P]    compact the project's ledger.md only (same dry-run gate)
 
 What a sweep does, each rule keeping anything it is not sure of:
   orphans    processes of yours with ppid 1, <1% CPU (theirs and their children's), at least 30 min old, whose cwd is in
@@ -14,9 +15,18 @@ What a sweep does, each rule keeping anything it is not sure of:
              uncommitted or unpushed (git worktree remove); and the entries of claude-<uid> under /private/tmp and $TMPDIR older than 7 days
              that no process holds (removed by exact resolved path, never through a symlink)
 
+  ledger     moves stale ledger.md content to <project>/ledger-archive/<YYYY-MM>.md, under the heading it had, and
+             never deletes: dispatch rows older than 7 days with a final status (MERGED, ARCHIVED, CLOSED, DONE
+             verified) whose workspace the host no longer lists; dated bullets, ### HH:MM wake, ## State and done
+             ## REMINDER sections older than 7 days; tables and sections left empty. Title, Stack, Decisions and
+             Reminders stay. Exact duplicate rows and bullets collapse; a cell or bullet over 500 chars is cut, its full
+             line archived. Writes <ledger>.bak-<time> first, then a temp file and os.replace, and aborts if the
+             ledger changed meanwhile.
+
 Each action is one line in <data home>/<project>/janitor.log (pid or path, owner, age, reason); a sweep that changed
 something adds one line to the project's ledger. A file `janitor.off` in the data home turns sweeps off.
 """
+import functools
 import glob
 import json
 import os
@@ -25,6 +35,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -126,6 +137,7 @@ def age_txt(s):
 
 # ---- whose: this boss's workers and their worktrees ------------------------------------------
 
+@functools.lru_cache(maxsize=None)
 def _deck():
     import importlib.util
     spec = importlib.util.spec_from_file_location("boss_deck_data", os.path.join(BIN, "boss-deck-data.py"))
@@ -358,6 +370,236 @@ def close_dead(ids, apply):
     return [line for line in (r.stdout + r.stderr).splitlines() if line.strip()]
 
 
+# ---- ledger: move stale content to ledger-archive/<YYYY-MM>.md, never delete -----------------
+
+LEDGER_DAYS = 7
+CELL_MAX = 500
+FINAL = {"MERGED", "ARCHIVED", "CLOSED"}       # and DONE when its status cell says verified
+KEPT = re.compile(r"## (Stack|Decisions|Reminders)\b")
+LOGS = re.compile(r"## State\b|## REMINDER\b.*\bdone\b|### \d{1,2}:\d{2}\b.*\bwake\b", re.I)
+DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+BULLET = re.compile(r"- (\d{4}-\d{2}-\d{2})\b")
+SEP = re.compile(r"\|[-:| ]+\|?\s*$")
+CUT = " … (full: ledger-archive/{}.md)"
+PIPE = re.compile(r"(?<!\\)\|")
+
+
+def _row(line):
+    """A dispatch row's cells as the pane reads them (a bullet can hold one too), or None for any other line."""
+    c = _deck().cells(line) if "|" in line else []
+    return c if len(c) >= 7 and DAY.fullmatch(c[1]) else None
+
+
+def _final(status):
+    word = (status.split() or [""])[0].rstrip(",:").upper()
+    return word in FINAL or (word == "DONE" and "verified" in status.lower())
+
+
+def _cut(line, month):
+    """The line with each long cell (or a long bullet) cut to CELL_MAX, or the line itself. Never the date, workspace
+    or proof cells, which the pane reads; never a cell already cut."""
+    def short(s):
+        return s if len(s) <= CELL_MAX or "(full: ledger-archive/" in s else s[:CELL_MAX].rstrip("\\") + CUT.format(month)
+    if not _row(line):
+        return short(line)
+    segs = PIPE.split(line)
+    return "|".join(s if i in (1, 3, 6) or s.strip() == short(s.strip()) else f" {short(s.strip())} " for i, s in enumerate(segs))
+
+
+def compact(text, today, live):
+    """Plan one compaction: (kept text, {month: archive text}, stats). *live* is called only when a final, old dispatch
+    row needs it: the host's workspace-id prefixes, or None when the host cannot say (then every row stays)."""
+    lines = text.split("\n")
+    cutoff = time.strftime("%Y-%m-%d", time.localtime(time.mktime(time.strptime(today, "%Y-%m-%d")) - LEDGER_DAYS * 86400))
+    old = lambda d: bool(d) and d < cutoff  # noqa: E731
+    month = lambda s, dflt=today: ((DAY.search(s) or DAY.search(dflt)).group(0))[:7]  # noqa: E731
+    h2, h3, kept = [None] * len(lines), [None] * len(lines), [False] * len(lines)
+    cur2 = cur3 = None
+    for i, l in enumerate(lines):
+        if l.startswith("# "):
+            cur2 = cur3 = None
+        elif l.startswith("## "):
+            cur2, cur3 = i, None
+        elif l.startswith("### "):
+            cur3 = i
+        h2[i], h3[i] = cur2, cur3
+        kept[i] = cur2 is None or bool(KEPT.match(lines[cur2]))
+    heading = lambda i: lines[i].startswith("#")  # noqa: E731
+    moved, drop, full, notes, sections, host_ok = {}, set(), {}, [], [], True
+    # dated log sections, whole, heading included
+    for k, l in enumerate(lines):
+        if kept[k] or not LOGS.match(l):
+            continue
+        d = (DAY.search(l) or DAY.search(lines[h2[k]] if h2[k] is not None else "") or [""])[0] if l.startswith("###") \
+            else (DAY.search(l) or [""])[0]
+        if old(d):
+            end = next((j for j in range(k + 1, len(lines)) if lines[j].startswith(("# ", "## ") if l.startswith("## ")
+                                                                                 else ("# ", "## ", "### "))), len(lines))
+            sections.append((k, end))
+            moved.update({j: d[:7] for j in range(k, end) if not lines[j].startswith("|") and not _row(lines[j])})
+    # exact duplicate rows and bullets collapse to the first copy
+    seen = set()
+    for i, l in enumerate(lines):
+        if not kept[i] and (l.startswith("- ") or _row(l)):
+            if l in seen:
+                drop.add(i)
+            seen.add(l)
+    # final dispatch rows of a gone workspace, and dated bullets, older than LEDGER_DAYS
+    cand, prefixes = [], set()
+    for i, l in enumerate(lines):
+        if kept[i] or i in moved or i in drop:
+            continue
+        c, b = _row(l), BULLET.match(l)
+        if c and old(c[1]) and _final(c[5]):
+            ws = re.match(r"(?:NEW\s+|ws\s+)?([0-9a-f]{8})", c[3], re.I)
+            if ws:
+                cand.append((i, ws.group(1).lower(), c[1][:7]))
+        elif b and not c and old(b.group(1)):
+            moved[i] = b.group(1)[:7]
+    if cand:
+        on_host = live()
+        if on_host is None:
+            host_ok = False
+            notes.append(f"host unreadable: {len(cand)} final dispatch row(s) kept")
+        for i, ws, m in cand if on_host is not None else ():
+            if ws not in on_host:
+                moved[i], prefixes = m, prefixes | {ws}
+    gone = lambda i: i in moved or i in drop  # noqa: E731
+    for k, end in sections:  # a log section keeps its heading while a row under it stays
+        if any(not gone(j) and lines[j].strip() for j in range(k + 1, end)):
+            moved.pop(k)
+    # a dispatch table left with only its header and separator goes too, then a section left empty
+    runs, run = [], []
+    for i, l in enumerate(lines + [""]):
+        if i < len(lines) and l.startswith("|") and not kept[i]:
+            run.append(i)
+        elif run:
+            runs, run = runs + [run], []
+    header = {}
+    for r in runs:
+        head = r[:2] if len(r) >= 2 and SEP.match(lines[r[1]]) and not _row(lines[r[0]]) else []
+        header.update({i: head for i in r})
+        rest = [i for i in r if i not in head]
+        if head and rest and any(i in moved for i in rest) and all(gone(i) for i in rest):
+            moved.update({i: next(moved[j] for j in rest if j in moved) for i in head})
+    for k, l in enumerate(lines):
+        if l.startswith("## ") and not kept[k] and k not in moved:
+            body = [j for j in range(k + 1, len(lines)) if h2[j] == k]
+            if any(j in moved for j in body) and all(gone(j) for j in body if lines[j].strip()):
+                moved[k] = next(moved[j] for j in body if j in moved)
+    # long cells in what stays
+    out, gap = [], False
+    for i, l in enumerate(lines):
+        if gone(i):
+            gap = True
+            continue
+        if l == "" and gap and out and out[-1] == "":
+            continue
+        gap = False
+        if not kept[i] and not heading(i) and (l.startswith("- ") or _row(l)):
+            c = _cut(l, month(l))
+            if c != l:
+                full[i] = month(l)
+            l = c
+        out.append(l)
+    # the archive: each moved or cut line, under the headings and table header it had
+    archive = {}
+    for m in sorted(set(moved.values()) | set(full.values())):
+        mine = {i for i, mm in list(moved.items()) + list(full.items()) if mm == m}
+        ctx = {j for i in mine for j in (h2[i], h3[i], *header.get(i, [])) if j is not None}
+        body = []
+        for i in sorted(mine | ctx):
+            for l in ([""] if heading(i) else []) + [lines[i]] + ([""] if heading(i) else []):
+                if l or (body and body[-1]):
+                    body.append(l)
+        archive[m] = f"\n<!-- boss-janitor ledger: archived {time.strftime('%Y-%m-%d %H:%M')} -->\n" + "\n".join(body) + "\n"
+    kept_text = "\n".join(out)
+    return kept_text, archive, {"moved": len(moved), "dupes": len(drop), "cut": len(full), "prefixes": prefixes,
+                                "notes": notes, "host_ok": host_ok, "items": [(i + 1, moved[i], lines[i]) for i in sorted(moved)],
+                                "before": len(text.encode()), "after": len(kept_text.encode())}
+
+
+def check(before, after, prefixes):
+    """Raise unless the pane reads the same row (task, status, date, proof, boss) for every workspace whose rows stayed."""
+    deck, rows = _deck(), []
+    for text in (before, after):
+        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
+            f.write(text)
+        rows.append(deck.ledger_tasks(f.name))
+        os.remove(f.name)
+    bad = [p for p, r in rows[0].items() if p not in prefixes and rows[1].get(p, ())[:5] != r[:5]]
+    if bad:
+        raise RuntimeError(f"the pane would read different rows for {', '.join(bad[:5])}")
+
+
+class Changed(Exception):
+    pass
+
+
+def live_workspaces(cfg):
+    """The host's workspace-id prefixes, or None when it cannot list them (an empty list is a host that failed)."""
+    try:
+        ws = bosshost.get(cfg).workers() or []
+    except (SystemExit, Exception):
+        return None
+    return {w["id"][:8].lower() for w in ws if w.get("id")} or None
+
+
+def kb(n):
+    return f"{n / 1024:.0f} KB" if n >= 10240 else f"{n / 1024:.1f} KB"
+
+
+def ledger(pdir, cfg, apply, today=None):
+    """Compact one project's ledger (or, without apply, describe it): (summary line or '', item lines)."""
+    path = os.path.join(pdir, cfg.get("ledger", "ledger.md"))
+    try:
+        st = os.stat(path)
+        text = open(path).read()
+    except OSError:
+        return "", []
+    kept, archive, s = compact(text, today or time.strftime("%Y-%m-%d"), lambda: live_workspaces(cfg))
+    if kept == text:
+        return "", s["notes"]
+    if apply and not s["host_ok"]:
+        raise RuntimeError("host unreadable: applied compaction stopped, nothing changed")
+    check(text, kept, s["prefixes"])
+    files = ", ".join(f"ledger-archive/{m}.md" for m in archive)
+    summary = (f"{'' if apply else 'would '}compact ledger {path}: move {s['moved']} line(s), collapse {s['dupes']} duplicate(s), "
+               f"cut {s['cut']} long cell(s){' -> ' + files if files else ''}; {kb(s['before'])} -> {kb(s['after'])}")
+    items = s["notes"] + [f"move L{n} -> {m}: {l[:100]}" for n, m, l in s["items"]]
+    if not apply:
+        return summary, items
+    adir = os.path.join(pdir, "ledger-archive")
+    os.makedirs(adir, exist_ok=True)
+    bak, tmp = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}", path + ".janitor-tmp"
+    shutil.copy2(path, bak)
+    with open(tmp, "w") as f:
+        f.write(kept)
+    shutil.copymode(path, tmp)
+    sizes = {}
+    try:
+        for m, block in archive.items():
+            a = os.path.join(adir, f"{m}.md")
+            sizes[a] = os.path.getsize(a) if os.path.exists(a) else None
+            with open(a, "a") as f:
+                f.write(block)
+        now = os.stat(path)
+        if (now.st_mtime_ns, now.st_size) != (st.st_mtime_ns, st.st_size):
+            raise Changed(f"{path} changed while compacting (another boss wrote it); nothing changed")
+        os.replace(tmp, path)
+    except BaseException:
+        for a, size in sizes.items():  # undo the archive appends
+            if size is None:
+                os.remove(a)
+            else:
+                os.truncate(a, size)
+        for p in (tmp, bak):
+            if os.path.exists(p):
+                os.remove(p)
+        raise
+    return summary + f" (backup {os.path.basename(bak)})", items
+
+
 # ---- the sweep -------------------------------------------------------------------------------
 
 def plan(ctx):
@@ -415,7 +657,14 @@ def sweep(ctx, apply, reason="", p=None, record=True):
         done += int(apply and not err)
         out.append(line)
         note(ctx, line, reason)
-    out +=[f"keep {k}: {why}" for k, why in p["keep"]]
+    try:
+        summary, _ = ledger(ctx.pdir, ctx.cfg, apply)
+    except (Changed, RuntimeError) as e:
+        summary = f"ledger kept: {e}"
+    if summary:
+        out.append(summary)
+        note(ctx, summary, reason)
+    out += [f"keep {k}: {why}" for k, why in p["keep"]]
     if done:
         ledger_line(ctx, f"janitor: {done} cleanup action(s) ({len(p['orphans'])} orphan trees, {len(p['temp'])} temp entries)"
                          + (f", reason {reason}" if reason else "") + "; see janitor.log")
@@ -424,11 +673,12 @@ def sweep(ctx, apply, reason="", p=None, record=True):
 
 
 def main(argv):
-    if not argv or argv[0] not in ("status", "sweep"):
+    if not argv or argv[0] not in ("status", "sweep", "ledger"):
         print(__doc__)
         return 0 if argv[:1] in (["-h"], ["--help"]) else 2
     off = os.path.exists(os.path.join(bosskit.home(), "janitor.off"))
-    ctx = bosskit.load(make=False, resolve_host=False)
+    project = argv[argv.index("--project") + 1] if "--project" in argv[:-1] else None
+    ctx = bosskit.load(name=project, make=False, resolve_host=False)
     if argv[0] == "status":
         m = memory()
         print(f"memory: pressure_level={m['level']} free={m['free']}% swap={m['swap']}% ({m['swap_gb']} GB)")
@@ -443,6 +693,16 @@ def main(argv):
     if "--apply" in argv and not apply:
         print(f"boss-janitor: dry run: config janitor is {ctx.cfg.get('janitor')!r}; "
               "set it to \"apply\" (bosskit.py config set) to act")
+    if argv[0] == "ledger":
+        try:
+            summary, items = ledger(ctx.pdir, ctx.cfg, apply)
+        except (Changed, RuntimeError) as e:
+            print(f"boss-janitor: ledger kept: {e}")
+            return 1
+        print("\n".join(items + [summary or f"ledger {ctx.name}: nothing to move"]))
+        if summary and apply:
+            log(ctx, summary, reason)
+        return 0
     print("\n".join(sweep(ctx, apply, reason)))
     return 0
 

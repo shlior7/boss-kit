@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: decision-line-standalone
+# Regression: shared lesson 54 and boss-kit PR #39 (2026-11-19): the user could not answer shorthand decision lines
+# ("go 1", "kit #34", a bare PR number) without scrolling back. Template section 9.
+tags: [report]
+execution:
+  max_turns: 12
+  allowed_tools: [Read, Glob, Grep, Bash]
+  prompt: |
+    You are the boss session of this worktree; /boss already loaded. Your instructions are ./BOSS-INSTRUCTIONS.md:
+    read all of it before you act. This is a replay: the commands that read GitHub and the workers already ran, and
+    their output is in ./state/ (read the file named after a command instead of running it). Act as you would live,
+    with the Bash tool: the kit's commands in ./bin/ (boss-host, boss-merge, boss-mail, boss-event, ...) record your
+    call and change nothing; any other command is refused in this replay, so say what you ran and carry on.
+
+    The user writes: "status"
+context:
+  scaffold_script: scaffold.sh

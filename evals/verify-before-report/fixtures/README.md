@@ -1,0 +1,2 @@
+- `watcher.txt`: what the background `bin/boss-host watch 3f9b2c71-8a4d-4e6f-b1c2-d3e4f5a6b7c8 feat/tag-filter` printed when it fired.
+- `gh-pr-view-61.json`: `gh pr view 61 --json headRefOid,isDraft,mergeable,mergeStateStatus,statusCheckRollup,files`, run just now.

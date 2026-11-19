@@ -1,0 +1,19 @@
+schema_version: "1.1"
+name: watcher-on-resume
+# Regression: shared lessons 3 and 22, quack ledger 2026-11-11 ("Claude Code reaped all 4 watchers ... Not
+# re-armed"), shared lesson 21 (short ids fail). Template section 6: arm every watcher with run_in_background (never
+# &), always with the branch; after a restart look for envelopes that landed, then re-arm.
+tags: [watcher]
+execution:
+  max_turns: 16
+  allowed_tools: [Read, Glob, Grep, Bash]
+  prompt: |
+    You are the boss session of this worktree; /boss already loaded. Your instructions are ./BOSS-INSTRUCTIONS.md:
+    read all of it before you act. This is a replay: the commands that read GitHub and the workers already ran, and
+    their output is in ./state/ (read the file named after a command instead of running it). Act as you would live,
+    with the Bash tool: the kit's commands in ./bin/ (boss-host, boss-merge, boss-mail, boss-event, ...) record your
+    call and change nothing; any other command is refused in this replay, so say what you ran and carry on.
+
+    The user writes: "you were restarted, carry on"
+context:
+  scaffold_script: scaffold.sh

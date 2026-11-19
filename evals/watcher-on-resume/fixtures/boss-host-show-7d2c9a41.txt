@@ -1,0 +1,7 @@
+⏺ BOSS_WORKER_DONE task: csv-export
+  summary: CSV export of the notes table, streamed
+  files: apps/api/src/export/csv.ts, apps/api/test/csv.test.ts
+  checks: unit 41/41, typecheck clean; pushed 5be0c1d
+  proof: https://pages.example.com/p/csv-export-evidence
+  handoff: draft PR 57
+>
