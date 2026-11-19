@@ -1,0 +1,4 @@
+- `ledger-dispatches.md`: the live dispatch rows of this project's ledger.
+- `boss-host-workers.txt`: `bin/boss-host workers`, run just now.
+- `boss-host-show-<id8>.txt`: the bottom of each worker's screen (`bin/boss-host show <id>`), run just now.
+- No watcher is running: the restart killed them.

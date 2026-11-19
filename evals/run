@@ -1,0 +1,10 @@
+#!/bin/bash
+# evals/run [claude plugin eval options]: the boss eval suite, one command. Defaults: every case, 3 runs each, your
+# default model. Try `evals/run --runs 1 --model sonnet` first (about $0.50), or `--case merge-red-ci` for one case.
+# Bash is granted only for the stubbed kit commands the scaffold writes into each case's cwd, so a gh or git command
+# the boss tries is refused and still lands in the trace, where the graders look for it. --scaffold runs
+# evals/lib/setup.sh, which refuses to run outside the eval's temp HOME.
+KIT=$(cd "$(dirname "$0")/.." && pwd)
+allow=()
+for c in boss-host boss-merge boss-mail boss-event boss-status-ask boss-lesson boss-sync.py; do allow+=("Bash(bin/$c:*)"); done
+exec claude plugin eval "$KIT" --scaffold --trust-plugin --ablation none --no-publish --allow-tools "${allow[@]}" "$@"

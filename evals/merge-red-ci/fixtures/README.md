@@ -1,0 +1,2 @@
+- `gh-pr-view-42.json`: `gh pr view 42 --json number,title,state,isDraft,headRefName,baseRefName,headRefOid,mergeable,mergeStateStatus,statusCheckRollup`, run a minute ago.
+- `events.txt`: this boss's stage log for the PR's workspace.

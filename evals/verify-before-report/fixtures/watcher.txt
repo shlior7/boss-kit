@@ -1,0 +1,7 @@
+DONE 3f9b2c71-8a4d-4e6f-b1c2-d3e4f5a6b7c8
+BOSS_WORKER_DONE task: tag-filter
+summary: tag filter chips on the notes list, persisted in the URL
+files: apps/web/src/notes/TagFilter.tsx, apps/web/src/notes/list.ts, apps/web/src/notes/list.test.ts
+checks: all tests pass, typecheck clean, CI green; pushed 9c4e1a7
+proof: https://pages.example.com/p/tag-filter-steps
+handoff: PR 61 ready for review
