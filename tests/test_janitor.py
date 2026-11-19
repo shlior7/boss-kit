@@ -1,5 +1,6 @@
 """bin/boss-janitor: each rule's positive and negative cases on fixtures. ps, lsof, signals and the host are mocked;
 no test touches a real process. Run: python3 -m unittest discover -s tests"""
+import glob
 import io
 import json
 import os
@@ -332,6 +333,212 @@ class Whose(Base):
             run.reset_mock()
             self.assertEqual(J.close_dead([], True), [])
             run.assert_not_called()  # never --all
+
+
+def day(n):
+    return time.strftime("%Y-%m-%d", time.localtime(time.time() - n * 86400))
+
+
+OLD, NEW, TODAY = day(20), day(2), day(0)
+HEAD = "| Date | Task | Workspace | Model | Status | Proof | Boss |\n|---|---|---|---|---|---|---|\n"
+LONG = "x" * 800
+FIXTURE = f"""# widgets boss ledger
+
+Intro {OLD} stays.
+
+## Stack
+
+- {OLD} stack note stays
+
+## Dispatches {NEW}
+
+{HEAD}| {NEW} | recent-merged: gone but new | eeee0001 | m | MERGED | | |
+| {OLD} | live-merged: on the host | aaaa1111 | m | MERGED | | |
+| {OLD} | old-working: not final | eeee0002 | m | WORKING | | |
+| {OLD} | old-done: not verified | eeee0003 | m | DONE | | |
+| {OLD} | gone-merged: moves | eeee0004 | m | MERGED #12 | https://github.com/a/b/pull/12 | |
+| {OLD} | gone-done-verified: moves | eeee0005 | m | DONE verified | | |
+| {OLD} | named: no workspace id | 1015own | m | MERGED | | |
+| {NEW} | long-cell: {LONG} | eeee0006 | m | WORKING | {"https://example.com/" + LONG} | |
+
+- {OLD} old bullet moves
+- {NEW} recent bullet stays
+- {NEW} twin bullet
+- {NEW} twin bullet
+- {OLD} bullet row | {OLD} | bullet-row: the pane reads it | eeee0007 | m | WORKING | | |
+- {NEW} {LONG}
+
+### 08:45 {OLD} wake
+- undated wake line moves
+| {OLD} | wake-row: a log section's row follows the row rule | eeee000a | m | WORKING | | |
+
+### 09:00 {NEW} wake
+- undated wake line stays
+
+## Dispatches {OLD}
+
+{HEAD}| {OLD} | lone-merged: its table empties | eeee0008 | m | ARCHIVED | | |
+
+## Decisions
+
+- {OLD} decided: stays
+
+## Reminders
+
+- {OLD} remind: stays
+
+## State {OLD}
+
+- old state moves
+
+## REMINDER {OLD} done obs check
+
+- body moves
+
+## REMINDER {OLD} obs check
+
+- not done, stays
+"""
+LIVE = {"aaaa1111", "eeee0003"}
+
+
+class Ledger(Base):
+    def setUp(self):
+        super().setUp()
+        self.path = os.path.join(self.pdir, "ledger.md")
+        open(self.path, "w").write(FIXTURE)
+        self.live = mock.patch.object(J, "live_workspaces", return_value=set(LIVE))
+        self.live.start()
+        self.addCleanup(self.live.stop)
+
+    def compact(self, apply=True):
+        return J.ledger(self.pdir, {}, apply)
+
+    def kept(self):
+        return bosskit._read(self.path)
+
+    def archive(self):
+        return bosskit._read(os.path.join(self.pdir, "ledger-archive", f"{OLD[:7]}.md"))
+
+    def test_keeps_live_recent_unfinished_and_protected(self):
+        self.compact()
+        kept = self.kept()
+        for text in ("# widgets boss ledger", f"Intro {OLD}", "stack note stays", "recent-merged", "live-merged", "old-working",
+                     "old-done: not verified", "named: no workspace id", "recent bullet stays", "bullet-row: the pane reads it",
+                     "undated wake line stays", "wake-row: a log section's row", f"### 08:45 {OLD} wake", "decided: stays", "remind: stays", "not done, stays", f"## Dispatches {NEW}"):
+            self.assertIn(text, kept)
+
+    def test_moves_final_gone_old_rows_logs_and_empty_tables(self):
+        summary, items = self.compact()
+        kept, arch = self.kept(), self.archive()
+        for text in ("gone-merged: moves", "gone-done-verified: moves", "old bullet moves", "undated wake line moves",
+                     "lone-merged", f"## Dispatches {OLD}", "old state moves", "done obs check", "body moves"):
+            self.assertNotIn(text, kept)
+            self.assertIn(text, arch)
+        self.assertEqual(kept.count("| Date | Task |"), 1)          # the emptied table's header went too
+        self.assertIn(f"## Dispatches {NEW}\n\n{HEAD}", arch)       # moved rows keep their heading and table header
+        self.assertIn("compact ledger", summary)
+        self.assertTrue(any("gone-merged" in i for i in items))
+        self.assertTrue(os.path.exists(glob.glob(self.path + ".bak-*")[0]))
+        self.assertFalse(os.path.exists(self.path + ".janitor-tmp"))
+
+    def test_dedupe_and_cut(self):
+        self.compact()
+        kept = self.kept()
+        self.assertEqual(kept.count("twin bullet"), 1)
+        pointer = f" … (full: ledger-archive/{NEW[:7]}.md)"
+        self.assertIn("long-cell: " + "x" * 489 + pointer, kept)
+        self.assertIn("https://example.com/" + LONG, kept)            # the proof cell is never cut
+        self.assertIn(f"- {NEW} " + "x" * 487 + pointer, kept)
+        full = bosskit._read(os.path.join(self.pdir, "ledger-archive", f"{NEW[:7]}.md"))
+        self.assertIn("long-cell: " + LONG, full)
+        self.assertIn(f"- {NEW} {LONG}", full)
+        self.assertLess(max(len(l) for l in kept.splitlines() if "example.com" not in l), 600)
+
+    def test_pane_reads_the_same_rows(self):
+        deck = J._deck()
+        before = deck.ledger_tasks(self.path)
+        self.compact()
+        after = deck.ledger_tasks(self.path)
+        self.assertEqual(set(before) - set(after), {"eeee0004", "eeee0005", "eeee0008"})
+        for p, row in after.items():
+            self.assertEqual(row[:5], before[p][:5], p)
+
+    def test_second_run_moves_nothing(self):
+        self.compact()
+        kept, arch = self.kept(), self.archive()
+        self.assertEqual(self.compact(), ("", []))
+        self.assertEqual((self.kept(), self.archive()), (kept, arch))
+
+    def test_dry_run_changes_nothing(self):
+        summary, items = self.compact(apply=False)
+        self.assertTrue(summary.startswith("would compact ledger"))
+        self.assertRegex(summary, r"\d+(\.\d)? KB -> \d+(\.\d)? KB")
+        self.assertEqual(self.kept(), FIXTURE)
+        self.assertEqual(sorted(os.listdir(self.pdir)), ["config.json", "ledger.md"])
+
+    def test_unreadable_host_keeps_every_row(self):
+        J.live_workspaces.return_value = None
+        _, items = self.compact()
+        self.assertIn("gone-merged", self.kept())
+        self.assertIn("host unreadable: 4 final dispatch row(s) kept", items)
+        self.assertIn("old bullet moves", self.archive())
+
+    def test_host_is_asked_only_for_final_old_rows(self):
+        open(self.path, "w").write(f"# l\n\n## Log\n\n- {OLD} old\n{HEAD}| {OLD} | t | eeee0009 | m | WORKING | | |\n")
+        self.compact()
+        J.live_workspaces.assert_not_called()
+
+    def test_concurrent_write_aborts_without_changes(self):
+        def writer(cfg):
+            with open(self.path, "a") as f:
+                f.write(f"- {NEW} another boss\n")
+            return set(LIVE)
+        J.live_workspaces.side_effect = writer
+        with self.assertRaises(J.Changed):
+            self.compact()
+        self.assertEqual(self.kept(), FIXTURE + f"- {NEW} another boss\n")
+        self.assertEqual(sorted(os.listdir(self.pdir)), ["config.json", "ledger-archive", "ledger.md"])
+        self.assertEqual(os.listdir(os.path.join(self.pdir, "ledger-archive")), [])
+
+    def test_existing_archive_is_appended_and_restored_on_abort(self):
+        adir = os.path.join(self.pdir, "ledger-archive")
+        os.makedirs(adir)
+        open(os.path.join(adir, f"{OLD[:7]}.md"), "w").write("earlier\n")
+        with mock.patch.object(J.os, "replace", side_effect=OSError("disk")), self.assertRaises(OSError):
+            self.compact()
+        self.assertEqual(self.archive(), "earlier\n")
+        self.compact()
+        self.assertTrue(self.archive().startswith("earlier\n"))
+
+    def test_cli_gate_and_project(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            J.main(["ledger", "--apply", "--project", "widgets"])
+        self.assertIn("dry run: config janitor is", out.getvalue())
+        self.assertIn("would compact ledger", out.getvalue())
+        self.assertEqual(self.kept(), FIXTURE)
+        json.dump({"repo": "acme/widgets", "janitor": "apply"}, open(os.path.join(self.pdir, "config.json"), "w"))
+        with redirect_stdout(io.StringIO()):
+            J.main(["ledger", "--apply"])
+        self.assertNotIn("gone-merged", self.kept())
+        self.assertEqual(bosskit._read(os.path.join(self.pdir, "janitor.log")).count("compact ledger"), 1)
+        open(os.path.join(self.home, "janitor.off"), "w").close()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            J.main(["ledger", "--apply"])
+        self.assertEqual(out.getvalue().strip(), "off")
+
+    def test_sweep_compacts_with_one_log_line(self):
+        json.dump({"repo": "acme/widgets", "janitor": "apply"}, open(os.path.join(self.pdir, "config.json"), "w"))
+        plan = {"workers": [], "keep": [], "orphans": [], "temp": []}
+        with mock.patch.object(J, "plan", return_value=plan), mock.patch.object(J, "close_dead", return_value=[]), \
+                redirect_stdout(io.StringIO()):
+            J.main(["sweep", "--apply"])
+            J.main(["sweep", "--apply"])
+        log = bosskit._read(os.path.join(self.pdir, "janitor.log"))
+        self.assertEqual(log.count("compact ledger"), 1)
+        self.assertNotIn("gone-merged", self.kept())
 
 
 if __name__ == "__main__":
