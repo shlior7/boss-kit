@@ -195,3 +195,56 @@ test('a worker view lists the pages it published, newest first, under the provid
   expect(texts.filter(t => /^[A-Z ]+$/.test(t))).toContain('PAGES')
   expect(texts.filter(t => t.endsWith('↗'))).toEqual(['after run ↗', 'before run ↗', 'demo ↗', 'PR ↗', 'boss ↗'])  // a listed page is not repeated
 })
+
+test('a worker session onboarded as the boss mid-session becomes the boss on its next tick: one pane, one timer', async ($, on) => {
+  let local = ''
+  const opened: string[] = []
+  const runs: string[][] = []
+  const commands: string[] = []
+  const clock = mock.clock(on)
+  on('fs.read', async () => {
+    if (!local) throw new Error('no CLAUDE.local.md')
+    return { value: local } as never
+  })
+  on('session.cwd', async () => ({ value: '/w/boss' }))
+  on('session.messages', async () => ({ value: [] }))
+  on('session.start', async () => ({ cwd: '/w/boss' }))
+  on('command.register', async (_$, e) => {
+    commands.push(e.description ?? '')
+    return { value: { command: e.name } } as never
+  })
+  on('ui.open', async (_$, e) => {
+    opened.push(e.title ?? '')
+    return { value: { isPlaced: true as const } }
+  })
+  on('process.run', async (_$, e) => {
+    const sess = e.argv.includes('boss-host-session')
+    if (!sess) runs.push([...e.argv])
+    const stdout = JSON.stringify(sess ? { kind: 'hosta', id: 'ws-me', terminal: '' } : { at: 0, worker: null })
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await $.session.start({ cwd: '/w/boss', surface: 'terminal', isInteractive: true })
+  await clock.advance(1)  // the first worker refresh runs unawaited
+  expect(runs.length).toBe(1)
+  expect(runs[0]).toContain('--worker')
+
+  local = '# Boss workspace ws-me\n'  // /boss onboard writes the marker
+  runs.length = 0
+  await clock.advance(60_000)
+  expect(opened).toEqual(['Boss'])
+  expect(runs.map(r => r.includes('--worker') ? 'worker' : r.includes('--session-start') ? 'boss-start' : 'boss')).toEqual(['boss-start'])
+  expect(commands).toEqual(["Open this worker's pane and refresh it now", 'Open the boss pane and refresh it now'])
+
+  // From now on one boss timer, no worker refresh, and /boss-deck does not switch again.
+  runs.length = 0
+  await clock.advance(60_000)
+  expect(runs.map(r => r.includes('--worker') ? 'worker' : 'boss')).toEqual(['boss'])
+  expect(await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])).toEqual({ text: 'Boss pane refreshed.' })
+  expect(opened).toEqual(['Boss', 'Boss'])
+
+  // The marker going away never turns the boss back into a worker.
+  local = ''
+  runs.length = 0
+  await clock.advance(60_000)
+  expect(runs.map(r => r.includes('--worker') ? 'worker' : 'boss')).toEqual(['boss'])
+})
