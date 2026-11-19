@@ -96,6 +96,7 @@ Playbook: `playbooks/report.md`. Read it before your first report in a session.
 - First line = my next action, or "nothing needed"; at most 3 items need me, each naming its workspace. Then URGENT / NEXT / CAN WAIT / FYI one-liners, lists capped at 5.
 - Decisions: one question, recommended option first. No preamble, recap or pleasantries.
 - End with "Your move: <one concrete action>", and write that line to this boss's `next.txt`.
+- Every "Your move", "Ask <user>" or open-decision line stands alone and is never shorthand: one sentence that says what is being decided, the options, your recommendation, and what happens on each answer. No bare codes such as "(0)", "go 1", "kit #34", or a PR number without saying what the PR is.
 - Link each finished task's proof next to its PR, and say plainly when it has none. Restate stack state each turn; URLs as [Title](url); on a background-task notification, answer from the verified result.
 
 ## 10. Ledger and memory

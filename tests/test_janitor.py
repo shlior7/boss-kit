@@ -184,13 +184,14 @@ class Temp(Base):
         for wt in (clean, held, dirty, ahead):
             self.old(wt)
         os.makedirs(os.path.join(self.tmproot, "review-notgit"))
-        act, keep = J.temp({held + "/src/a.ts"})
+        repo = J.common_dir(clean)
+        act, keep = J.temp({held + "/src/a.ts"}, repo)
         self.assertEqual([a["path"] for a in act], [clean])
         why = dict(keep)
         self.assertEqual((why[held], why[dirty], why[ahead], why[fresh]),
                          ("held open", "uncommitted work", "unpushed commits", "younger than 7 days"))
         self.assertNotIn(os.path.join(self.tmproot, "review-notgit"), why)
-        self.assertEqual(J.remove(act[0]), "")
+        self.assertEqual(J.remove(act[0], set()), "")
         self.assertFalse(os.path.exists(clean))
 
     def test_session_dirs(self):
@@ -204,25 +205,98 @@ class Temp(Base):
         outside = os.path.join(self.tmp, "precious")
         os.makedirs(outside)
         os.symlink(outside, os.path.join(self.sess, "link"))
-        act, keep = J.temp({os.path.join(self.sess, "held", "deep", "f")}, now=time.time())
+        act, keep = J.temp({os.path.join(self.sess, "held", "deep", "f")}, "", now=time.time())
         self.assertEqual([os.path.basename(a["path"]) for a in act], ["old", "old2"])
         why = dict(keep)
         self.assertEqual(why["1 session dir(s)"], "younger than 7 days")
         self.assertNotIn(os.path.join(self.sess, "loose.log"), why)
         self.assertEqual(why[os.path.join(self.sess, "held")], "held open")
         self.assertEqual(why[os.path.join(self.sess, "link")], "symlink")
-        self.assertEqual(J.remove(act[0]), "")
+        self.assertEqual(J.remove(act[0], set()), "")
         self.assertFalse(os.path.exists(act[0]["path"]))
         self.assertTrue(os.path.exists(os.path.join(self.sess, "loose.log")))
         # A path that resolves out of its root is refused, even if it got into the plan.
-        self.assertEqual(J.remove({"path": os.path.join(self.sess, "link"), "kind": "dir", "root": self.sess}), "outside its root, kept")
+        self.assertEqual(J.remove({"path": os.path.join(self.sess, "link"), "kind": "dir", "root": self.sess}, set()), "outside its root, kept")
         self.assertTrue(os.path.isdir(outside))
+
+    def test_review_worktree_of_another_repo_is_kept(self):
+        mine = self.review("review-1")
+        self.old(mine)
+        other_main = os.path.join(self.tmp, "other-main")
+        subprocess.run(["git", "init", "-q", other_main], check=True)
+        git(other_main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "c")
+        theirs = os.path.join(self.tmproot, "review-2")
+        git(other_main, "worktree", "add", "-q", "--detach", theirs, "HEAD")
+        self.old(theirs)
+        act, keep = J.temp(set(), J.common_dir(mine))
+        self.assertEqual([a["path"] for a in act], [mine])
+        self.assertEqual(dict(keep)[theirs], "not this project's repo")
+        act, keep = J.temp(set(), "")  # this project's repo unknown: no review worktree is ours
+        self.assertEqual(act, [])
+
+    def test_remove_rechecks_age_and_open_files(self):
+        for n in ("touched", "opened", "still"):
+            os.makedirs(os.path.join(self.sess, n))
+            open(os.path.join(self.sess, n, "f"), "w").write("x")
+            self.old(os.path.join(self.sess, n))
+        act, _ = J.temp(set(), "")
+        self.assertEqual(len(act), 3)
+        by = {os.path.basename(a["path"]): a for a in act}
+        open(os.path.join(self.sess, "touched", "f"), "a").write("y")  # written after the plan
+        self.assertEqual(J.remove(by["touched"], set()), "in use or touched since the plan, kept")
+        self.assertEqual(J.remove(by["opened"], {os.path.join(self.sess, "opened", "f")}), "in use or touched since the plan, kept")
+        self.assertEqual(J.remove(by["still"], None), "in use or touched since the plan, kept")  # lsof unreadable
+        self.assertTrue(all(os.path.isdir(a["path"]) for a in act))
+        self.assertEqual(J.remove(by["still"], set()), "")
+        self.assertFalse(os.path.exists(by["still"]["path"]))
+
+    def test_remove_rechecks_unpushed_commits(self):
+        wt = self.review("review-1")
+        self.old(wt)
+        act, _ = J.temp(set(), J.common_dir(wt))
+        self.assertEqual([a["path"] for a in act], [wt])
+        # A commit after the plan moves HEAD (stored outside the worktree) without touching its files.
+        git(wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "late")
+        self.old(wt)
+        self.assertEqual(J.remove(act[0], set()), "unpushed commits or git unreadable, kept")
+        self.assertTrue(os.path.isdir(wt))
+        git(wt, "push", "-q", "origin", "HEAD:refs/heads/late")
+        git(wt, "fetch", "-q", "origin")  # the remote-tracking ref --remotes reads
+        self.assertEqual(J.remove(act[0], set()), "")
+        self.assertFalse(os.path.exists(wt))
+
+    def test_git_location_vars_are_ignored(self):
+        wt = self.review("review-1")
+        real = J.common_dir(wt)
+        other = os.path.join(self.tmp, "other-repo")
+        subprocess.run(["git", "init", "-q", other], check=True)
+        with mock.patch.dict(os.environ, {"GIT_DIR": os.path.join(other, ".git")}):
+            raw = subprocess.run(["git", "-C", wt, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                 capture_output=True, text=True).stdout.strip()
+            self.assertEqual(os.path.realpath(raw), os.path.realpath(os.path.join(other, ".git")))  # what GIT_DIR does
+            self.assertEqual(J.common_dir(wt), real)
+            self.assertNotIn("GIT_DIR", J.clean_env())
+
+    def test_status_writes_no_index(self):
+        wt = self.review("review-1")
+        open(os.path.join(wt, "a.txt"), "w").write("x")
+        git(wt, "add", "a.txt")
+        git(wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "a")
+        git(wt, "push", "-q", "origin", "HEAD:refs/heads/a")
+        index = subprocess.run(["git", "-C", wt, "rev-parse", "--path-format=absolute", "--git-path", "index"],
+                               capture_output=True, text=True).stdout.strip()
+        self.old(wt)  # a.txt's stat no longer matches the index: a plain status would refresh and write it
+        before = open(index, "rb").read()
+        J.temp(set(), J.common_dir(wt))
+        self.assertEqual(open(index, "rb").read(), before)
+        git(wt, "status", "--porcelain")
+        self.assertNotEqual(open(index, "rb").read(), before)  # the negative: plain status writes it
 
     def test_unknown_open_files_hold_everything(self):
         self.old(self.review("review-1"))
         os.makedirs(os.path.join(self.sess, "old"))
         self.old(os.path.join(self.sess, "old"))
-        act, keep = J.temp(None)
+        act, keep = J.temp(None, J.common_dir(os.path.join(self.tmproot, "review-1")))
         self.assertEqual(act, [])
         self.assertEqual({w for _, w in keep}, {"held open"})
 
@@ -238,7 +312,8 @@ class Sweep(Base):
             p = mock.patch.object(J, name, val)
             p.start()
             self.addCleanup(p.stop)
-        self.kill = mock.patch.object(J, "kill").start()
+        self.kill = mock.patch.object(J, "kill", return_value=2).start()
+        self.still = mock.patch.object(J, "still_orphan", return_value=True).start()
         self.addCleanup(mock.patch.stopall)
         open(os.path.join(self.pdir, "ledger.md"), "w").write("# ledger\n\n| Date | a | b | c | d | e | Boss |\n")
 
@@ -277,6 +352,52 @@ class Sweep(Base):
         self.assertEqual(ledger.count("janitor:"), 1)
         J.close_dead.assert_called_with(["aaaa1111"], True)
 
+    def apply_config(self):
+        json.dump({"repo": "acme/widgets", "janitor": "apply"}, open(os.path.join(self.pdir, "config.json"), "w"))
+
+    def test_tree_no_longer_orphan_at_kill_time_is_spared(self):
+        self.apply_config()
+        self.still.return_value = False
+        code, out = self.run_main("sweep", "--apply")
+        self.kill.assert_not_called()
+        self.assertIn("keep pid=10: no longer an idle orphan", out)
+        self.assertNotIn("janitor:", bosskit._read(os.path.join(self.pdir, "ledger.md")))
+
+    def test_only_signalled_trees_count_as_cleanup(self):
+        self.apply_config()
+        self.kill.return_value = 0  # every planned pid exited or changed identity
+        code, out = self.run_main("sweep", "--apply")
+        self.kill.assert_called_once()
+        self.assertIn("skip pid=10: exited or changed since the plan", out)
+        self.assertNotIn("janitor:", bosskit._read(os.path.join(self.pdir, "ledger.md")))
+
+    def test_still_orphan_reruns_the_rule_on_fresh_state(self):
+        mock.patch.stopall()  # setUp stubs still_orphan; test the real one
+        a = {"pid": 10}
+        fresh = dict([proc(10)])
+        with mock.patch.multiple(J, procs=lambda: fresh, cwds=lambda pids: {10: self.wt}, own_workers=lambda ctx: [
+                {"id": "aaaa1111-full", "worktree": self.wt, "terminals": [{"agent": {"state": "idle"}}]}]):
+            self.assertTrue(J.still_orphan(None, a))
+        with mock.patch.multiple(J, procs=lambda: fresh, cwds=lambda pids: {10: self.wt}, own_workers=lambda ctx: [
+                {"id": "aaaa1111-full", "worktree": self.wt, "terminals": [{"agent": {"state": "working"}}]}]):
+            self.assertFalse(J.still_orphan(None, a))
+        with mock.patch.multiple(J, procs=lambda: fresh, cwds=lambda pids: {10: self.wt}, own_workers=lambda ctx: []):
+            self.assertFalse(J.still_orphan(None, a))  # host unreadable
+
+    def test_unreadable_host_stops_the_applied_sweep(self):
+        self.apply_config()
+        self.plan["host_ok"] = False
+        self.plan["temp"] = [{"path": "/x/claude-1/s", "kind": "dir", "root": "/x/claude-1", "age": 8 * 86400, "reason": "old"}]
+        with mock.patch.object(J, "remove") as remove:
+            code, out = self.run_main("sweep", "--apply")
+            remove.assert_not_called()
+        self.kill.assert_not_called()
+        J.close_dead.assert_not_called()
+        self.assertIn("host unreadable: applied sweep stopped, nothing touched", out)
+        self.assertNotIn("janitor:", bosskit._read(os.path.join(self.pdir, "ledger.md")))
+        code, out = self.run_main("sweep")  # a dry run still shows the plan
+        self.assertIn("would remove dir /x/claude-1/s", out)
+
     def test_kill_switch(self):
         open(os.path.join(self.home, "janitor.off"), "w").close()
         code, out = self.run_main("sweep", "--apply")
@@ -307,18 +428,41 @@ class Whose(Base):
         host.workers.assert_called_once_with(["aaaa1111"])
         self.assertEqual([w["id"] for w in got], ["aaaa1111-full"])
 
+    def test_domain_boss_keeps_only_its_folder(self):
+        open(os.path.join(self.pdir, "ledger.md"), "w").write(
+            "| 2026-11-18 | a | aaaa1111 / 1 | m | DONE | | b0551d00-0000 |\n"
+            "| 2026-11-18 | b | cccc3333 / 1 | m | DONE | | b0551d00-0000 |\n")
+        host = mock.Mock()
+        host.workers.return_value = [{"id": "aaaa1111-full", "tags": ["Checkout"]}, {"id": "cccc3333-full", "tags": ["UI"]}]
+        ctx = bosskit.load(make=False, resolve_host=False)
+        with mock.patch.object(J.bosshost, "get", return_value=host):
+            with mock.patch.object(J.bosskit, "boss_folder", return_value="checkout"):
+                self.assertEqual([w["id"] for w in J.own_workers(ctx)], ["aaaa1111-full"])
+            with mock.patch.object(J.bosskit, "boss_folder", return_value=""):  # the main boss: every folder
+                self.assertEqual([w["id"] for w in J.own_workers(ctx)], ["aaaa1111-full", "cccc3333-full"])
+
     def test_unreadable_host_acts_on_nothing(self):
         open(os.path.join(self.pdir, "ledger.md"), "w").write("| 2026-11-18 | mine: x | aaaa1111 / 1 | m | DONE | | |\n")
         ctx = bosskit.load(make=False, resolve_host=False)
         with mock.patch.object(J.bosshost, "get", side_effect=SystemExit("no host")), redirect_stdout(io.StringIO()):
+            self.assertIsNone(J.own_workers(ctx))  # unreadable, not "no workers"
+        with mock.patch.object(J.bosshost, "get", return_value=mock.Mock(**{"workers.return_value": []})):
             self.assertEqual(J.own_workers(ctx), [])
+
+    def test_plan_marks_an_unreadable_host(self):
+        stubs = {"procs": dict, "cwds": lambda pids: {}, "open_paths": set, "temp": lambda opened, repo: ([], []),
+                 "common_dir": lambda path: ""}
+        with mock.patch.multiple(J, own_workers=lambda ctx: None, **stubs):
+            self.assertFalse(J.plan(mock.Mock(worktree=self.wt))["host_ok"])
+        with mock.patch.multiple(J, own_workers=lambda ctx: [], **stubs):
+            self.assertTrue(J.plan(mock.Mock(worktree=self.wt))["host_ok"])
 
     def test_plan_hands_full_workspace_ids_to_the_host(self):
         full = "756fc5fa-1111-2222-3333-444455556666"
         stubs = {"own_workers": lambda ctx: [{"id": full, "worktree": self.wt}], "procs": dict, "cwds": lambda pids: {},
-                 "open_paths": set, "temp": lambda opened: ([], [])}
+                 "open_paths": set, "temp": lambda opened, repo: ([], []), "common_dir": lambda path: ""}
         with mock.patch.multiple(J, **stubs):
-            p = J.plan(None)
+            p = J.plan(mock.Mock(worktree=self.wt))
         self.assertEqual(p["workers"], [full])
         with mock.patch.object(J.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
             J.close_dead(p["workers"], False)
@@ -477,12 +621,21 @@ class Ledger(Base):
         self.assertEqual(self.kept(), FIXTURE)
         self.assertEqual(sorted(os.listdir(self.pdir)), ["config.json", "ledger.md"])
 
-    def test_unreadable_host_keeps_every_row(self):
+    def test_unreadable_host_keeps_every_row_and_stops_apply(self):
         J.live_workspaces.return_value = None
-        _, items = self.compact()
-        self.assertIn("gone-merged", self.kept())
+        _, items = self.compact(apply=False)
         self.assertIn("host unreadable: 4 final dispatch row(s) kept", items)
-        self.assertIn("old bullet moves", self.archive())
+        with self.assertRaisesRegex(RuntimeError, "host unreadable: applied compaction stopped"):
+            self.compact()
+        self.assertEqual(self.kept(), FIXTURE)
+        self.assertEqual(sorted(os.listdir(self.pdir)), ["config.json", "ledger.md"])
+
+    def test_applied_sweep_with_unreadable_host_leaves_the_ledger(self):
+        json.dump({"repo": "acme/widgets", "janitor": "apply"}, open(os.path.join(self.pdir, "config.json"), "w"))
+        plan = {"workers": [], "keep": [], "orphans": [], "temp": [], "host_ok": False}
+        with mock.patch.object(J, "plan", return_value=plan), redirect_stdout(io.StringIO()):
+            J.main(["sweep", "--apply"])
+        self.assertEqual(self.kept(), FIXTURE)
 
     def test_host_is_asked_only_for_final_old_rows(self):
         open(self.path, "w").write(f"# l\n\n## Log\n\n- {OLD} old\n{HEAD}| {OLD} | t | eeee0009 | m | WORKING | | |\n")

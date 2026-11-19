@@ -11,8 +11,8 @@ What a sweep does, each rule keeping anything it is not sure of:
              playwright, chromium, vitest, tsc, yarn, or node running jest-worker or next: SIGTERM, a short wait, then
              SIGKILL, by exact pid, children first
   dead tabs  bin/boss-close --dead for this boss's own workers (the ledger rows naming this boss)
-  temp       /private/tmp/review-* git worktrees that no process holds, with nothing uncommitted or unpushed
-             (git worktree remove); and the entries of claude-<uid> under /private/tmp and $TMPDIR older than 7 days
+  temp       /private/tmp/review-* git worktrees of this project's repo that no process holds, with nothing
+             uncommitted or unpushed (git worktree remove); and the entries of claude-<uid> under /private/tmp and $TMPDIR older than 7 days
              that no process holds (removed by exact resolved path, never through a symlink)
 
   ledger     moves stale ledger.md content to <project>/ledger-archive/<YYYY-MM>.md, under the heading it had, and
@@ -51,10 +51,15 @@ TMP = "/private/tmp"
 TERM_WAIT_S = 5
 
 
+def clean_env():
+    """os.environ without the variables that point git at another repository than the path it is given."""
+    return {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")}
+
+
 def sh(argv, timeout=30):
     """stdout, or None when the command failed or is missing."""
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=clean_env())
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.stdout if r.returncode == 0 else None
@@ -143,17 +148,19 @@ def _deck():
 
 def own_workers(ctx):
     """This boss's workers, as the host lists them: the ledger rows naming this boss (or no boss), never its own workspace.
-    [] when the host cannot be read, so nothing is touched."""
+    None when the host cannot be read (distinct from [], no workers): then an applied sweep touches nothing."""
     deck = _deck()
     tasks = deck.ledger_tasks(os.path.join(ctx.pdir, ctx.cfg.get("ledger", "ledger.md")))
     ids = [p for p, row in tasks.items() if deck.is_mine(row[4], ctx.bid) and not (ctx.workspace and p == ctx.workspace[:8])]
     if not ids:
         return []
+    folder = bosskit.boss_folder(ctx.worktree)  # a domain boss acts only in its sidebar folder, as the deck shows it
     try:
-        return [w for w in bosshost.get(ctx.cfg).workers(ids) or [] if w.get("id", "")[:8] in ids]
+        return [w for w in bosshost.get(ctx.cfg).workers(ids) or []
+                if w.get("id", "")[:8] in ids and deck.in_folder(w.get("tags"), folder)]
     except (SystemExit, Exception) as e:  # an unreadable host: act on nothing
-        print(f"boss-janitor: cannot list workers ({e}); orphans and dead tabs skipped")
-        return []
+        print(f"boss-janitor: cannot list workers ({e}); an applied sweep touches nothing")
+        return None
 
 
 def roots(workers):
@@ -211,9 +218,16 @@ def alive(pid):
         return True
 
 
+def still_orphan(ctx, a):
+    """Whether planned tree *a* still passes the orphan rule on fresh ps, lsof and host state (unreadable: no)."""
+    act, _ = orphans(procs(), cwds([a["pid"]]), roots(own_workers(ctx) or []))
+    return any(f["pid"] == a["pid"] for f in act)
+
+
 def kill(pids, snap, wait=TERM_WAIT_S):
     """SIGTERM each exact pid (children first), wait, SIGKILL the ones still there. Never pkill or killall.
-    Before each signal the pid must still match its snapshot (start time and command): a reused pid is skipped."""
+    Before each signal the pid must still match its snapshot (start time and command): a reused pid is skipped.
+    Returns how many pids got SIGTERM."""
     pids = [p for p in pids if same(p, snap[p])]
     for pid in pids:
         try:
@@ -229,6 +243,7 @@ def kill(pids, snap, wait=TERM_WAIT_S):
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+    return len(pids)
 
 
 # ---- rule 3: temp ----------------------------------------------------------------------------
@@ -258,8 +273,29 @@ def temp_roots():
     return sorted({os.path.realpath(r) for r in found if os.path.isdir(r) and not os.path.islink(r)})
 
 
-def temp(opened, now=None):
-    """(act, keep): act = [{path, kind (worktree | dir), root, age, reason}], keep = [(path, why)]."""
+def common_dir(path):
+    """The resolved git common dir of the repo *path* is in, or '' when git cannot say."""
+    out = (sh(["git", "-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir"]) or "").strip()
+    return os.path.realpath(out) if out else ""
+
+
+def recent(path, now=None):
+    """Whether anything in *path* changed in the last 7 days (unreadable counts as recent)."""
+    now = now or time.time()
+    try:
+        return now - newest_mtime(path, stop=now - TEMP_AGE_S) < TEMP_AGE_S
+    except OSError:
+        return True
+
+
+def unpushed(wt):
+    """The commits at HEAD that no remote branch has (one per line), or None when git cannot say."""
+    return sh(["git", "-C", wt, "log", "--oneline", "HEAD", "--not", "--remotes"])
+
+
+def temp(opened, repo, now=None):
+    """(act, keep): act = [{path, kind (worktree | dir), root, age, reason}], keep = [(path, why)].
+    *repo* is this project's git common dir: review worktrees of any other repo are not ours."""
     now = now or time.time()
     act, keep, young = [], [], 0
     for wt in sorted(glob.glob(os.path.join(TMP, "review-*"))):
@@ -269,10 +305,13 @@ def temp(opened, now=None):
         if age < TEMP_AGE_S:
             keep.append((wt, "younger than 7 days"))
             continue
-        status = sh(["git", "-C", wt, "status", "--porcelain"])
-        unpushed = sh(["git", "-C", wt, "log", "--oneline", "HEAD", "--not", "--remotes"])
-        why = ("held open" if held(wt, opened) else "git unreadable" if status is None or unpushed is None
-               else "uncommitted work" if status.strip() else "unpushed commits" if unpushed.strip() else "")
+        if not repo or common_dir(wt) != repo:
+            keep.append((wt, "not this project's repo"))
+            continue
+        status = sh(["git", "--no-optional-locks", "-C", wt, "status", "--porcelain"])  # read-only: no index refresh
+        ahead = unpushed(wt)
+        why = ("held open" if held(wt, opened) else "git unreadable" if status is None or ahead is None
+               else "uncommitted work" if status.strip() else "unpushed commits" if ahead.strip() else "")
         if why:
             keep.append((wt, why))
         else:
@@ -295,17 +334,24 @@ def temp(opened, now=None):
     return act, keep + ([(f"{young} session dir(s)", "younger than 7 days")] if young else [])
 
 
-def remove(a):
-    """Remove one temp entry; returns an error line or ''."""
+def remove(a, opened):
+    """Remove one temp entry; returns an error line or ''. *opened* is a fresh open_paths(): the plan's age and
+    open-file checks are redone here, since kills ran in between."""
+    real = os.path.realpath(a["path"])
+    if a["kind"] == "dir" and (os.path.islink(a["path"]) or os.path.dirname(real) != os.path.realpath(a["root"])):
+        return "outside its root, kept"
+    if held(a["path"], opened) or recent(a["path"]):
+        return "in use or touched since the plan, kept"
     if a["kind"] == "worktree":
-        common = (sh(["git", "-C", a["path"], "rev-parse", "--path-format=absolute", "--git-common-dir"]) or "").strip()
+        common = common_dir(a["path"])
         if not common:
             return "git common dir unreadable"
-        r = subprocess.run(["git", f"--git-dir={common}", "worktree", "remove", a["path"]], capture_output=True, text=True)
+        ahead = unpushed(a["path"])  # a commit since the plan moves HEAD without touching the worktree's files
+        if ahead is None or ahead.strip():
+            return "unpushed commits or git unreadable, kept"
+        r = subprocess.run(["git", f"--git-dir={common}", "worktree", "remove", a["path"]], capture_output=True, text=True,
+                           env=clean_env())
         return r.stderr.strip() if r.returncode else ""
-    real = os.path.realpath(a["path"])
-    if os.path.islink(a["path"]) or os.path.dirname(real) != os.path.realpath(a["root"]):
-        return "outside its root, kept"
     if os.path.isdir(real):
         shutil.rmtree(real)
     else:
@@ -379,7 +425,7 @@ def compact(text, today, live):
         h2[i], h3[i] = cur2, cur3
         kept[i] = cur2 is None or bool(KEPT.match(lines[cur2]))
     heading = lambda i: lines[i].startswith("#")  # noqa: E731
-    moved, drop, full, notes, sections = {}, set(), {}, [], []
+    moved, drop, full, notes, sections, host_ok = {}, set(), {}, [], [], True
     # dated log sections, whole, heading included
     for k, l in enumerate(lines):
         if kept[k] or not LOGS.match(l):
@@ -413,6 +459,7 @@ def compact(text, today, live):
     if cand:
         on_host = live()
         if on_host is None:
+            host_ok = False
             notes.append(f"host unreadable: {len(cand)} final dispatch row(s) kept")
         for i, ws, m in cand if on_host is not None else ():
             if ws not in on_host:
@@ -468,7 +515,7 @@ def compact(text, today, live):
         archive[m] = f"\n<!-- boss-janitor ledger: archived {time.strftime('%Y-%m-%d %H:%M')} -->\n" + "\n".join(body) + "\n"
     kept_text = "\n".join(out)
     return kept_text, archive, {"moved": len(moved), "dupes": len(drop), "cut": len(full), "prefixes": prefixes,
-                                "notes": notes, "items": [(i + 1, moved[i], lines[i]) for i in sorted(moved)],
+                                "notes": notes, "host_ok": host_ok, "items": [(i + 1, moved[i], lines[i]) for i in sorted(moved)],
                                 "before": len(text.encode()), "after": len(kept_text.encode())}
 
 
@@ -513,6 +560,8 @@ def ledger(pdir, cfg, apply, today=None):
     kept, archive, s = compact(text, today or time.strftime("%Y-%m-%d"), lambda: live_workspaces(cfg))
     if kept == text:
         return "", s["notes"]
+    if apply and not s["host_ok"]:
+        raise RuntimeError("host unreadable: applied compaction stopped, nothing changed")
     check(text, kept, s["prefixes"])
     files = ", ".join(f"ledger-archive/{m}.md" for m in archive)
     summary = (f"{'' if apply else 'would '}compact ledger {path}: move {s['moved']} line(s), collapse {s['dupes']} duplicate(s), "
@@ -554,14 +603,16 @@ def ledger(pdir, cfg, apply, today=None):
 # ---- the sweep -------------------------------------------------------------------------------
 
 def plan(ctx):
-    workers = own_workers(ctx)
+    found = own_workers(ctx)
+    workers = found or []
     own = roots(workers)
     table = procs()
     cand = [pid for pid, p in table.items() if p["ppid"] == 1 and tool(p["args"])]
     o_act, o_keep = orphans(table, cwds(cand), own)
-    t_act, t_keep = temp(open_paths())
+    t_act, t_keep = temp(open_paths(), common_dir(ctx.worktree))
     # Full workspace ids: hosts need them; the short id is only for log text.
-    return {"workers": [w["id"] for w in workers], "orphans": o_act, "temp": t_act, "keep": o_keep + t_keep}
+    return {"workers": [w["id"] for w in workers], "orphans": o_act, "temp": t_act, "keep": o_keep + t_keep,
+            "host_ok": found is not None}
 
 
 def log(ctx, line, reason):
@@ -579,13 +630,18 @@ def ledger_line(ctx, text):
 def sweep(ctx, apply, reason="", p=None, record=True):
     """Run (or, without apply, describe) one sweep; returns its lines. record=False (status) writes no log line."""
     p = p or plan(ctx)
+    if apply and not p.get("host_ok", True):
+        return ["host unreadable: applied sweep stopped, nothing touched (no kills, no dead tabs, no temp removal)"]
     note = log if record else (lambda *a: None)
     verb = "" if apply else "would "
     out, done = [], 0
     for a in p["orphans"]:
         line = f"{verb}kill pid={a['pid']} owner={ctx.name}/{a['owner']} age={age_txt(a['age'])} {a['reason']} pids={','.join(map(str, a['pids']))}"
-        if apply:
-            kill(a["pids"], a["snap"])
+        if apply and not still_orphan(ctx, a):
+            line = f"keep pid={a['pid']}: no longer an idle orphan of this boss's workers"
+        elif apply and not kill(a["pids"], a["snap"]):
+            line = f"skip pid={a['pid']}: exited or changed since the plan, nothing signalled"
+        elif apply:
             done += 1
         out.append(line)
         note(ctx, line, reason)
@@ -594,8 +650,9 @@ def sweep(ctx, apply, reason="", p=None, record=True):
         if re.match(r"(closed|would close) [1-9]", line):
             done += int(apply)
             note(ctx, f"dead tabs owner={ctx.name}: {line}", reason)
+    opened = open_paths() if apply and p["temp"] else None
     for a in p["temp"]:
-        err = remove(a) if apply else ""
+        err = remove(a, opened) if apply else ""
         line = f"{verb}remove {a['kind']} {a['path']} owner={ctx.name} age={age_txt(a['age'])} {a['reason']}" + (f" FAILED: {err}" if err else "")
         done += int(apply and not err)
         out.append(line)

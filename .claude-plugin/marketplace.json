@@ -16,7 +16,7 @@
       "name": "boss-deck",
       "source": "./mods/boss-deck",
       "description": "Quiet boss pane: what needs you, workers on any host, watchers, PRs and the tracker; a worker view in each worker's session",
-      "version": "0.9.1"
+      "version": "0.9.2"
     }
   ]
 }
