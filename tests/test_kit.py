@@ -2740,7 +2740,8 @@ class EvalScaffold(unittest.TestCase):
 
     def test_refuses_a_real_home(self):
         with tempfile.TemporaryDirectory() as t:
-            p = self.run_setup(os.path.expanduser("~"), t, t)
+            # A home outside every temp root, not the runner's own HOME: that is a temp dir when the suite runs pinned.
+            p = self.run_setup("/Users/eval-not-a-temp-home", t, t)
             self.assertEqual(p.returncode, 1)
             self.assertIn("not a temp home", p.stderr)
             self.assertFalse(os.path.exists(os.path.join(t, ".boss")))
