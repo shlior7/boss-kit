@@ -1255,7 +1255,7 @@ def lint_next(line):
     # shortcut: "says what the PR is" is checked by form only: the reference in parentheses after its words, or followed by
     # them in parentheses; whether those words are a good description is left to the reader
     for m in NEXT_REF.finditer(text):
-        if not (re.search(r"\(\s*$", text[:m.start()]) or re.match(r"\s*\(", text[m.end():])):
+        if not (re.search(r"\(\s*$", text[:m.start()]) or re.match(r"\s*\(\s*[^)\s]", text[m.end():])):
             ref = m.group(0)
             return f"{ref} without saying what the PR is: write 'the <what> PR ({ref})' or '{ref} (<what>)'"
     if not NEXT_VERBS & {w.lower() for w in words}:

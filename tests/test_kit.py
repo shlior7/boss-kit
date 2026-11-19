@@ -985,6 +985,8 @@ class Bosses(Home):
         for line, why in (("go 1", "go N"), ("merge #57 then #63", "words"), ("(0)", "(N)"),
                           ("kit #34 is ready for you to look at today", "kit #N"),
                           ("Merge PR 57 now because it is green and approved", "PR 57 without"),
+                          ("Merge PR #57 () now because it is green and approved", "PR #57 without"),
+                          ("Merge PR #57 (   ) now because it is green and approved", "PR #57 without"),
                           ('Say "merge" to merge #57 and then #63, and tell me whether to keep exceljs or go CSV only', "#57 without"),
                           ("The rate limiter work is finished and quietly sitting there", "no action")):
             self.assertIn(why, bosskit.lint_next(line), line)

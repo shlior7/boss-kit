@@ -56,6 +56,21 @@ class NextHook(unittest.TestCase):
         self.assertIsNone(self.run_hook("All quiet.\nYour move: nothing for you now, both workers are still running."))
         self.assertIsNone(self.run_hook("Done, no decisions open."))  # the old reply's "go 1" is not this reply
 
+    def test_only_the_final_assistant_message_is_linted(self):
+        # an earlier message's line, then a tool result, then a final message without one: nothing to check
+        self.assertIsNone(self.run_hook("Your move: go 1", "Done, no decisions open."))
+        self.assertEqual(self.run_hook("Checking.", "Your move: go 1")["decision"], "block")
+
+    def test_entries_of_one_message_are_read_together(self):
+        entries = [{"type": "user", "message": {"content": "status"}},
+                   {"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": "Your move: go 1"}]}},
+                   {"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": "More on that."}]}}]
+        with open(self.transcript, "w") as f:
+            f.write("\n".join(json.dumps(e) for e in entries) + "\n")
+        out = subprocess.run([sys.executable, HOOK], capture_output=True, text=True,
+                             input=json.dumps({"transcript_path": self.transcript, "cwd": self.wt}))
+        self.assertEqual(json.loads(out.stdout)["decision"], "block")
+
     def test_only_the_last_your_move_line_counts(self):
         self.assertIsNone(self.run_hook("Your move: go 1", GOOD))
         self.assertEqual(self.run_hook(GOOD, "Your move: go 1")["decision"], "block")
