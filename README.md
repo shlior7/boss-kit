@@ -65,6 +65,7 @@ flowchart LR
 | `bin/boss-janitor` | Makes room on the machine for this boss's project: `status` (memory, swap, what a sweep would do), `sweep` (idle orphan dev processes, dead tabs, old temp worktrees and session dirs, and the ledger) and `ledger` (moves stale `ledger.md` content to `ledger-archive/<YYYY-MM>.md`, never deletes); a dry run unless `--apply` and config `janitor` is `apply`; `janitor.off` in the data home turns it off |
 | `bin/boss-watch-done.sh` | `boss-host watch` under its old name and argument order (`<worker> <terminal> [<branch>]`), for bosses still on the old prompt |
 | `bin/boss-merge` | Squash-merges one PR only when it is safe: verified head, mergeable, review threads answered, checks green |
+| `bin/boss-guard` | The boss plugin's PreToolUse hook (`hooks/hooks.json`): in a boss session only, denies raw `gh pr merge`/`close`, `gh pr edit --base`, force-pushes, pushes to the base branch, `git rebase`, and a `boss-host watch` not run in the background, each with the rule and the allowed path |
 | `bin/verify` | Runs the kit's own checks, one line each, plus a junk guard on committed files |
 | `evals/` | Behaviour evals of the boss itself: replayed incidents graded with `claude plugin eval` (see Evals) |
 | `bin/boss-event` | Logs a workspace's stage (sent, DONE, checked, ready, merged, retired) for the pane's stages and timeline |
