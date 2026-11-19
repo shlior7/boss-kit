@@ -651,7 +651,7 @@ class Ledger(Base):
         with self.assertRaises(J.Changed):
             self.compact()
         self.assertEqual(self.kept(), FIXTURE + f"- {NEW} another boss\n")
-        self.assertEqual(sorted(os.listdir(self.pdir)), ["config.json", "ledger-archive", "ledger.md"])
+        self.assertEqual(sorted(os.listdir(self.pdir)), ["config.json", "ledger-archive", "ledger.md", "ledger.md.lock"])  # the lock stays
         self.assertEqual(os.listdir(os.path.join(self.pdir, "ledger-archive")), [])
 
     def test_existing_archive_is_appended_and_restored_on_abort(self):

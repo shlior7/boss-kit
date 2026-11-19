@@ -2,7 +2,7 @@
 
 The boss's working log: stack shape, dispatched tasks, decisions and dated reminders. Re-verify any
 fact here before acting on it. boss-deck reads the dispatch rows below to know each workspace's
-current task, and the Proof column for its proof links once the worker reports, so log every dispatch as one row, with your boss id in the Boss column (this ledger is shared by the project's bosses). Newest rows go first in each `## Dispatches`
+current task, and the Proof column for its proof links once the worker reports, so every dispatch is one row, with its boss id in the Boss column (`boss-host create` writes it; this ledger is shared by the project's bosses). Newest rows go first in each `## Dispatches`
 section.
 
 ## Stack

@@ -33,6 +33,8 @@ usage: bosskit.py show            the resolved paths, as JSON
                                   the form's answers as config, BOSS.md ## Expectations, Domain lines and the boss marker; a dry run until --apply,
                                   which writes (backing each file up) and prints one summary
 """
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -841,12 +843,53 @@ def registry(h=None):
         return {}
 
 
-def save_json(path, data):
+def save_text(path, text):
     """Write atomically, so two bosses refreshing at once never leave half a file."""
     tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w") as f:
-        json.dump(data, f, indent=1)
+        f.write(text)
     os.replace(tmp, path)
+
+
+def save_json(path, data):
+    save_text(path, json.dumps(data, indent=1))
+
+
+@contextlib.contextmanager
+def locked(path):
+    """Hold an exclusive lock on <path>.lock: every read-modify-replace of a shared file (the ledger) takes it, so
+    two bosses writing at once both land."""
+    with open(path + ".lock", "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield  # closing the file releases the lock
+
+
+DISPATCH_HEAD = ["| Date | Task: objective | Workspace / terminal | Model (why) | Status | Proof | Boss |", "|---|---|---|---|---|---|---|"]
+
+
+def add_dispatch(path, cells, day):
+    """Put a row of *cells* first in the ledger's "## Dispatches <day>" table (playbooks/ledger.md), adding that section
+    above the other dispatch sections when it is missing."""
+    with locked(path):
+        _add_dispatch(path, cells, day)
+
+
+def _add_dispatch(path, cells, day):
+    lines = _read(path).splitlines()
+    row = "| " + " | ".join(str(c).replace("|", "\\|") for c in cells) + " |"
+    head = f"## Dispatches {day}"
+    if head in lines:
+        i = lines.index(head) + 1
+        end = next((j for j in range(i, len(lines)) if lines[j].startswith("## ")), len(lines))
+        sep = next((j for j in range(i, end) if re.fullmatch(r"\|(\s*:?-+:?\s*\|)+", lines[j].strip())), None)
+        if sep is None:  # the heading without a table yet
+            lines[i:i] = ["", *DISPATCH_HEAD, row]
+        else:
+            lines.insert(sep + 1, row)
+    else:
+        i = next((j for j, l in enumerate(lines) if l.startswith("## Dispatches")), len(lines))
+        lines[i:i] = ([""] if i == len(lines) and lines and lines[-1].strip() else []) + [head, "", *DISPATCH_HEAD, row, ""]
+    save_text(path, "\n".join(lines).rstrip("\n") + "\n")
 
 
 def heartbeat(ctx, host="", summary=None, now=None):
