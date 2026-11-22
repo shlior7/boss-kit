@@ -126,7 +126,7 @@ test('no dispatch row for this workspace: no pane', async ($, on) => {
   const said = await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
   expect(runs.some(r => r.includes('--worker'))).toBe(true)
   expect(opened).toEqual([])
-  expect(said).toEqual({ text: 'No boss ledger has a dispatch row for this workspace.' })
+  expect(said).toEqual({ text: 'Not a boss here: run /boss to set one up. No boss ledger has a dispatch row for this workspace either.' })
 })
 
 test('a session on any host plugin is a worker too: its id and host go to the data script', async ($, on) => {
@@ -151,7 +151,7 @@ test('a dispatched worker gets its own view, top to bottom', async ($, on) => {
   expect(run.slice(-7)).toEqual(['--worker', '--workspace', '1a2b3c4d-full', '--cwd', '/w/worker', '--status', JSON.stringify({ tasks_done: 1, tasks_total: 3, current: 'Running the tests' })])
   expect(opened[0]).toBe('Worker')
 
-  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const ui = await $.ui.mount({ plugin: 'boss', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
   expect(texts.filter(t => /^[A-Z ]+$/.test(t))).toEqual(['TASKS', 'DELIVERED', 'NOTES', 'FROM BOSS'])
   expect(texts).toContain('WORKER  webhook-retries · fix-42')
@@ -175,7 +175,7 @@ test('a worker pane warns once the kit on disk moves past the one it loaded', as
   session(on, deck, [], [])
   await $.session.start({ cwd: '/w/worker', surface: 'terminal', isInteractive: true })
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
-  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const ui = await $.ui.mount({ plugin: 'boss', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const warnings = async () => (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '').filter(t => t.startsWith('!'))
   expect(await warnings()).toEqual(['! 2 behind origin/main'])
   deck.kit = 'e4f5a6b'
@@ -189,7 +189,7 @@ test('a worker view lists the pages it published, newest first, under the provid
   session(on, deck, [], [])
   await $.session.start({ cwd: '/w/worker', surface: 'terminal', isInteractive: true })
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
-  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const ui = await $.ui.mount({ plugin: 'boss', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
   expect(texts).toContain('pages → acme-pages')
   expect(texts.filter(t => /^[A-Z ]+$/.test(t))).toContain('PAGES')
@@ -233,7 +233,7 @@ test('a worker session onboarded as the boss mid-session becomes the boss on its
   await clock.advance(60_000)
   expect(opened).toEqual(['Boss'])
   expect(runs.map(r => r.includes('--worker') ? 'worker' : r.includes('--session-start') ? 'boss-start' : 'boss')).toEqual(['boss-start'])
-  expect(commands).toEqual(["Open this worker's pane and refresh it now", 'Open the boss pane and refresh it now'])
+  expect(commands).toEqual(["Open the boss pane (or this worker's) and refresh it now"])  // registered once, at the start
 
   // From now on one boss timer, no worker refresh, and /boss-deck does not switch again.
   runs.length = 0
@@ -247,4 +247,56 @@ test('a worker session onboarded as the boss mid-session becomes the boss on its
   runs.length = 0
   await clock.advance(60_000)
   expect(runs.map(r => r.includes('--worker') ? 'worker' : 'boss')).toEqual(['boss'])
+})
+
+/** A session outside any host (no host id): CLAUDE.local.md as `local()` says, the data script's runs in `runs`. */
+function plain(on: On, local: () => string, opened: string[], runs: string[][], commands: string[]) {
+  const clock = mock.clock(on)
+  on('fs.read', async () => {
+    if (!local()) throw new Error('no CLAUDE.local.md')
+    return { value: local() } as never
+  })
+  on('session.cwd', async () => ({ value: '/w/plain' }))
+  on('session.start', async () => ({ cwd: '/w/plain' }))
+  on('command.register', async (_$, e) => (commands.push(e.name), { value: { command: e.name } }) as never)
+  on('ui.open', async (_$, e) => (opened.push(e.title ?? ''), { value: { isPlaced: true as const } }))
+  on('process.run', async (_$, e) => {
+    const sess = e.argv.includes('boss-host-session')
+    if (!sess) runs.push([...e.argv])
+    const stdout = JSON.stringify(sess ? {} : { at: 0, next: '', attention: [], workers: [], watchers: [], prs: [], board: {} })
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  return clock
+}
+
+test('a session that is neither a boss nor a worker has /boss-deck, and it says how to set one up', async ($, on) => {
+  const opened: string[] = []
+  const runs: string[][] = []
+  const commands: string[] = []
+  const clock = plain(on, () => '', opened, runs, commands)
+  await $.session.start({ cwd: '/w/plain', surface: 'terminal', isInteractive: true })
+  expect(commands).toEqual(['boss-deck'])
+  expect(await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])).toEqual({ text: 'Not a boss here: run /boss to set one up.' })
+  await clock.advance(60_000)
+  expect(opened).toEqual([])
+  expect(runs).toEqual([])  // no data script, no heartbeat: only a read of CLAUDE.local.md each tick
+})
+
+test('a session with no host id that /boss onboard makes the boss gets the pane on the next tick, without a restart', async ($, on) => {
+  let local = ''
+  const opened: string[] = []
+  const runs: string[][] = []
+  const clock = plain(on, () => local, opened, runs, [])
+  await $.session.start({ cwd: '/w/plain', surface: 'terminal', isInteractive: true })
+  await clock.advance(60_000)
+  expect(opened).toEqual([])
+
+  local = '# Boss workspace\n'  // what onboarding writes with no host session id
+  await clock.advance(60_000)
+  expect(opened).toEqual(['Boss'])
+  expect(runs.map(r => r.includes('--session-start'))).toEqual([true])
+  runs.length = 0
+  await clock.advance(60_000)
+  expect(runs.length).toBe(1)  // one boss refresh per tick: the re-check timer is gone
+  expect(await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])).toEqual({ text: 'Boss pane refreshed.' })
 })

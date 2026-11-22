@@ -563,7 +563,7 @@ class KitHomeDefault(TempHome):
 
     def deck_kit(self):
         """$K as the deck's register.tsx shell resolves it."""
-        src = open(os.path.join(os.path.dirname(BIN), "mods", "boss-deck", "hooks", "register.tsx")).read()
+        src = open(os.path.join(os.path.dirname(BIN), "hooks", "register.tsx")).read()
         kit_sh = src.split("const KIT_SH = '", 1)[1].split("'\n", 1)[0]
         return subprocess.run(["sh", "-c", kit_sh + 'echo "$K"'], env=self.env, capture_output=True, text=True).stdout.strip()
 
@@ -2196,21 +2196,22 @@ class KitUpdate(Home):
 
 
 class Marketplace(unittest.TestCase):
-    """The marketplace ships /boss: a boss plugin whose root holds skills/boss, beside the boss-deck pane."""
+    """The marketplace ships one plugin, boss: its root holds skills/boss, the hooks and the boss-deck pane."""
 
     ROOT = os.path.dirname(BIN)
 
-    def test_the_marketplace_lists_the_boss_skill_and_the_pane(self):
+    def test_the_marketplace_lists_one_plugin_with_the_boss_skill_and_the_pane(self):
         m = json.load(open(os.path.join(self.ROOT, ".claude-plugin", "marketplace.json")))
         by = {p["name"]: p for p in m["plugins"]}
-        self.assertEqual(sorted(by), ["boss", "boss-deck"])
+        self.assertEqual(sorted(by), ["boss"])
         root = os.path.normpath(os.path.join(self.ROOT, by["boss"]["source"]))
         manifest = json.load(open(os.path.join(root, ".claude-plugin", "plugin.json")))
         self.assertEqual(manifest["name"], "boss")
         skill = open(os.path.join(root, "skills", "boss", "SKILL.md")).read()
         self.assertRegex(skill, r"(?m)^name: boss$")  # so /boss, not just boss:boss
         self.assertTrue(os.path.isfile(os.path.join(root, "bin", "bosskit.py")))  # the skill's commands ship with it
-        self.assertTrue(os.path.isfile(os.path.join(self.ROOT, os.path.normpath(by["boss-deck"]["source"]), ".claude-plugin", "plugin.json")))
+        self.assertEqual(json.load(open(os.path.join(root, "hooks", "hooks.json")))["modules"], ["./register.tsx"])  # the pane
+        self.assertTrue(os.path.isfile(os.path.join(root, "hooks", "register.tsx")))
         self.assertEqual(by["boss"]["version"], manifest["version"])
 
 

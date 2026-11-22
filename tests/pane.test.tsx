@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
 
 import type { Deck } from '../types'
 
@@ -25,6 +26,13 @@ const DECK: Deck = {
 
 const SESSION = { kind: 'hosta', id: 'ws-me', terminal: '' }
 const out = (v: unknown) => ({ value: { exitCode: 0, stdout: JSON.stringify(v), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+/** A boss session: its CLAUDE.local.md has this session's marker, and the session has started. */
+async function asBoss($: { session: { start: (e: { cwd: string; surface: 'terminal'; isInteractive: boolean }) => Promise<unknown> } }, on: On) {
+  on('fs.read', async () => ({ value: '# Boss workspace ws-me\n' }))
+  on('session.start', async () => ({ cwd: '/w/boss' }))
+  on('command.register', async (_$, e) => ({ value: { command: e.name } }) as never)
+  await $.session.start({ cwd: '/w/boss', surface: 'terminal', isInteractive: true })
+}
 
 test('the pane passes its workspace, and draws its inbox, its bosses, one WORKERS section and the board', async ($, on) => {
   const runs: string[][] = []
@@ -37,11 +45,12 @@ test('the pane passes its workspace, and draws its inbox, its bosses, one WORKER
     return { value: { exitCode: 0, stdout: JSON.stringify(DECK), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   // The engine stamps origin and presentation.
+  await asBoss($, on)
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
-  expect(runs[0]?.slice(-4)).toEqual(['--cwd', '/w/boss', '--workspace', 'ws-me'])
-  expect(runs[0]?.slice(-6, -4)).toEqual(['--host-kind', 'hosta'])
+  expect(runs.at(-1)?.slice(-4)).toEqual(['--cwd', '/w/boss', '--workspace', 'ws-me'])
+  expect(runs.at(-1)?.slice(-6, -4)).toEqual(['--host-kind', 'hosta'])
 
-  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const ui = await $.ui.mount({ plugin: 'boss', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
   expect(texts).toContain('INBOX')
   expect(texts).toContain('gadgets: is #42 safe?')
@@ -114,7 +123,7 @@ test('the boss pane shows an attention line once the kit on disk moves past the 
   const run = () => $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
   await $.session.start({ cwd: '/w/boss', surface: 'terminal', isInteractive: true })
   await run()
-  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const ui = await $.ui.mount({ plugin: 'boss', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const texts = async () => (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
   expect(await texts()).not.toContain('kit updated · restart: claude --continue')
   kit = 'e4f5a6b'
@@ -140,14 +149,15 @@ test('a boss button submits exactly its configured prompt to the session, once, 
     runs.push([...e.argv])
     return out({ ...DECK, buttons, workerButtons })
   })
+  await asBoss($, on)
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
-  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const ui = await $.ui.mount({ plugin: 'boss', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
   expect(texts.slice(texts.indexOf('Status'), texts.indexOf('Status') + 2)).toEqual(['Status', 'Mail'])
   const before = runs.length
 
   await ui.press({ key: 'ask-Status' })
-  expect(sent).toEqual([{ text: 'Status: what needs me, in plain words.', origin: { kind: 'plugin', name: 'boss-deck', asUser: true } }])
+  expect(sent).toEqual([{ text: 'Status: what needs me, in plain words.', origin: { kind: 'plugin', name: 'boss', asUser: true } }])
   expect(toasts).toEqual(['sent: Status: what needs me, in plain…'])  // one line: clipped to the toast box
   expect(runs.length).toBe(before)  // nothing else ran: no process, no merge
 
@@ -170,8 +180,9 @@ test('the header names the page provider, a worker\'s accordion lists its pages 
   on('session.cwd', async () => ({ value: '/w/boss' }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('process.run', async (_$, e) => (e.argv.includes('boss-host-session') ? out(SESSION) : out(deck)))
+  await asBoss($, on)
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
-  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const ui = await $.ui.mount({ plugin: 'boss', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const texts = async () => (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
   expect((await texts()).filter(t => t.startsWith('pages →'))).toEqual(['pages → acme-pages'])
   await ui.press({ key: 'peek-w-5e6f7a8b' })
@@ -185,8 +196,9 @@ test('no provider set: no pages line', async ($, on) => {
   on('session.cwd', async () => ({ value: '/w/boss' }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('process.run', async (_$, e) => (e.argv.includes('boss-host-session') ? out(SESSION) : out(DECK)))
+  await asBoss($, on)
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
-  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const ui = await $.ui.mount({ plugin: 'boss', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   expect((await ui.findAll({ type: 'Text' })).some(t => (t.text ?? '').startsWith('pages →'))).toBe(false)
 })
 
@@ -195,8 +207,9 @@ test('a next line not written with bosskit.py next gets a quiet note under it', 
   on('session.cwd', async () => ({ value: '/w/boss' }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('process.run', async (_$, e) => (e.argv.includes('boss-host-session') ? out(SESSION) : out({ ...DECK, next: 'go 1', nextUnlinted: true })))
+  await asBoss($, on)
   await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
-  const ui = await $.ui.mount({ plugin: 'boss-deck', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
+  const ui = await $.ui.mount({ plugin: 'boss', surface: 'terminal', component: 'Pane', requestId: 'boss-deck', props: {} as never })
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
   expect(texts.slice(texts.indexOf('go 1'), texts.indexOf('go 1') + 2)).toEqual(['go 1', 'not written with bosskit.py next'])
 })
