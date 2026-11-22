@@ -996,7 +996,10 @@ def stub_tools(tmp, fix):
     """A gh stub that prints fixtures from *fix* (the fake host reads its own there): no network, no real host."""
     stubs = os.path.join(tmp, "stubs")
     os.makedirs(stubs, exist_ok=True)
-    scripts = {"gh": 'case "$1 $2" in\n  "pr list") cat "$FIX/prs.json";;\n  *) exit 1;;\nesac\n'}
+    # `pr list --head B` prints head.json (default none) and logs the call to head.calls: the lookup of any author's PR by branch.
+    gh = ('case "$1 $2" in\n  "pr list") case "$*" in\n    *--head*) echo x >> "$FIX/head.calls"; cat "$FIX/head.json" 2>/dev/null || echo "[]";;\n'
+          '    *) cat "$FIX/prs.json";;\n  esac;;\n  *) exit 1;;\nesac\n')
+    scripts = {"gh": gh}
     for tool, body in scripts.items():
         path = os.path.join(stubs, tool)
         open(path, "w").write("#!/bin/sh\n" + body)
@@ -1092,6 +1095,143 @@ class WorkerView(Home):
         self.assertEqual(subprocess.run(["git", "-C", self.wt, "status", "--porcelain"], capture_output=True, text=True).stdout, "")
         deck_json(self.wt, self.tools, "--worker", "--workspace", self.WS)  # exclude is added once
         self.assertEqual(open(os.path.join(self.wt, exclude)).read().split().count(".boss-worker/"), 1)
+
+
+class HeadPr(Home):
+    """A workspace on a teammate's PR (a review, a restack) still gets that PR: looked up by head branch, any author."""
+
+    BOSS = "bbbbbbbb-0000-4000-8000-000000000009"
+    WS = "aaaaaaaa-0000-4000-8000-000000000001"
+    BRANCH = "sam/collector-round-2"
+
+    def setUp(self):
+        super().setUp()
+        self.tools = {**stub_tools(self.tmp, self.fixdir), "BOSS_PROJECT": "widgets", "FAKE_SESSION": self.BOSS}
+        self.wwt = os.path.join(self.tmp, "worker-a")
+        git(self.tmp, "init", "-q", self.wwt)
+        git(self.wwt, "checkout", "-q", "-b", self.BRANCH)
+        git(self.wwt, "-c", "user.name=jane", "-c", "user.email=jane@example.com", "commit", "-q", "--allow-empty", "-m", "x")
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace\n")
+        open(os.path.join(self.home, "widgets", "ledger.md"), "w").write(
+            "## Dispatches 2026-01-02\n\n| Date | Task | Workspace | Model | Status |\n|---|---|---|---|---|\n"
+            "| 2026-01-02 | review-1: sam's collector | aaaaaaaa | mid | DISPATCHED |\n")
+        json.dump({"workspaces": [{"id": self.WS, "name": "collector-review", "branch": self.BRANCH, "terminals": [{"id": "t", "agent": {"state": "idle"}}]}]},
+                  open(os.path.join(self.fixdir, "snapshot.json"), "w"))
+        json.dump([{"id": self.WS, "worktreePath": self.wwt}], open(os.path.join(self.fixdir, "list.json"), "w"))
+        self.fix("prs", [])
+        self.fix("head", [self.pr(77, self.BRANCH)])
+
+    def fix(self, name, rows):
+        json.dump(rows, open(os.path.join(self.fixdir, name + ".json"), "w"))
+
+    def pr(self, num, head):
+        return {"number": num, "title": "Collector round 2", "isDraft": False, "headRefName": head, "baseRefName": "main", "url": f"https://github.com/acme/widgets/pull/{num}"}
+
+    def boss(self, *args):
+        return deck_json(self.wt, self.tools, *args)
+
+    def worker(self, *args):
+        return deck_json(self.wwt, self.tools, "--worker", "--workspace", self.WS, *args)["worker"]
+
+    def head_calls(self):
+        return len(bosskit._read(os.path.join(self.fixdir, "head.calls")).splitlines())
+
+    def test_a_teammates_pr_joins_its_workspace_in_both_views_and_is_no_pr_row(self):
+        d = self.boss()
+        self.assertEqual((d["workers"][0]["prTag"], d["workers"][0]["pr"]["url"]), ("#77", "https://github.com/acme/widgets/pull/77"))
+        self.assertEqual(d["prs"], [])  # joined to its workspace only, never a PR-only row
+        pr = self.worker()["pr"]
+        self.assertEqual((pr["num"], pr["url"]), (77, "https://github.com/acme/widgets/pull/77"))
+
+    def test_my_own_pr_wins_and_costs_no_lookup(self):
+        self.fix("prs", [self.pr(5, self.BRANCH)])
+        self.assertEqual((self.boss()["workers"][0]["prTag"], self.worker()["pr"]["num"]), ("#5", 5))
+        self.assertEqual(self.head_calls(), 0)
+
+    def test_a_branch_with_no_pr_caches_the_miss_until_a_fresh_refresh(self):
+        self.fix("head", [])
+        for _ in range(2):
+            self.assertIsNone(self.boss()["workers"][0]["pr"])
+        self.assertEqual(self.head_calls(), 1)
+        self.boss("--fresh")
+        self.assertEqual(self.head_calls(), 2)
+
+    def test_one_refreshs_lookups_share_a_deadline_and_a_failed_lookup_caches_nothing(self):
+        deck = load_script("boss-deck-data.py")
+        cfg, clock, calls = {"repo": "acme/widgets"}, [1000.0], []
+
+        def slow_failed_gh(argv, timeout=40):
+            calls.append((argv[6], timeout))
+            clock[0] += 30  # gh hangs, then fails
+            return ""
+
+        workers = [{"ws": f"w{i}", "branch": f"sam/b{i}"} for i in range(3)]
+        with mock.patch.object(deck, "run", slow_failed_gh), mock.patch("time.time", lambda: clock[0]):
+            deck.join(workers, [], lambda b: deck.head_pr(cfg, self.tmp, b, deadline=1020))
+        self.assertEqual(calls, [("sam/b0", 20)])  # the timeout is what is left of the budget; no lookup after it
+        self.assertEqual([w["pr"] for w in workers], [None] * 3)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "deck-head-prs.json")))  # no miss cached, so the next refresh tries again
+
+    def test_interleaved_refreshes_keep_each_others_cache_entries(self):
+        deck = load_script("boss-deck-data.py")
+        cache = os.path.join(self.tmp, "deck-head-prs.json")
+
+        def gh_while_another_refresh_writes(argv, timeout=40):
+            json.dump({"sam/other": {"at": time.time(), "pr": None}}, open(cache, "w"))  # lands after our read, before our write
+            return "[]"
+
+        with mock.patch.object(deck, "run", gh_while_another_refresh_writes):
+            deck.head_pr({"repo": "acme/widgets"}, self.tmp, "sam/mine")
+        self.assertEqual(sorted(json.load(open(cache))), ["sam/mine", "sam/other"])
+
+    def test_a_slow_lookup_then_a_slow_compare_stay_within_the_budget(self):
+        deck = load_script("boss-deck-data.py")
+        cfg, clock, calls = {"repo": "acme/widgets"}, [1000.0], []
+        found = json.dumps([{**self.pr(77, "sam/b0"), "headRefOid": "abc123"}])
+        lookup_s = [15]
+
+        def slow_gh(argv, timeout=40):
+            calls.append((argv[1], timeout))
+            clock[0] += lookup_s[0] if argv[1] == "pr" else timeout  # the lookup is slow but succeeds; the compare hangs to its timeout
+            return found if argv[1] == "pr" else ""
+
+        with mock.patch.object(deck, "run", slow_gh), mock.patch("time.time", lambda: clock[0]):
+            pr = deck.head_pr(cfg, self.tmp, "sam/b0", deadline=1025)
+            self.assertEqual((calls, clock[0], pr["num"]), ([("pr", 25), ("api", 10)], 1025, 77))  # the compare gets what is left
+            calls.clear()
+            clock[0], lookup_s[0] = 1000.0, 25  # the lookup uses the whole budget: no compare, behind 0, the PR is still found and cached
+            pr = deck.head_pr(cfg, self.tmp, "sam/b0", fresh=True, deadline=1025)
+            self.assertEqual((calls, clock[0], pr["num"], pr["behind"]), ([("pr", 25)], 1025, 77, 0))
+            self.assertEqual(deck.head_pr(cfg, self.tmp, "sam/b0", deadline=1025)["num"], 77)
+            self.assertEqual(calls, [("pr", 25)])
+
+    def test_the_base_branch_is_never_looked_up(self):
+        snap = os.path.join(self.fixdir, "snapshot.json")
+        for name in ("main", "master"):
+            json.dump({"workspaces": [{"id": self.WS, "name": "w", "branch": name, "terminals": [{"id": "t", "agent": {"state": "idle"}}]}]}, open(snap, "w"))
+            self.fix("head", [self.pr(90, name)])
+            self.assertIsNone(self.boss()["workers"][0]["pr"])
+        self.assertEqual(self.head_calls(), 0)
+        deck = load_script("boss-deck-data.py")
+        with mock.patch.object(deck, "run", side_effect=AssertionError("gh called")):
+            self.assertIsNone(deck.head_pr({"repo": "acme/widgets", "base_branch": "develop"}, self.tmp, "develop"))
+
+    def test_a_fork_pr_with_the_same_head_branch_is_not_joined(self):
+        self.fix("head", [{**self.pr(88, self.BRANCH), "isCrossRepository": True}])
+        self.assertIsNone(self.boss()["workers"][0]["pr"])
+        self.assertIsNone(self.worker()["pr"])
+        self.fix("head", [{**self.pr(88, self.BRANCH), "isCrossRepository": True}, {**self.pr(77, self.BRANCH), "isCrossRepository": False}])
+        self.assertEqual(self.boss("--fresh")["workers"][0]["prTag"], "#77")  # this repo's own PR still wins over the fork's
+
+    def test_many_newer_fork_prs_do_not_push_out_this_repos_pr(self):
+        deck = load_script("boss-deck-data.py")
+        rows = [{**self.pr(200 - i, "feature"), "isCrossRepository": True} for i in range(12)] + [{**self.pr(77, "feature"), "isCrossRepository": False}]
+
+        def gh_newest_first(argv, timeout=40):  # honors --limit like gh does, before the fork filter
+            return json.dumps(rows[:int(argv[argv.index("--limit") + 1])])
+
+        with mock.patch.object(deck, "run", gh_newest_first):
+            self.assertEqual(deck.head_pr({"repo": "acme/widgets"}, self.tmp, "feature")["num"], 77)
 
 
 class Folders(Home):
