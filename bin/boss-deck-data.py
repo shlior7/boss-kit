@@ -370,13 +370,35 @@ def prs(cfg, cache_dir, fresh=False):
     return rows
 
 
-def join(workers, prs):
-    """Each worker's open PR, by branch == the PR's head (the project's own repo first), and each joined PR's workspace."""
+def head_pr(cfg, cache_dir, branch, fresh=False):
+    """The open PR whose head is *branch*, by any author (a workspace on a teammate's PR), or None. Cached PR_TTL_S per
+    branch, a miss too, unless fresh. Only ever joined to its workspace, never listed as a PR row."""
+    cache = os.path.join(cache_dir, "deck-head-prs.json")
+    try:
+        heads = json.load(open(cache))
+    except (OSError, ValueError):
+        heads = {}
+    hit = heads.get(branch)
+    if hit and not fresh and time.time() - hit["at"] < PR_TTL_S:
+        return hit["pr"]
+    raw = run(["gh", "pr", "list", "--repo", cfg["repo"], "--head", branch, "--state", "open", "--json", PR_FIELDS, "--limit", "1"], timeout=60)
+    found = json.loads(raw or "[]")
+    pr = pr_row(cfg["repo"], found[0], True, behind_by(cfg["repo"], found[0].get("baseRefName"), found[0]["headRefOid"]) if found[0].get("headRefOid") else 0) if found else None
+    heads[branch] = {"at": time.time(), "pr": pr}
+    json.dump(heads, open(cache, "w"))
+    return pr
+
+
+def join(workers, prs, by_head_pr=None):
+    """Each worker's open PR, by branch == the PR's head (the project's own repo first), else *by_head_pr*(branch),
+    and each joined PR's workspace."""
     by_head = {}
     for p in sorted(prs, key=lambda p: not p.get("primary")):
         by_head.setdefault(p["head"], p)
     for w in workers:
         p = by_head.get(w["branch"]) if w["branch"] else None
+        if not p and w["branch"] and by_head_pr:
+            p = by_head_pr(w["branch"])
         w["pr"] = p
         if p:
             p["ws"] = w["ws"]
@@ -688,7 +710,8 @@ def worker_view(home, ws, cwd, status=None, fresh=False):
         cache = os.path.join(wt, ".boss-worker")
         os.makedirs(cache, exist_ok=True)
     branch = bosskit._git(wt, "rev-parse", "--abbrev-ref", "HEAD")
-    pr = next((p for p in sorted(prs(cfg, cache, fresh), key=lambda p: not p.get("primary")) if branch and p["head"] == branch), None)
+    pr = next((p for p in sorted(prs(cfg, cache, fresh), key=lambda p: not p.get("primary")) if branch and p["head"] == branch), None) \
+        or (head_pr(cfg, cache, branch, fresh) if branch else None)
     base = (pr or {}).get("base") or cfg.get("base_branch") or "main"
     behind = bosskit._git(wt, "rev-list", "--count", f"HEAD..origin/{base}")
     evs = project_events(pdir, ws)
@@ -777,7 +800,7 @@ def main():
             "tasks": read_status(info.get("worktree", "")), "notes": notes_tail(info.get("worktree", ""), BOSS_NOTE_ROWS),
             "pages": worker_pages(info.get("worktree", "")),
         })
-    join(workers, pr_rows)
+    join(workers, pr_rows, lambda b: head_pr(cfg, ctx.cache, b, "--fresh" in sys.argv))
     if folder:  # only this folder's workspaces, their watchers and their PRs; no PR-only rows
         kept = {w["ws"] for w in workers + done}
         armed = [w for w in armed if w["ws"][:8] in kept]

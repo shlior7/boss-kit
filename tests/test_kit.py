@@ -996,7 +996,10 @@ def stub_tools(tmp, fix):
     """A gh stub that prints fixtures from *fix* (the fake host reads its own there): no network, no real host."""
     stubs = os.path.join(tmp, "stubs")
     os.makedirs(stubs, exist_ok=True)
-    scripts = {"gh": 'case "$1 $2" in\n  "pr list") cat "$FIX/prs.json";;\n  *) exit 1;;\nesac\n'}
+    # `pr list --head B` prints head.json (default none) and logs the call to head.calls: the lookup of any author's PR by branch.
+    gh = ('case "$1 $2" in\n  "pr list") case "$*" in\n    *--head*) echo x >> "$FIX/head.calls"; cat "$FIX/head.json" 2>/dev/null || echo "[]";;\n'
+          '    *) cat "$FIX/prs.json";;\n  esac;;\n  *) exit 1;;\nesac\n')
+    scripts = {"gh": gh}
     for tool, body in scripts.items():
         path = os.path.join(stubs, tool)
         open(path, "w").write("#!/bin/sh\n" + body)
@@ -1092,6 +1095,66 @@ class WorkerView(Home):
         self.assertEqual(subprocess.run(["git", "-C", self.wt, "status", "--porcelain"], capture_output=True, text=True).stdout, "")
         deck_json(self.wt, self.tools, "--worker", "--workspace", self.WS)  # exclude is added once
         self.assertEqual(open(os.path.join(self.wt, exclude)).read().split().count(".boss-worker/"), 1)
+
+
+class HeadPr(Home):
+    """A workspace on a teammate's PR (a review, a restack) still gets that PR: looked up by head branch, any author."""
+
+    BOSS = "bbbbbbbb-0000-4000-8000-000000000009"
+    WS = "aaaaaaaa-0000-4000-8000-000000000001"
+    BRANCH = "sam/collector-round-2"
+
+    def setUp(self):
+        super().setUp()
+        self.tools = {**stub_tools(self.tmp, self.fixdir), "BOSS_PROJECT": "widgets", "FAKE_SESSION": self.BOSS}
+        self.wwt = os.path.join(self.tmp, "worker-a")
+        git(self.tmp, "init", "-q", self.wwt)
+        git(self.wwt, "checkout", "-q", "-b", self.BRANCH)
+        git(self.wwt, "-c", "user.name=jane", "-c", "user.email=jane@example.com", "commit", "-q", "--allow-empty", "-m", "x")
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace\n")
+        open(os.path.join(self.home, "widgets", "ledger.md"), "w").write(
+            "## Dispatches 2026-01-02\n\n| Date | Task | Workspace | Model | Status |\n|---|---|---|---|---|\n"
+            "| 2026-01-02 | review-1: sam's collector | aaaaaaaa | mid | DISPATCHED |\n")
+        json.dump({"workspaces": [{"id": self.WS, "name": "collector-review", "branch": self.BRANCH, "terminals": [{"id": "t", "agent": {"state": "idle"}}]}]},
+                  open(os.path.join(self.fixdir, "snapshot.json"), "w"))
+        json.dump([{"id": self.WS, "worktreePath": self.wwt}], open(os.path.join(self.fixdir, "list.json"), "w"))
+        self.fix("prs", [])
+        self.fix("head", [self.pr(77, self.BRANCH)])
+
+    def fix(self, name, rows):
+        json.dump(rows, open(os.path.join(self.fixdir, name + ".json"), "w"))
+
+    def pr(self, num, head):
+        return {"number": num, "title": "Collector round 2", "isDraft": False, "headRefName": head, "baseRefName": "main", "url": f"https://github.com/acme/widgets/pull/{num}"}
+
+    def boss(self, *args):
+        return deck_json(self.wt, self.tools, *args)
+
+    def worker(self, *args):
+        return deck_json(self.wwt, self.tools, "--worker", "--workspace", self.WS, *args)["worker"]
+
+    def head_calls(self):
+        return len(bosskit._read(os.path.join(self.fixdir, "head.calls")).splitlines())
+
+    def test_a_teammates_pr_joins_its_workspace_in_both_views_and_is_no_pr_row(self):
+        d = self.boss()
+        self.assertEqual((d["workers"][0]["prTag"], d["workers"][0]["pr"]["url"]), ("#77", "https://github.com/acme/widgets/pull/77"))
+        self.assertEqual(d["prs"], [])  # joined to its workspace only, never a PR-only row
+        pr = self.worker()["pr"]
+        self.assertEqual((pr["num"], pr["url"]), (77, "https://github.com/acme/widgets/pull/77"))
+
+    def test_my_own_pr_wins_and_costs_no_lookup(self):
+        self.fix("prs", [self.pr(5, self.BRANCH)])
+        self.assertEqual((self.boss()["workers"][0]["prTag"], self.worker()["pr"]["num"]), ("#5", 5))
+        self.assertEqual(self.head_calls(), 0)
+
+    def test_a_branch_with_no_pr_caches_the_miss_until_a_fresh_refresh(self):
+        self.fix("head", [])
+        for _ in range(2):
+            self.assertIsNone(self.boss()["workers"][0]["pr"])
+        self.assertEqual(self.head_calls(), 1)
+        self.boss("--fresh")
+        self.assertEqual(self.head_calls(), 2)
 
 
 class Folders(Home):
