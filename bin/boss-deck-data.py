@@ -385,7 +385,7 @@ def head_pr(cfg, cache_dir, branch, fresh=False, deadline=None):
     left = deadline - time.time() if deadline else 60
     if left <= 0:
         return None
-    raw = run(["gh", "pr", "list", "--repo", cfg["repo"], "--head", branch, "--state", "open", "--json", PR_FIELDS + ",isCrossRepository", "--limit", "10"], timeout=min(60, left))
+    raw = run(["gh", "pr", "list", "--repo", cfg["repo"], "--head", branch, "--state", "open", "--json", PR_FIELDS + ",isCrossRepository", "--limit", "100"], timeout=min(60, left))
     if not raw:
         return None  # gh failed or timed out: not a miss
     found = [p for p in json.loads(raw) if not p.get("isCrossRepository")]

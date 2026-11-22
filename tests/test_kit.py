@@ -1223,6 +1223,16 @@ class HeadPr(Home):
         self.fix("head", [{**self.pr(88, self.BRANCH), "isCrossRepository": True}, {**self.pr(77, self.BRANCH), "isCrossRepository": False}])
         self.assertEqual(self.boss("--fresh")["workers"][0]["prTag"], "#77")  # this repo's own PR still wins over the fork's
 
+    def test_many_newer_fork_prs_do_not_push_out_this_repos_pr(self):
+        deck = load_script("boss-deck-data.py")
+        rows = [{**self.pr(200 - i, "feature"), "isCrossRepository": True} for i in range(12)] + [{**self.pr(77, "feature"), "isCrossRepository": False}]
+
+        def gh_newest_first(argv, timeout=40):  # honors --limit like gh does, before the fork filter
+            return json.dumps(rows[:int(argv[argv.index("--limit") + 1])])
+
+        with mock.patch.object(deck, "run", gh_newest_first):
+            self.assertEqual(deck.head_pr({"repo": "acme/widgets"}, self.tmp, "feature")["num"], 77)
+
 
 class Folders(Home):
     """A domain boss covers only the workspaces in its sidebar folder; the main boss covers all."""
