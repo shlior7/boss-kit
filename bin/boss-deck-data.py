@@ -322,9 +322,9 @@ def kit_head():
     return bosskit._git(bosskit.KIT, "rev-parse", "--short", "HEAD")
 
 
-def behind_by(repo, base, head):
+def behind_by(repo, base, head, timeout=20):
     """How many commits *base* has that *head* (a sha) lacks, by GitHub's compare; 0 when it cannot say."""
-    out = run(["gh", "api", f"repos/{repo}/compare/{base}...{head}", "--jq", ".behind_by"], timeout=20).strip()
+    out = run(["gh", "api", f"repos/{repo}/compare/{base}...{head}", "--jq", ".behind_by"], timeout=timeout).strip()
     return int(out) if out.isdigit() else 0
 
 
@@ -386,7 +386,11 @@ def head_pr(cfg, cache_dir, branch, fresh=False, deadline=None):
     if not raw:
         return None  # gh failed or timed out: not a miss
     found = json.loads(raw)
-    pr = pr_row(cfg["repo"], found[0], True, behind_by(cfg["repo"], found[0].get("baseRefName"), found[0]["headRefOid"]) if found[0].get("headRefOid") else 0) if found else None
+    pr = None
+    if found:
+        left = deadline - time.time() if deadline else 20  # the compare spends what the lookup left of the budget; none left: behind 0
+        behind = behind_by(cfg["repo"], found[0].get("baseRefName"), found[0]["headRefOid"], min(20, left)) if found[0].get("headRefOid") and left > 0 else 0
+        pr = pr_row(cfg["repo"], found[0], True, behind)
     with bosskit.locked(cache):  # another refresh may have written its branches since we read
         heads = bosshost._json(bosskit._read(cache), {})
         heads[branch] = {"at": time.time(), "pr": pr}

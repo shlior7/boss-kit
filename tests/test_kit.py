@@ -1184,6 +1184,27 @@ class HeadPr(Home):
             deck.head_pr({"repo": "acme/widgets"}, self.tmp, "sam/mine")
         self.assertEqual(sorted(json.load(open(cache))), ["sam/mine", "sam/other"])
 
+    def test_a_slow_lookup_then_a_slow_compare_stay_within_the_budget(self):
+        deck = load_script("boss-deck-data.py")
+        cfg, clock, calls = {"repo": "acme/widgets"}, [1000.0], []
+        found = json.dumps([{**self.pr(77, "sam/b0"), "headRefOid": "abc123"}])
+        lookup_s = [15]
+
+        def slow_gh(argv, timeout=40):
+            calls.append((argv[1], timeout))
+            clock[0] += lookup_s[0] if argv[1] == "pr" else timeout  # the lookup is slow but succeeds; the compare hangs to its timeout
+            return found if argv[1] == "pr" else ""
+
+        with mock.patch.object(deck, "run", slow_gh), mock.patch("time.time", lambda: clock[0]):
+            pr = deck.head_pr(cfg, self.tmp, "sam/b0", deadline=1025)
+            self.assertEqual((calls, clock[0], pr["num"]), ([("pr", 25), ("api", 10)], 1025, 77))  # the compare gets what is left
+            calls.clear()
+            clock[0], lookup_s[0] = 1000.0, 25  # the lookup uses the whole budget: no compare, behind 0, the PR is still found and cached
+            pr = deck.head_pr(cfg, self.tmp, "sam/b0", fresh=True, deadline=1025)
+            self.assertEqual((calls, clock[0], pr["num"], pr["behind"]), ([("pr", 25)], 1025, 77, 0))
+            self.assertEqual(deck.head_pr(cfg, self.tmp, "sam/b0", deadline=1025)["num"], 77)
+            self.assertEqual(calls, [("pr", 25)])
+
 
 class Folders(Home):
     """A domain boss covers only the workspaces in its sidebar folder; the main boss covers all."""
