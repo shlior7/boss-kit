@@ -4,12 +4,13 @@
   verify [dir]        dir defaults to the repo root this script is in
 
 Runs the unit tests, each host plugin's tests (hosts/<name>/tests: test_*.py and test-*.sh), the pane data selftest, the
-mod's tests, its manifest validation and its type check, plus two guards: no committed *.profraw, .DS_Store, __pycache__
+boss plugin's tests (the pane's tests/*.test.ts*), its validation and the pane's type check, plus two guards: no committed *.profraw, .DS_Store, __pycache__
 or *.tmp (junk), and no file outside hosts/ naming a host plugin (decoupled: the kit names none; only a plugin's own folder
 does). The type check needs the gitignored
-mods/boss-deck/.claude-plugin/types/, which Claude Code writes only when an interactive session loads the mod; when it
-is missing, verify copies it from another worktree of the repo or from the installed kit ($BOSS_KIT_HOME, else
-~/.boss-kit, ~/.claude/boss-kit until boss-migrate moves it), read-only. If none has it, open `claude --plugin-dir mods/boss-deck` once.
+.claude-plugin/types/, which Claude Code writes only when an interactive session loads the plugin; when it is missing,
+verify copies it from another worktree of the repo or from the installed kit ($BOSS_KIT_HOME, else ~/.boss-kit,
+~/.claude/boss-kit until boss-migrate moves it), read-only, at that path or at mods/boss-deck/.claude-plugin/types/ (where a
+checkout from before the deck joined the boss plugin has it). If none has it, open `claude --plugin-dir .` once.
 """
 import fnmatch
 import os
@@ -20,15 +21,15 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bosskit  # noqa: E402
 
-TYPES = os.path.join("mods", "boss-deck", ".claude-plugin", "types")
+TYPES = os.path.join(".claude-plugin", "types")
+OLD_TYPES = os.path.join("mods", "boss-deck", ".claude-plugin", "types")  # the same files, where the separate deck plugin had them
 JUNK = ("*.profraw", ".DS_Store", "__pycache__", "*.tmp")
 CHECKS = [
     ("unit tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests"]),
     ("deck selftest", [sys.executable, "bin/boss-deck-data.py", "--selftest"]),
-    ("plugin test", ["claude", "plugin", "test", "mods/boss-deck"]),
-    ("plugin validate", ["claude", "plugin", "validate", "mods/boss-deck"]),
-    ("plugin validate boss", ["claude", "plugin", "validate", "."]),  # the marketplace and the boss plugin (the /boss skill)
-    ("tsc", ["npm", "exec", "-y", "--package=typescript@5.6.3", "--", "tsc", "-p", "mods/boss-deck", "--noEmit"]),
+    ("plugin test", ["claude", "plugin", "test", "."]),
+    ("plugin validate", ["claude", "plugin", "validate", "."]),  # the marketplace and the boss plugin: skill, hooks, the pane
+    ("tsc", ["npm", "exec", "-y", "--package=typescript@5.6.3", "--", "tsc", "-p", ".", "--noEmit"]),
 ]
 
 
@@ -88,7 +89,7 @@ def types_sources(d):
     """Where a copy of the mod's types may be: the repo's other worktrees, then the installed kit."""
     trees = [l[9:] for l in git(d, "worktree", "list", "--porcelain").splitlines() if l.startswith("worktree ")]
     kit = bosskit.kit_home()
-    return [os.path.join(t, TYPES) for t in trees + [kit] if os.path.realpath(t) != os.path.realpath(d)]
+    return [os.path.join(t, sub) for t in trees + [kit] if os.path.realpath(t) != os.path.realpath(d) for sub in (TYPES, OLD_TYPES)]
 
 
 def ensure_types(d):
@@ -98,7 +99,7 @@ def ensure_types(d):
         return ""
     src = next((s for s in types_sources(d) if os.path.isfile(os.path.join(s, "tsconfig.json"))), None)
     if not src:
-        return f"no {TYPES} here or in another worktree or the kit: open `claude --plugin-dir mods/boss-deck` once"
+        return f"no {TYPES} here or in another worktree or the kit: open `claude --plugin-dir .` once"
     shutil.copytree(src, dest)
     print(f"copied {TYPES} from {src}")
     return ""

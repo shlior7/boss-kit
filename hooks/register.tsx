@@ -18,6 +18,8 @@ const HOST_CMD = ['sh', '-c', KIT_SH + 'BOSS_HOST_KIND="$1" BOSS_SESSION_ID="$2"
 // This session on its host, {kind, id, terminal}: boss-host reads the env this process passes on, so the mod reads none.
 const HOST_SESSION_CMD = ['sh', '-c', KIT_SH + 'exec python3 "$K/bin/boss-host" session', 'boss-host-session']
 const REFRESH_MS = 60_000
+// /boss-deck's answer in a session that is neither a boss nor a dispatched worker.
+const NOT_BOSS = 'Not a boss here: run /boss to set one up.'
 // The worker view's FROM BOSS rows.
 const MSG_ROWS = 3
 // A PR untouched this long folds into one 'stale' line.
@@ -27,14 +29,15 @@ const TOAST_COLS = 38
 // Unread messages listed in the inbox before it folds the rest into "+N more".
 const INBOX_ROWS = 5
 // Change a tag when its value's fields change: it declines what an earlier version stored.
-const deck = atom({ plugin: 'boss-deck', key: 'deck' } as const, null, { shape: 'deck-11' })
-const peek = atom({ plugin: 'boss-deck', key: 'peek' } as const, null, { shape: 'peek-4' })
-const mine = atom({ plugin: 'boss-deck', key: 'mine' } as const, null, { shape: 'mine-3' })
-const live = atom({ plugin: 'boss-deck', key: 'live' } as const, null, { shape: 'live-1' })
+const deck = atom({ plugin: 'boss', key: 'deck' } as const, null, { shape: 'deck-11' })
+const peek = atom({ plugin: 'boss', key: 'peek' } as const, null, { shape: 'peek-4' })
+const mine = atom({ plugin: 'boss', key: 'mine' } as const, null, { shape: 'mine-3' })
+const live = atom({ plugin: 'boss', key: 'live' } as const, null, { shape: 'live-1' })
 // Which pane this session draws: the boss's, a dispatched worker's own, or none. session.start sets it again on a reload.
 let role: 'boss' | 'worker' | undefined
 let workerShown = false
-let workerTimer: ReturnType<EngineInterface['clock']['every']> | undefined
+// The not-yet-boss session's tick (a worker's refresh, and the check for a new boss marker); cancelled once it is the boss.
+let waitTimer: ReturnType<EngineInterface['clock']['every']> | undefined
 // The kit's HEAD when this module loaded (the first one a refresh reports); the pane warns once the disk moves past it.
 let loadedKit: string | undefined
 
@@ -164,40 +167,40 @@ async function start($: EngineInterface) {
     $.clock.after(REFRESH_MS, () => void start($))
     return
   }
+  if (isBoss(local, me.id)) return startBoss($)
   // Not the boss (a copy of its CLAUDE.local.md, another workspace on its checkout, any other session): a host session
-  // gets the worker view once a boss's ledger has its dispatch row; anything else stays quiet.
-  if (!isBoss(local, me.id)) {
-    if (!me.id) return
-    role = 'worker'
-    workerShown = false
-    loadedKit = undefined
-    await $.command.register({ name: 'boss-deck', description: 'Open this worker\'s pane and refresh it now' })
-    void workerRefresh($)
-    workerTimer = $.clock.every(REFRESH_MS, () => void promote($).then(p => p || role !== 'worker' || workerRefresh($)))
-    return
-  }
-  await startBoss($)
+  // gets the worker view once a boss's ledger has its dispatch row; anything else stays quiet. Either re-checks on each
+  // tick, so a session that `/boss onboard` makes the boss mid-session gets the boss pane, host id or not.
+  role = me.id ? 'worker' : undefined
+  workerShown = false
+  loadedKit = undefined
+  if (me.id) void workerRefresh($)
+  waitTimer = $.clock.every(REFRESH_MS, () => void promote($).then(p => {
+    if (!p && role === 'worker') return workerRefresh($)
+  }))
 }
 
 async function startBoss($: EngineInterface) {
   role = 'boss'
   loadedKit = undefined
-  await $.command.register({ name: 'boss-deck', description: 'Open the boss pane and refresh it now' })
   void $.ui.open({ id: PANE, title: TITLE })
   void refresh($, true)
   $.clock.every(REFRESH_MS, () => void refresh($))
 }
 
-/** A worker session whose CLAUDE.local.md now marks it the boss (`/boss onboard` mid-session) becomes the boss, as
- * start() would have made it; never the reverse. True when it switched. */
+/** Read through a call so the re-check after an await is not narrowed away. */
+const bossNow = () => role === 'boss'
+
+/** A session that is not the boss yet but whose CLAUDE.local.md now marks it the boss (`/boss onboard` mid-session)
+ * becomes the boss, as start() would have made it; never the reverse. True when it switched. */
 async function promote($: EngineInterface) {
-  if (role !== 'worker') return false
+  if (role === 'boss') return false
   const local = await $.fs.read('CLAUDE.local.md').catch(() => '')
   const me = await self($)
   // Re-checked after the awaits: a tick and /boss-deck may race here, and only the first switches.
-  if (role !== 'worker' || !isBoss(local, me.id)) return false
-  workerTimer?.cancel()
-  workerTimer = undefined
+  if (bossNow() || me.failed || !isBoss(local, me.id)) return false
+  waitTimer?.cancel()
+  waitTimer = undefined
   void update($, mine, () => null)
   await startBoss($)
   return true
@@ -206,6 +209,8 @@ async function promote($: EngineInterface) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     hostSession = undefined
+    // Every session has /boss-deck: outside a boss or a dispatched worker it says how to set one up.
+    await $.command.register({ name: 'boss-deck', description: 'Open the boss pane (or this worker\'s) and refresh it now' })
     await start($)
     return next(e)
   })
@@ -214,10 +219,11 @@ export const register: Register = on => {
     if (await promote($)) return { text: 'Boss pane opened.' }
     if (role === 'worker') {
       await workerRefresh($)
-      if (!(await read($, mine))?.worker) return { text: 'No boss ledger has a dispatch row for this workspace.' }
+      if (!(await read($, mine))?.worker) return { text: `${NOT_BOSS} No boss ledger has a dispatch row for this workspace either.` }
       await $.ui.open({ id: PANE, title: WORKER_TITLE })
       return { text: 'Worker pane refreshed.' }
     }
+    if (role !== 'boss') return { text: NOT_BOSS }
     await $.ui.open({ id: PANE, title: TITLE })
     await refresh($)
 

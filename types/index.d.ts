@@ -171,6 +171,6 @@ export type Live = { busy: boolean; turnAt: number; tasks: Task[]; now: string; 
 
 declare module 'claude-code' {
   interface PluginState {
-    'boss-deck': { deck: Shaped<Deck | null>; peek: Shaped<Peek | null>; mine: Shaped<WorkerDeck | null>; live: Shaped<Live | null> }
+    'boss': { deck: Shaped<Deck | null>; peek: Shaped<Peek | null>; mine: Shaped<WorkerDeck | null>; live: Shaped<Live | null> }
   }
 }
