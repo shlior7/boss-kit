@@ -42,6 +42,7 @@ import bosshost  # noqa: E402
 import bosskit  # noqa: E402
 
 PR_TTL_S = 300
+HEAD_BUDGET_S = 20  # one refresh's total time on uncached by-head lookups
 MAX_WORKERS = 8
 DONE_TODAY_ROWS = 5
 EVENT_ROWS = 8  # a workspace's newest events, for its timeline
@@ -321,9 +322,9 @@ def kit_head():
     return bosskit._git(bosskit.KIT, "rev-parse", "--short", "HEAD")
 
 
-def behind_by(repo, base, head):
+def behind_by(repo, base, head, timeout=20):
     """How many commits *base* has that *head* (a sha) lacks, by GitHub's compare; 0 when it cannot say."""
-    out = run(["gh", "api", f"repos/{repo}/compare/{base}...{head}", "--jq", ".behind_by"], timeout=20).strip()
+    out = run(["gh", "api", f"repos/{repo}/compare/{base}...{head}", "--jq", ".behind_by"], timeout=timeout).strip()
     return int(out) if out.isdigit() else 0
 
 
@@ -370,13 +371,46 @@ def prs(cfg, cache_dir, fresh=False):
     return rows
 
 
-def join(workers, prs):
-    """Each worker's open PR, by branch == the PR's head (the project's own repo first), and each joined PR's workspace."""
+def head_pr(cfg, cache_dir, branch, fresh=False, deadline=None):
+    """The open PR whose head is *branch*, by any author (a workspace on a teammate's PR), or None. Cached PR_TTL_S per
+    branch, a miss too, unless fresh. Only ever joined to its workspace, never listed as a PR row. Past *deadline* (epoch
+    seconds, shared by one refresh) an uncached branch is None with no lookup; a failed lookup is None too, neither cached.
+    Never the base branch (a stranger's fork PR can be headed "main") and never a fork PR: only this repo's own branches."""
+    if branch in ("main", "master", cfg.get("base_branch")):  # the kit's config always sets base_branch, so main and master are named too
+        return None
+    cache = os.path.join(cache_dir, "deck-head-prs.json")
+    hit = bosshost._json(bosskit._read(cache), {}).get(branch)
+    if hit and not fresh and time.time() - hit["at"] < PR_TTL_S:
+        return hit["pr"]
+    left = deadline - time.time() if deadline else 60
+    if left <= 0:
+        return None
+    raw = run(["gh", "pr", "list", "--repo", cfg["repo"], "--head", branch, "--state", "open", "--json", PR_FIELDS + ",isCrossRepository", "--limit", "100"], timeout=min(60, left))
+    if not raw:
+        return None  # gh failed or timed out: not a miss
+    found = [p for p in json.loads(raw) if not p.get("isCrossRepository")]
+    pr = None
+    if found:
+        left = deadline - time.time() if deadline else 20  # the compare spends what the lookup left of the budget; none left: behind 0
+        behind = behind_by(cfg["repo"], found[0].get("baseRefName"), found[0]["headRefOid"], min(20, left)) if found[0].get("headRefOid") and left > 0 else 0
+        pr = pr_row(cfg["repo"], found[0], True, behind)
+    with bosskit.locked(cache):  # another refresh may have written its branches since we read
+        heads = bosshost._json(bosskit._read(cache), {})
+        heads[branch] = {"at": time.time(), "pr": pr}
+        bosskit.save_json(cache, heads)
+    return pr
+
+
+def join(workers, prs, by_head_pr=None):
+    """Each worker's open PR, by branch == the PR's head (the project's own repo first), else *by_head_pr*(branch),
+    and each joined PR's workspace."""
     by_head = {}
     for p in sorted(prs, key=lambda p: not p.get("primary")):
         by_head.setdefault(p["head"], p)
     for w in workers:
         p = by_head.get(w["branch"]) if w["branch"] else None
+        if not p and w["branch"] and by_head_pr:
+            p = by_head_pr(w["branch"])
         w["pr"] = p
         if p:
             p["ws"] = w["ws"]
@@ -688,7 +722,8 @@ def worker_view(home, ws, cwd, status=None, fresh=False):
         cache = os.path.join(wt, ".boss-worker")
         os.makedirs(cache, exist_ok=True)
     branch = bosskit._git(wt, "rev-parse", "--abbrev-ref", "HEAD")
-    pr = next((p for p in sorted(prs(cfg, cache, fresh), key=lambda p: not p.get("primary")) if branch and p["head"] == branch), None)
+    pr = next((p for p in sorted(prs(cfg, cache, fresh), key=lambda p: not p.get("primary")) if branch and p["head"] == branch), None) \
+        or (head_pr(cfg, cache, branch, fresh) if branch else None)
     base = (pr or {}).get("base") or cfg.get("base_branch") or "main"
     behind = bosskit._git(wt, "rev-list", "--count", f"HEAD..origin/{base}")
     evs = project_events(pdir, ws)
@@ -777,7 +812,8 @@ def main():
             "tasks": read_status(info.get("worktree", "")), "notes": notes_tail(info.get("worktree", ""), BOSS_NOTE_ROWS),
             "pages": worker_pages(info.get("worktree", "")),
         })
-    join(workers, pr_rows)
+    deadline = time.time() + HEAD_BUDGET_S
+    join(workers, pr_rows, lambda b: head_pr(cfg, ctx.cache, b, "--fresh" in sys.argv, deadline))
     if folder:  # only this folder's workspaces, their watchers and their PRs; no PR-only rows
         kept = {w["ws"] for w in workers + done}
         armed = [w for w in armed if w["ws"][:8] in kept]
