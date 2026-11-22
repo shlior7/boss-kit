@@ -1156,6 +1156,34 @@ class HeadPr(Home):
         self.boss("--fresh")
         self.assertEqual(self.head_calls(), 2)
 
+    def test_one_refreshs_lookups_share_a_deadline_and_a_failed_lookup_caches_nothing(self):
+        deck = load_script("boss-deck-data.py")
+        cfg, clock, calls = {"repo": "acme/widgets"}, [1000.0], []
+
+        def slow_failed_gh(argv, timeout=40):
+            calls.append((argv[6], timeout))
+            clock[0] += 30  # gh hangs, then fails
+            return ""
+
+        workers = [{"ws": f"w{i}", "branch": f"sam/b{i}"} for i in range(3)]
+        with mock.patch.object(deck, "run", slow_failed_gh), mock.patch("time.time", lambda: clock[0]):
+            deck.join(workers, [], lambda b: deck.head_pr(cfg, self.tmp, b, deadline=1020))
+        self.assertEqual(calls, [("sam/b0", 20)])  # the timeout is what is left of the budget; no lookup after it
+        self.assertEqual([w["pr"] for w in workers], [None] * 3)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "deck-head-prs.json")))  # no miss cached, so the next refresh tries again
+
+    def test_interleaved_refreshes_keep_each_others_cache_entries(self):
+        deck = load_script("boss-deck-data.py")
+        cache = os.path.join(self.tmp, "deck-head-prs.json")
+
+        def gh_while_another_refresh_writes(argv, timeout=40):
+            json.dump({"sam/other": {"at": time.time(), "pr": None}}, open(cache, "w"))  # lands after our read, before our write
+            return "[]"
+
+        with mock.patch.object(deck, "run", gh_while_another_refresh_writes):
+            deck.head_pr({"repo": "acme/widgets"}, self.tmp, "sam/mine")
+        self.assertEqual(sorted(json.load(open(cache))), ["sam/mine", "sam/other"])
+
 
 class Folders(Home):
     """A domain boss covers only the workspaces in its sidebar folder; the main boss covers all."""

@@ -42,6 +42,7 @@ import bosshost  # noqa: E402
 import bosskit  # noqa: E402
 
 PR_TTL_S = 300
+HEAD_BUDGET_S = 20  # one refresh's total time on uncached by-head lookups
 MAX_WORKERS = 8
 DONE_TODAY_ROWS = 5
 EVENT_ROWS = 8  # a workspace's newest events, for its timeline
@@ -370,22 +371,26 @@ def prs(cfg, cache_dir, fresh=False):
     return rows
 
 
-def head_pr(cfg, cache_dir, branch, fresh=False):
+def head_pr(cfg, cache_dir, branch, fresh=False, deadline=None):
     """The open PR whose head is *branch*, by any author (a workspace on a teammate's PR), or None. Cached PR_TTL_S per
-    branch, a miss too, unless fresh. Only ever joined to its workspace, never listed as a PR row."""
+    branch, a miss too, unless fresh. Only ever joined to its workspace, never listed as a PR row. Past *deadline* (epoch
+    seconds, shared by one refresh) an uncached branch is None with no lookup; a failed lookup is None too, neither cached."""
     cache = os.path.join(cache_dir, "deck-head-prs.json")
-    try:
-        heads = json.load(open(cache))
-    except (OSError, ValueError):
-        heads = {}
-    hit = heads.get(branch)
+    hit = bosshost._json(bosskit._read(cache), {}).get(branch)
     if hit and not fresh and time.time() - hit["at"] < PR_TTL_S:
         return hit["pr"]
-    raw = run(["gh", "pr", "list", "--repo", cfg["repo"], "--head", branch, "--state", "open", "--json", PR_FIELDS, "--limit", "1"], timeout=60)
-    found = json.loads(raw or "[]")
+    left = deadline - time.time() if deadline else 60
+    if left <= 0:
+        return None
+    raw = run(["gh", "pr", "list", "--repo", cfg["repo"], "--head", branch, "--state", "open", "--json", PR_FIELDS, "--limit", "1"], timeout=min(60, left))
+    if not raw:
+        return None  # gh failed or timed out: not a miss
+    found = json.loads(raw)
     pr = pr_row(cfg["repo"], found[0], True, behind_by(cfg["repo"], found[0].get("baseRefName"), found[0]["headRefOid"]) if found[0].get("headRefOid") else 0) if found else None
-    heads[branch] = {"at": time.time(), "pr": pr}
-    json.dump(heads, open(cache, "w"))
+    with bosskit.locked(cache):  # another refresh may have written its branches since we read
+        heads = bosshost._json(bosskit._read(cache), {})
+        heads[branch] = {"at": time.time(), "pr": pr}
+        bosskit.save_json(cache, heads)
     return pr
 
 
@@ -800,7 +805,8 @@ def main():
             "tasks": read_status(info.get("worktree", "")), "notes": notes_tail(info.get("worktree", ""), BOSS_NOTE_ROWS),
             "pages": worker_pages(info.get("worktree", "")),
         })
-    join(workers, pr_rows, lambda b: head_pr(cfg, ctx.cache, b, "--fresh" in sys.argv))
+    deadline = time.time() + HEAD_BUDGET_S
+    join(workers, pr_rows, lambda b: head_pr(cfg, ctx.cache, b, "--fresh" in sys.argv, deadline))
     if folder:  # only this folder's workspaces, their watchers and their PRs; no PR-only rows
         kept = {w["ws"] for w in workers + done}
         armed = [w for w in armed if w["ws"][:8] in kept]
