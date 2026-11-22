@@ -1205,6 +1205,24 @@ class HeadPr(Home):
             self.assertEqual(deck.head_pr(cfg, self.tmp, "sam/b0", deadline=1025)["num"], 77)
             self.assertEqual(calls, [("pr", 25)])
 
+    def test_the_base_branch_is_never_looked_up(self):
+        snap = os.path.join(self.fixdir, "snapshot.json")
+        for name in ("main", "master"):
+            json.dump({"workspaces": [{"id": self.WS, "name": "w", "branch": name, "terminals": [{"id": "t", "agent": {"state": "idle"}}]}]}, open(snap, "w"))
+            self.fix("head", [self.pr(90, name)])
+            self.assertIsNone(self.boss()["workers"][0]["pr"])
+        self.assertEqual(self.head_calls(), 0)
+        deck = load_script("boss-deck-data.py")
+        with mock.patch.object(deck, "run", side_effect=AssertionError("gh called")):
+            self.assertIsNone(deck.head_pr({"repo": "acme/widgets", "base_branch": "develop"}, self.tmp, "develop"))
+
+    def test_a_fork_pr_with_the_same_head_branch_is_not_joined(self):
+        self.fix("head", [{**self.pr(88, self.BRANCH), "isCrossRepository": True}])
+        self.assertIsNone(self.boss()["workers"][0]["pr"])
+        self.assertIsNone(self.worker()["pr"])
+        self.fix("head", [{**self.pr(88, self.BRANCH), "isCrossRepository": True}, {**self.pr(77, self.BRANCH), "isCrossRepository": False}])
+        self.assertEqual(self.boss("--fresh")["workers"][0]["prTag"], "#77")  # this repo's own PR still wins over the fork's
+
 
 class Folders(Home):
     """A domain boss covers only the workspaces in its sidebar folder; the main boss covers all."""

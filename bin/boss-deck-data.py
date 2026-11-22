@@ -374,7 +374,10 @@ def prs(cfg, cache_dir, fresh=False):
 def head_pr(cfg, cache_dir, branch, fresh=False, deadline=None):
     """The open PR whose head is *branch*, by any author (a workspace on a teammate's PR), or None. Cached PR_TTL_S per
     branch, a miss too, unless fresh. Only ever joined to its workspace, never listed as a PR row. Past *deadline* (epoch
-    seconds, shared by one refresh) an uncached branch is None with no lookup; a failed lookup is None too, neither cached."""
+    seconds, shared by one refresh) an uncached branch is None with no lookup; a failed lookup is None too, neither cached.
+    Never the base branch (a stranger's fork PR can be headed "main") and never a fork PR: only this repo's own branches."""
+    if branch in ("main", "master", cfg.get("base_branch")):  # the kit's config always sets base_branch, so main and master are named too
+        return None
     cache = os.path.join(cache_dir, "deck-head-prs.json")
     hit = bosshost._json(bosskit._read(cache), {}).get(branch)
     if hit and not fresh and time.time() - hit["at"] < PR_TTL_S:
@@ -382,10 +385,10 @@ def head_pr(cfg, cache_dir, branch, fresh=False, deadline=None):
     left = deadline - time.time() if deadline else 60
     if left <= 0:
         return None
-    raw = run(["gh", "pr", "list", "--repo", cfg["repo"], "--head", branch, "--state", "open", "--json", PR_FIELDS, "--limit", "1"], timeout=min(60, left))
+    raw = run(["gh", "pr", "list", "--repo", cfg["repo"], "--head", branch, "--state", "open", "--json", PR_FIELDS + ",isCrossRepository", "--limit", "10"], timeout=min(60, left))
     if not raw:
         return None  # gh failed or timed out: not a miss
-    found = json.loads(raw)
+    found = [p for p in json.loads(raw) if not p.get("isCrossRepository")]
     pr = None
     if found:
         left = deadline - time.time() if deadline else 20  # the compare spends what the lookup left of the budget; none left: behind 0
