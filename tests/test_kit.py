@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1318,6 +1319,39 @@ class ConfigLayers(Home):
         self.assertEqual({r["label"]: r["from"] for r in rows}["Cleanup"], "project")
         self.assertIn("Nudge", self.bcli("--worker").stdout)
 
+    def test_buttons_get_prints_the_one_prompt_with_the_override_applied(self):
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace ws-1\n")
+        self.assertEqual(self.bcli("get", "Sweep PRs").stdout.strip(), bosskit.DEFAULTS["deck_buttons"][1]["prompt"])
+        ctx = bosskit.load(self.wt)
+        bosskit.set_config(ctx.layers, "boss", {"deck_prompts": {"Status": "mine, in one line"}}, apply=True)
+        r = self.bcli("get", "Status")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "mine, in one line"))
+        r = self.bcli("get", "No such")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no boss button 'No such'", r.stderr)
+
+    def test_buttons_get_outside_a_boss_says_how_to_set_one_up(self):
+        r = self.bcli("get", "Status")  # a project, but no boss marker in this worktree
+        self.assertEqual((r.returncode, r.stderr.strip()), (1, "Not a boss here: run /boss to set one up."))
+        open(os.path.join(self.wt, "CLAUDE.local.md"), "w").write("# Boss workspace ws-other\n")  # another session's boss
+        r = self.bcli("get", "Status")
+        self.assertEqual((r.returncode, r.stderr.strip()), (1, "Not a boss here: run /boss to set one up."))
+        plain = tempfile.mkdtemp(dir=self.tmp)  # no project at all
+        r = subprocess.run([sys.executable, os.path.join(BIN, "bosskit.py"), "buttons", "get", "Status"], cwd=plain, capture_output=True, text=True)
+        self.assertEqual((r.returncode, r.stderr.strip()), (1, "Not a boss here: run /boss to set one up."))
+
+    def test_every_action_skill_runs_a_default_button(self):
+        root = os.path.join(os.path.dirname(BIN), "skills")
+        labels = {b["label"] for b in bosskit.DEFAULTS["deck_buttons"]}
+        skills = [n for n in sorted(os.listdir(root)) if n != "boss"]
+        self.assertTrue(skills)
+        for name in skills:
+            text = open(os.path.join(root, name, "SKILL.md")).read()
+            self.assertRegex(text, rf"(?m)^name: {name}$")
+            (label,) = re.findall(r'bosskit\.py" buttons get "([^"]+)"', text)
+            self.assertIn(label, labels, name)
+            self.assertIn("Not a boss here: run /boss to set one up.", text)
+
     def test_buttons_set_is_a_dry_run_until_apply_and_backs_the_file_up(self):
         path = os.path.join(self.home, "widgets", "bosses", "ws-1", "config.json")
         before = sorted(os.walk(self.home))
@@ -1868,7 +1902,7 @@ class KitUpdate(Home):
         self.assertTrue(final.rstrip().endswith("Restart each Claude Code session (exit, then `claude --continue`) to load it."))
         (m,) = self.inbox("widgets", "live-a")
         self.assertEqual((m["kind"], m["from_project"]), ("fyi", "kit"))
-        self.assertRegex(m["subject"], r"^kit updated [0-9a-f]+\.\.[0-9a-f]+: restart the session \(claude --continue\) to load boss-deck 0\.8\.0$")
+        self.assertRegex(m["subject"], r"^kit updated [0-9a-f]+\.\.[0-9a-f]+: restart the session \(claude --continue\) to load boss 0\.8\.0$")
         self.assertIn("add two", m["body"])
         self.assertEqual(self.inbox("gadgets", "old-b"), [])  # no heartbeat for 30 min: not live
         self.assertFalse(os.path.exists(self.calls))  # nothing was sent to any terminal
@@ -1991,6 +2025,48 @@ class KitUpdate(Home):
         self.assertIn("plugin update boss@boss-kit", log)
         self.assertNotIn("plugin install", log)
         self.assertIn("boss 0.7.0 -> 0.8.0", r.stdout)
+
+    def fold_deck(self, change="hooks/register.tsx"):
+        """Both plugins installed at 0.8.0; origin's marketplace now lists only boss, at 0.9.0 (boss-deck folded into it)."""
+        self.install()
+        json.dump({"name": "boss-kit", "plugins": [{"name": "boss", "source": "./", "version": "0.9.0"}]},
+                  open(os.path.join(self.origin, ".claude-plugin", "marketplace.json"), "w"))
+        git(self.origin, "add", ".claude-plugin")
+        self.commit(self.origin, change)
+
+    def test_a_folded_plugin_is_uninstalled_only_after_the_boss_plugin_updated(self):
+        self.fold_deck()
+        r = self.update(env={"STUB_VERSION": "0.9.0"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(open(self.claude_log).read().splitlines(),
+                         ["plugin marketplace update boss-kit", "plugin update boss@boss-kit", "plugin uninstall boss-deck@boss-kit"])
+        self.assertIn("uninstalled boss-deck@boss-kit: now part of the boss plugin. Restart each session", r.stdout)
+        self.assertEqual(sorted(json.load(open(self.installed))["plugins"]), ["boss@boss-kit"])
+        final = r.stdout.split("\n\nKit:")[1]
+        self.assertIn("boss 0.8.0 -> 0.9.0; boss-deck uninstalled (now part of boss)", final)
+        self.assertTrue(final.rstrip().endswith("to load it."))
+
+    def test_a_folded_plugin_stays_when_the_marketplace_refresh_or_the_boss_plugin_fails(self):
+        for fail, why in (("plugin marketplace update boss-kit", "the marketplace refresh failed"),
+                          ("plugin update boss@boss-kit", "the boss plugin did not install or update")):
+            with self.subTest(fail=fail):
+                self.fold_deck(change=f"hooks/f{len(why)}.ts")
+                if os.path.exists(self.claude_log):
+                    os.remove(self.claude_log)
+                r = self.update(env={"STUB_VERSION": "0.9.0", "STUB_FAIL": fail})
+                self.assertEqual(r.returncode, 1)
+                self.assertNotIn("uninstall", open(self.claude_log).read())
+                self.assertIn(f"skip uninstall boss-deck@boss-kit: {why}; it stays installed", r.stdout)
+                self.assertIn("boss-deck@boss-kit", json.load(open(self.installed))["plugins"])
+
+    def test_a_dry_run_says_it_would_uninstall_the_folded_plugin(self):
+        self.fold_deck()
+        r = self.update("--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("would update: claude plugin update boss@boss-kit", r.stdout)
+        self.assertIn("would uninstall boss-deck@boss-kit (now part of the boss plugin): claude plugin uninstall boss-deck@boss-kit", r.stdout)
+        self.assertFalse(os.path.exists(self.claude_log))
+        self.assertIn("boss-deck@boss-kit", json.load(open(self.installed))["plugins"])
 
     def install(self, **plugins):
         """Both kit plugins installed at 0.8.0 from the given commits ('HEAD' for the kit's); name=sha overrides."""

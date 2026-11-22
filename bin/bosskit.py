@@ -23,6 +23,7 @@ usage: bosskit.py show            the resolved paths, as JSON
                                   shows the resolved config after the change; writes only with --apply
        bosskit.py buttons [--worker] [--json]                          the pane's resolved buttons and the layer each came from
        bosskit.py buttons set --level user|project|boss [--worker] LABEL="prompt"... [--apply]
+       bosskit.py buttons get [--worker] LABEL                          the one prompt that button submits (the skills run it)
                                   override one button's prompt (LABEL=null hides it, a new label adds one); a dry run until --apply
        bosskit.py next "<line>"   writes this boss's next.txt; refuses a shorthand line (template section 9) with the reason, exit 1
                                   ("nothing needed" / "nothing for you now", with or without a reason, is a whole line)
@@ -376,8 +377,30 @@ def show_buttons(layers, kind="boss", as_json=False):
     return text + "".join(f"\nignored: {m}" for m in bad)
 
 
+NOT_BOSS = "Not a boss here: run /boss to set one up."
+
+
+def buttons_get(args):
+    """The prompt the pane's button LABEL submits in this boss session, overrides applied (the /boss:<action> skills run it).
+    Outside a boss session it exits with NOT_BOSS; a label that is hidden or not set exits naming it."""
+    kind = "worker" if "--worker" in args else "boss"
+    label = " ".join(a for a in args if a != "--worker").strip()
+    try:
+        ctx = load(make=False, resolve_host=False)
+    except (SystemExit, OSError, ValueError):
+        sys.exit(NOT_BOSS)
+    if not is_boss(ctx):
+        sys.exit(NOT_BOSS)
+    prompt = next((r["prompt"] for r in resolve_buttons(ctx.layers, kind) if r["label"].casefold() == label.casefold()), None)
+    if prompt is None:
+        sys.exit(f"bosskit: no {kind} button {label!r} here (hidden, or not set); `bosskit.py buttons` lists them")
+    return prompt
+
+
 def buttons_cmd(args):
-    """bosskit.py buttons [--worker] [--json] | set --level L [--worker] LABEL="prompt"... [--apply]"""
+    """bosskit.py buttons [--worker] [--json] | set --level L [--worker] LABEL="prompt"... [--apply] | get [--worker] LABEL"""
+    if args and args[0] == "get":
+        return buttons_get(args[1:])
     kind = "worker" if "--worker" in args else "boss"
     if not args or args[0] != "set":
         return show_buttons(load(make=False, resolve_host=False).layers, kind, "--json" in args)

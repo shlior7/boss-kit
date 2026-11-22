@@ -10,7 +10,9 @@ Steps, in order, each printed:
      -> claude plugin install; installed with a different version -> claude plugin update; installed with the same version
      but the files under its source dir changed since the commit it was installed from (installed_plugins.json
      gitCommitSha, diffed against the kit) -> claude plugin uninstall then install, because `plugin update` skips a
-     plugin whose version did not change and the cache would keep the old copy. A missing claude CLI is a printed skip.
+     plugin whose version did not change and the cache would keep the old copy. A plugin the marketplace no longer lists
+     but folded into another (boss-deck, now part of boss) is uninstalled after that plugin installed or updated, never
+     before it and never when the marketplace refresh failed. A missing claude CLI is a printed skip.
   3. /boss is available: through the "boss" plugin once installed, which also removes the old ~/.claude/skills/boss link
      when that is a symlink into the kit (a real directory, or a link pointing elsewhere, is left alone and named);
      with no claude CLI and no plugin, the link is made.
@@ -40,6 +42,8 @@ import bosskit  # noqa: E402
 
 LOG_LINES = 10
 MARKET = "boss-kit"
+# Plugins the marketplace dropped, each with the plugin that holds it now: uninstalled once that one is in place.
+RETIRED = {"boss-deck": "boss"}
 RESTART = "Restart each Claude Code session (exit, then `claude --continue`) to load it."
 
 
@@ -140,7 +144,7 @@ def changed(kit, sha, ref, paths):
 
 def own_files(p, plugins):
     """Pathspec of a plugin's own files: its source dir, minus the source dirs of other plugins nested in it (the boss plugin's
-    source is the kit root, which holds mods/boss-deck)."""
+    source is the kit root, which would hold any plugin nested under it)."""
     nested = lambda q: q is not p and (p["source"] == "." or q["source"].startswith(p["source"] + os.sep))
     return [p["source"]] + [f":(exclude){q['source']}" for q in plugins.values() if nested(q)]
 
@@ -169,6 +173,9 @@ def plan(kit, ref, before):
             steps.append(("reinstall", [["plugin", "uninstall", key], ["plugin", "install", key]], "files changed, version unchanged"))
         else:
             steps.append(("update", [["plugin", "update", key]], ""))
+    for old, into in RETIRED.items():
+        if old not in plugins and f"{old}@{MARKET}" in before and into in plugins:
+            steps.append(("uninstall", [["plugin", "uninstall", f"{old}@{MARKET}"]], f"now part of the {into} plugin"))
     return steps
 
 
@@ -182,15 +189,21 @@ def update_plugins(kit, ref, dry, before):
         slash = "; ".join("/" + " then /".join(" ".join(a) for a in argvs) for _, argvs, _ in steps)
         return [f"skip: the claude CLI is not on PATH. In Claude Code run: {slash}"], False
     srcs = {n: p["source"] for n, p in marketplace(kit, ref).items()}
-    lines, failed, refreshed = [], False, True
+    lines, failed, refreshed, done = [], False, True, set()
     for kind, argvs, why in steps:
         key = argvs[-1][-1]
         if dry:
-            lines.append(f"would {kind}{f' ({why})' if why else ''}: " + ", then ".join("claude " + " ".join(a) for a in argvs))
+            lines.append(f"would {kind}{f' {key}' if kind == 'uninstall' else ''}{f' ({why})' if why else ''}: " + ", then ".join("claude " + " ".join(a) for a in argvs))
             continue
         if kind == "reinstall" and (not refreshed or not fetchable(kit, key, srcs[key.split("@")[0]])):
             lines.append(f"skip reinstall {key}: " + ("the marketplace refresh failed" if not refreshed else "the marketplace has no copy of its files to install")
                          + "; the installed copy is kept. Fix that and run boss-kit-update again")
+            failed = True
+            continue
+        into = RETIRED.get(key.split("@")[0])
+        if kind == "uninstall" and (not refreshed or f"{into}@{MARKET}" not in done):
+            lines.append(f"skip uninstall {key}: " + ("the marketplace refresh failed" if not refreshed else f"the {into} plugin did not install or update")
+                         + "; it stays installed. Fix that and run boss-kit-update again")
             failed = True
             continue
         for i, argv in enumerate(argvs):
@@ -207,6 +220,10 @@ def update_plugins(kit, ref, dry, before):
                 if kind == "reinstall" and argv[1] == "install":
                     lines.append(f"{key} is now uninstalled. Run: claude plugin install {key}")
                 break
+        else:
+            done.add(key)
+            if kind == "uninstall":
+                lines.append(f"uninstalled {key}: {why}. Restart each session to load it")
     return lines, failed
 
 
@@ -299,7 +316,8 @@ def main(argv):
     moved = {k: (version(before, k), v["version"]) for k, v in after.items()
              if mk(k) and (version(before, k), (before.get(k) or {}).get("sha")) != (v["version"], v["sha"])}
     missing = sorted(k for k in before if mk(k) and k not in after and k.split("@")[0] in marketplace(kit, ref))
-    was_changed = old != new or bool(moved) or bool(missing)
+    retired = sorted(k for k in before if mk(k) and k not in after and k.split("@")[0] in RETIRED and k.split("@")[0] not in marketplace(kit, ref))
+    was_changed = old != new or bool(moved) or bool(missing) or bool(retired)
     ver = lambda n: version(after, f"{n}@{MARKET}") or marketplace(kit, ref).get(n, {}).get("version", "?")
     sent = []
     if dry or no_mail:
@@ -309,7 +327,7 @@ def main(argv):
     elif not was_changed:
         mail = "nothing changed: nobody mailed"
     else:
-        sent = notify(bosskit.home(), f"kit updated {old}..{new}: restart the session (claude --continue) to load boss-deck {ver('boss-deck')}", log)
+        sent = notify(bosskit.home(), f"kit updated {old}..{new}: restart the session (claude --continue) to load boss {ver('boss')}", log)
         mail = f"mailed {len(sent)} live boss{'' if len(sent) == 1 else 'es'}" + (": " + ", ".join(sent) if sent else "")
     step(5, "mail", [mail])
     mine = {k.split("@")[0]: v["version"] for k, v in after.items() if mk(k)}
@@ -319,8 +337,12 @@ def main(argv):
     elif moved:
         plugins = "; ".join(f"{k.split('@')[0]} {a or 'new'} -> {b}" if a != b else f"{k.split('@')[0]} {b} (reinstalled, files changed)"
                             for k, (a, b) in sorted(moved.items()))
-    else:
+    elif not retired:
         plugins = (", ".join(f"{k} {v}" for k, v in sorted(mine.items())) + " (unchanged)") if mine else "none installed from this marketplace"
+    else:
+        plugins = ""
+    if retired and not missing:
+        plugins = "; ".join(x for x in [plugins] + [f"{k.split('@')[0]} uninstalled (now part of {RETIRED[k.split('@')[0]]})" for k in retired] if x)
     print("\n" + "\n".join([
         f"Kit:     {old}..{new}" if old != new else f"Kit:     {new} (up to date)",
         f"Plugins: {plugins}",
