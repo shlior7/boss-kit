@@ -122,7 +122,7 @@ case "$1 $2" in
 esac
 C
   chmod +x "$t/cli"
-  CLAUDE_CONFIG_DIR=$t/claude BOSS_HOST=m-7 BOSS_HOST_CLI=$t/cli BOSS_BIN=$t/none BOSS_WATCH_POLL_S=0 BOSS_WATCH_POLLS=$1 "$S" w1 t1 > "$t/out" 2>&1 & local pid=$!
+  CLAUDE_CONFIG_DIR=$t/claude BOSS_HOST=m-7 BOSS_HOST_CLI=$t/cli BOSS_BIN=$t/none BOSS_WATCH_POLL_S=0 BOSS_WATCH_POLLS=$1 "$S" w1 t1 > "$t/out" 2>"$t/err" & local pid=$!
   for _ in $(seq 600); do kill -0 $pid 2>/dev/null || break; sleep 0.2; done; kill $pid 2>/dev/null; wait $pid 2>/dev/null
   cat "$t/out"; rm -rf "$t"; }
 fires(){ local name=$1 want=$2 got; shift 2; got=$(loop "$@" | head -1)
@@ -135,4 +135,58 @@ fires "an old envelope in the transcript never fires" "TIMEOUT" 5 "$w/working" "
 sed 's/ · 2 shells//' "$w/tall" > "$w/noshell"
 fires "idle on a screen whose only change is the status-line clock" "AGENT IDLE WITHOUT ENVELOPE" 20 "$w/noshell" "$w/noshell"
 rm -rf "$w"
+# The transcript read is pinned to the watched agent's own session, and --task drops another task's envelope.
+# pin <polls> <what happens at poll 3> [<watch.sh args after the terminal>]: the watcher's output (first stdout line, then "stderr: ..." lines);
+# NOREG=1 leaves the worker out of the session registry.
+# Two transcripts in the worker's project dir: an older session's (holds a task-old envelope) and the worker's own (holds none).
+# The session registry names both; the terminal was created at 1000000 s, the worker's session started two seconds later.
+# what: touch-old (the older session's file becomes the newest), own-envelope (the worker posts its own), own-foreign (the worker's
+# transcript gets another task's envelope), none.
+env_line(){ jq -cn --arg t "$2" --arg s "$3" '{type: "assistant", message: {content: [{type: "text", text: ("BOSS_WORKER_DONE task: " + $t + "\nsummary: " + $s)}]}}'; }
+pin(){ local t pd; t=$(mktemp -d); pd=$t/claude/projects/-work-acme-widgets; mkdir -p "$pd" "$t/claude/sessions"
+  env_line x task-old "an older session" > "$pd/old-sess.jsonl"; echo '{"type":"user","message":{"content":"go"}}' > "$pd/own-sess.jsonl"
+  touch -t 202001010000 "$pd/old-sess.jsonl"; touch -t 202601010000 "$pd/own-sess.jsonl"
+  echo '{"pid": 1, "sessionId": "old-sess", "cwd": "/work/acme/widgets", "startedAt": 100000}' > "$t/claude/sessions/1.json"
+  echo '{"pid": '$$', "sessionId": "own-sess", "cwd": "/work/acme/widgets", "startedAt": 1002000}' > "$t/claude/sessions/2.json"
+  [ -n "$NOREG" ] && rm "$t/claude/sessions/2.json"
+  printf '%s' "$2" > "$t/what"
+  cat > "$t/cli" <<'C'
+#!/bin/bash
+d=$(dirname "$0"); pd=$d/claude/projects/-work-acme-widgets
+case "$1 $2" in
+  "workspaces list") echo '[{"id":"w1","worktreePath":"/work/acme/widgets"}]' ;;
+  "terminals list") echo '{"sessions":[{"terminalId":"t1","createdAt":1000000},{"terminalId":"t9","createdAt":5}]}' ;;
+  "terminals read") n=$(($(cat "$d/n" 2>/dev/null || echo 0) + 1)); echo $n > "$d/n"
+    if [ $n -eq 3 ]; then case $(cat "$d/what") in
+      touch-old) touch "$pd/old-sess.jsonl" ;;
+      own-envelope) cat "$d/own.line" >> "$pd/own-sess.jsonl" ;;
+      own-foreign) cat "$d/foreign.line" >> "$pd/own-sess.jsonl" ;; esac; fi
+    echo '{"text": "⏺ running the tests\n"}' ;;
+  "snapshot --host") echo '{"workspaces":[{"terminals":[{"id":"t1","agent":{"state":"working"}}]}]}' ;;
+esac
+C
+  chmod +x "$t/cli"; env_line x widgets-12 "mine" > "$t/own.line"; env_line x other-9 "not mine" > "$t/foreign.line"
+  CLAUDE_CONFIG_DIR=$t/claude BOSS_HOST=m-7 BOSS_HOST_CLI=$t/cli BOSS_BIN=$t/none BOSS_WATCH_POLL_S=0 BOSS_WATCH_POLLS=$1 "$S" w1 t1 ${@:3} > "$t/out" 2>"$t/err" & local pid=$!
+  for _ in $(seq 600); do kill -0 $pid 2>/dev/null || break; sleep 0.2; done; kill $pid 2>/dev/null; wait $pid 2>/dev/null
+  head -1 "$t/out"; sed 's/^/stderr: /' "$t/err"; rm -rf "$t"; }
+pinned(){ local name=$1 want=$2 got; shift 2; got=$(pin "$@" | tr '\n' '|' | sed 's/|$//')
+  if [ "$got" = "$want" ]; then echo "ok   $name -> $got"; else echo "FAIL $name: want '$want', got '${got:-nothing in 120 s}'"; fail=1; fi; }
+pinned "another session's old envelope in the newest transcript never fires" "TIMEOUT" 6 touch-old
+pinned "the worker's own envelope fires" "ENVELOPE DONE|widgets-12|mine" 6 own-envelope
+pinned "--task: its own task's envelope fires" "ENVELOPE DONE|widgets-12|mine" 6 own-envelope --task widgets-12
+pinned "--task: another task's envelope in the worker's own transcript never fires" "TIMEOUT" 6 own-foreign --task widgets-12
+pinned "no --task: that envelope fires" "ENVELOPE DONE|other-9|not mine" 6 own-foreign
+got=$(NOREG=1 pin 6 touch-old | tr '\n' '|')
+case "$got" in "ENVELOPE DONE|task-old|an older session|stderr: watch.sh: could not resolve the agent's own session; reading the newest transcript in "*"/projects/-work-acme-widgets (any session's)|")
+  echo "ok   unresolved session: falls back to the newest transcript and says so on one stderr line";;
+  *) echo "FAIL unresolved session fallback: '$got'"; fail=1;; esac
+# --sig with --task: another id gives nothing, the same id its signature
+out=$("$S" --sig --task other-1 <<'X'
+│ BOSS_WORKER_DONE task: demo-task summary: did it
+X
+); if [ -z "$out" ]; then echo "ok   --sig --task other-1 on demo-task's envelope -> no fire"; else echo "FAIL --sig --task other: '$out'"; fail=1; fi
+out=$("$S" --sig --task demo-task <<'X'
+│ BOSS_WORKER_DONE task: demo-task summary: did it
+X
+); if [ "$out" = "DONE|demo-task|did it" ]; then echo "ok   --sig --task demo-task -> $out"; else echo "FAIL --sig --task same: '$out'"; fail=1; fi
 exit $fail

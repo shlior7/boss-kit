@@ -378,10 +378,10 @@ The host's prompt says how the envelope reaches the boss (on the worker's screen
 **2. Watch.** In the same turn, the boss arms a watcher as a background command (never `&`):
 
 ```bash
-boss-host watch <worker> <branch>
+boss-host watch <worker> <branch> --task <task id>
 ```
 
-Every 20 s, for up to 3 h, it exits (which wakes the boss) when a **new** envelope arrives (counted only when the token is directly followed by `task: <id>`, so prose that mentions it never fires, and skipping `<placeholder>` templates), when a PR on the branch gets a DONE comment, leaves draft or merges (`PR READY #n`, run from the repo or set `GH_REPO`), when the agent waits on someone (blocked), after 9 idle polls (3 min) without an envelope, or when the worker is gone. It logs the stage for the pane. A plugin whose envelope is read another way ships its own watcher; `boss-host watch` runs it.
+Every 20 s, for up to 3 h, it exits (which wakes the boss) when a **new** envelope arrives (counted only when the token is directly followed by `task: <id>`, so prose that mentions it never fires, and skipping `<placeholder>` templates), when a PR on the branch gets a DONE comment, leaves draft or merges (`PR READY #n`, run from the repo or set `GH_REPO`), when the agent waits on someone (blocked), after 9 idle polls (3 min) without an envelope, or when the worker is gone. `--task` makes an envelope of another task id never fire (it is ignored), and the superset watcher reads the worker's own session transcript, not the worktree's newest one. It logs the stage for the pane. A plugin whose envelope is read another way ships its own watcher; `boss-host watch` runs it.
 
 **3. Verify.** The boss never trusts a DONE blindly. It opens every URL in `proof:` and checks it shows this change. It reads the PR on GitHub (head sha against the worker's claim; CI failures and pending counted separately; mergeable), re-runs the regression test with the fix reverted when the change is risky, updates the ledger (one row per dispatch, with a Proof and a Boss column), and reports. Workers never mark their own PR ready: when the boss judges a PR ready for a human, it runs `gh pr ready` itself. If not, it sends the worker back with what's missing.
 

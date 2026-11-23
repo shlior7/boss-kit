@@ -1832,14 +1832,14 @@ class Watch(Home):
         self.host = bosshost.get({}, "other")
         self.out = []
 
-    def run_watch(self, inbound, states, prs=None, branch="", since=0):
+    def run_watch(self, inbound, states, prs=None, branch="", since=0, task=""):
         """inbound / states / prs: one value per poll (the first inbound and prs are the baseline)."""
         inb, st, pr = iter(inbound), iter(states), iter(prs or [])
         self.host.messages = lambda boss, wid: next(inb)
         self.host.dispatched_at = lambda boss, wid: since
         self.host.worker = lambda wid: (lambda s: {} if s == "gone" else {"terminals": [{"agent": {"state": s}}]})(next(st))
         with mock.patch.object(self.w, "pr_list", lambda b: next(pr)), mock.patch.object(self.w.time, "sleep", lambda s: None):
-            self.w.watch(self.ctx, self.host, "aaaa1111", branch, polls=20, out=self.out.append)
+            self.w.watch(self.ctx, self.host, "aaaa1111", branch, polls=20, out=self.out.append, task=task)
         return self.out[0]
 
     def stages(self):
@@ -1859,6 +1859,15 @@ class Watch(Home):
                              ["working", "working", "working"])
         self.assertEqual(got, "ENVELOPE DONE|fix-1|did it")
         self.assertEqual(self.stages(), [("aaaa1111", "DONE", "fix-1: did it")])
+
+    def test_task_ignores_another_tasks_envelope_message(self):
+        other = [("m1", "BOSS_WORKER_DONE\ntask: fix-0\nsummary: someone else", 0)]
+        mine = other + [("m2", "BOSS_WORKER_DONE\ntask: fix-1\nsummary: did it", 0)]
+        self.assertEqual(self.run_watch([[], other, mine], ["working", "working"], task="fix-1"), "ENVELOPE DONE|fix-1|did it")
+        self.out.clear()  # without --task the other task's envelope fires
+        self.assertEqual(self.run_watch([[], other], ["working", "working"]), "ENVELOPE DONE|fix-0|someone else")
+        self.out.clear()  # with it, only the other task's envelope: never fires (idle at the end)
+        self.assertTrue(self.run_watch([[]] + [other] * 12, ["idle"] * 12, task="fix-1").startswith("AGENT IDLE"))
 
     def test_an_envelope_sent_before_the_watcher_was_armed_still_fires(self):
         # dispatched at 1000 (as the host records it); the boss logged `sent` later, at 1003
@@ -1890,11 +1899,11 @@ class Watch(Home):
         open(os.path.join(plug, "watch.sh"), "w").write('#!/bin/sh\nls "$BOSS_BIN/boss-event" >/dev/null && echo "own watcher $$ on $OWN_MACHINE $*"\n')
         os.chmod(os.path.join(plug, "watch.sh"), 0o755)
         env = {**os.environ, "BOSS_HOST_PATH": os.path.dirname(plug) + os.pathsep + HOSTS, "BOSS_HOST_KIND": "own", "OWN_SESSION": "boss-9"}
-        r = subprocess.run([os.path.join(BIN, "boss-host"), "watch", "aaaa1111", "fix/x"], cwd=self.wt, capture_output=True, text=True, env=env)
+        r = subprocess.run([os.path.join(BIN, "boss-host"), "watch", "aaaa1111", "fix/x", "--task", "fix-1"], cwd=self.wt, capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         pid = r.stdout.split()[2]
         self.assertIn(" on m-1 ", r.stdout)  # the adapter's resolved instance reaches its watcher
-        self.assertTrue(r.stdout.startswith("own watcher ") and r.stdout.endswith("aaaa1111 t9 fix/x\n"), r.stdout)
+        self.assertTrue(r.stdout.startswith("own watcher ") and r.stdout.endswith("aaaa1111 t9 fix/x --task fix-1\n"), r.stdout)  # --task passes through
         ctx = bosskit.load(self.wt)
         reg = json.load(open(os.path.join(ctx.cache, "..", "..", "boss-9", "cache", "watchers", f"{pid}.json")))
         self.assertEqual((reg["ws"], reg["term"], reg["branch"]), ("aaaa1111", "t9", "fix/x"))

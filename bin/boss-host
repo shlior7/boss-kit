@@ -13,11 +13,12 @@
   boss-host close [--dry-run] ID TERMINAL... | close-dead [--dry-run] [ID...]
 send, close and archive refuse a worker whose newest ledger row names another boss (ask it with boss-mail);
 --force-owner overrides that, for the user.
-  boss-host watch ID [BRANCH] [--terminal T] the watcher (run with run_in_background). A plugin with its own watcher runs
+  boss-host watch ID [BRANCH] [--terminal T] [--task ID] the watcher (run with run_in_background). A plugin with its own watcher runs
                                              that; otherwise this one: every 20 s, for up to 3 h, it exits (waking the boss) on a
                                              new envelope message from the worker, PR READY on BRANCH, a blocked agent, 9 idle
                                              polls (3 min) without an envelope, a gone worker, or 9 polls in a row the host
                                              does not answer (a failed read is never a gone worker), and logs the stage.
+                                             --task ID: an envelope whose task: is another id never fires (pass the dispatched task).
   boss-host sig < text                       the envelope a text holds, as the watcher reads it (DONE|<task>|<summary start>)
 A host that cannot do something says so and names what to do instead (exit 3).
 Env for watch: BOSS_WATCH_POLL_S (20), BOSS_WATCH_POLLS (540).
@@ -78,7 +79,7 @@ def register_watcher(ctx, wid, term, branch):
     return path
 
 
-def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print):
+def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print, task=""):
     boss = host.self_id()
     ev = lambda stage, note: bosskit.add_event(ctx, wid, stage, note)
     since = host.dispatched_at(boss, wid) if boss else 0
@@ -95,9 +96,11 @@ def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print):
                 continue
             seen.add(mid)
             s = sig(host, text)
+            if s and task and s.split("|")[1] != task:
+                continue  # another task's envelope: seen, never fires
             if s:
-                kind, task, summary = s.split("|", 2)
-                ev(kind, f"{task}: {summary}")
+                kind, t, summary = s.split("|", 2)
+                ev(kind, f"{t}: {summary}")
                 out(f"ENVELOPE {s}")
                 out("\n".join(text.splitlines()[:60]))
                 return 0
@@ -261,7 +264,7 @@ def main(argv):
         elif cmd == "watch" and args:
             if not ctx:
                 sys.exit("boss-host watch: no boss project here")
-            term = flag(args, "--terminal", "")
+            term, task = flag(args, "--terminal", ""), flag(args, "--task", "")
             wid, branch = args[0], (args[1] if len(args) > 1 else "")
             script = host.watch_script()
             if script:  # the plugin's own watcher, in this process, so the pane's watcher file stays true
@@ -271,10 +274,10 @@ def main(argv):
                 os.environ["BOSS_BIN"] = os.path.dirname(os.path.abspath(__file__))
                 os.environ["BOSS_PR_DRAFT"] = "1" if (ctx.cfg.get("github") or {}).get("draft", True) else "0"
                 os.environ.update({k: v for k, v in host.watch_env().items() if v})
-                os.execv(script, [script, wid, term, *([branch] if branch else [])])
+                os.execv(script, [script, wid, term, *([branch] if branch else []), *(["--task", task] if task else [])])
             path = register_watcher(ctx, wid, term, branch)
             try:
-                return watch(ctx, host, wid, branch, float(os.environ.get("BOSS_WATCH_POLL_S", 20)), int(os.environ.get("BOSS_WATCH_POLLS", 540)))
+                return watch(ctx, host, wid, branch, float(os.environ.get("BOSS_WATCH_POLL_S", 20)), int(os.environ.get("BOSS_WATCH_POLLS", 540)), task=task)
             finally:
                 os.remove(path)
         else:

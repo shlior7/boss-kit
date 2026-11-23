@@ -60,7 +60,7 @@ Workers end with exactly one envelope, delivered as the host commands say. Its f
 BOSS_WORKER_DONE / task / summary / files / checks / proof / handoff   (proof = demo video and page URLs, or "none: <why>")
 BOSS_WORKER_BLOCKED / task / reason / needs
 
-- In the SAME turn as the dispatch, arm `bin/boss-host watch <workspace> <branch>` with `run_in_background` (never `&`; always pass the branch). Never say "I'll report back" without an armed watcher. After a session restart, look for envelopes that landed, then re-arm.
+- In the SAME turn as the dispatch, arm `bin/boss-host watch <workspace> <branch> --task <task id>` with `run_in_background` (never `&`; always pass the branch and the task id). Never say "I'll report back" without an armed watcher. After a session restart, look for envelopes that landed, then re-arm.
 - PR sweep at every turn and every report: `gh pr list --state open --json number,isDraft,mergeable,headRefName,comments`. A PR with the DONE marker, or out of draft, that the ledger has not verified gets section 7, then ready or sent back. A watcher covers only the branch it was given.
 - Stage log: run `bin/boss-event <workspace> sent "..."` for a dispatch not made with `boss-host create` or `send`; you log `checked`, `ready` and `retired`, the watcher logs the rest.
 - On fire: verify independently, update the ledger, report unprompted.
