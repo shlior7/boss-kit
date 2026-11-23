@@ -2,10 +2,13 @@
 """boss-event: log one stage of a workspace's lifecycle, for the boss-deck stages and timeline.
 
   boss-event <workspace> <stage> [note...]
+  boss-event --last <workspace>      that workspace's newest event in this boss's log as one JSON line, nothing if none
+                                     (a host plugin's own watcher reads it: a newest `manual` event pauses its idle fire)
 
 Appends {at, ws, stage, note} to $BOSS_HOME/<project>/bosses/<boss-id>/events.jsonl (paths: bin/bosskit.py).
 The boss logs sent (a dispatch), checked, ready and retired; the watcher (boss-host watch) logs DONE, BLOCKED,
-PR READY and merged when it fires.
+PR READY and merged when it fires; a dispatched worker's prompt hook logs `manual` when the user types in its session
+(bin/boss-deck-data.py --prompt).
 """
 import json
 import os
@@ -16,6 +19,12 @@ import bosskit  # noqa: E402
 
 
 def main(argv):
+    if len(argv) == 2 and argv[0] == "--last":
+        ctx = bosskit.load()
+        e = next((e for e in reversed(bosskit.events(ctx.bdir)) if e["ws"][:8] == argv[1][:8]), None)
+        if e:
+            print(json.dumps(e))
+        return
     if len(argv) < 2 or argv[0].startswith("-"):
         sys.exit(__doc__)
     print(json.dumps(bosskit.add_event(bosskit.load(), argv[0], argv[1], " ".join(argv[2:]))))

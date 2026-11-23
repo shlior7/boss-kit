@@ -15,9 +15,10 @@ export type Row = { mark: string; markColor?: string; dim: boolean; name: string
 
 const lastEvent = (w: Worker, ...stages: string[]) => [...(w.events ?? [])].reverse().find(e => stages.includes(e.stage.toLowerCase()))
 
-/** Row order under WORKERS: your move, done and waiting on you, boss checking, working, blocked (the active ones), then in review, idle, done today. */
+/** Row order under WORKERS: your move, done and waiting on you, boss checking, with you (manual), working, blocked (the
+ * active ones), then in review, idle, done today. */
 export function rank(w: Worker): number {
-  if (w.stage !== 'working') return { move: 0, waiting: 1, checking: 2, review: 5, done: 7 }[w.stage]
+  if (w.stage !== 'working') return { move: 0, waiting: 1, checking: 2, manual: 3, review: 5, done: 7 }[w.stage]
   return w.state === 'working' ? 3 : w.state === 'blocked' ? 4 : 6
 }
 export const isActive = (w: Worker) => rank(w) <= 4
@@ -58,6 +59,8 @@ function stageRow(w: Worker, nowS: number): Row {
       const done = lastEvent(w, 'done', 'pr ready')?.at || p?.doneAt || w.since
       return { ...base, mark: '◐', dim: false, parts: [{ text: 'boss checking' }, { text: `DONE ${ago(Math.max(0, nowS - done))} ago` }, { text: 'verifying' }] }
     }
+    case 'manual':
+      return { ...base, mark: '◆', markColor: 'suggestion', dim: false, parts: [{ text: 'with you (manual)', color: 'suggestion' }, { text: age }, { text: lastEvent(w, 'manual')?.note ?? '' }] }
     case 'review': {
       const r = p?.reviewers[0]
       return { ...base, mark: '·', dim: true, parts: [{ text: 'in review' }, { text: age }, { text: r ? `waiting on ${who(r)}` : 'waiting on review' }] }
@@ -136,6 +139,8 @@ export function nextStep(w: Worker): string {
       return 'you: decide the next step'
     case 'checking':
       return p && !p.draft && p.ci === 'red' ? 'boss: send the CI failure to the worker' : 'boss: verify, then mark the PR ready'
+    case 'manual':
+      return 'you: keep going · boss: check in, steer by note only'
     case 'review':
       return `${p?.reviewers[0] ? who(p.reviewers[0]) : 'reviewer'}: review ${w.prTag ?? ''}`.trim()
     case 'done':
