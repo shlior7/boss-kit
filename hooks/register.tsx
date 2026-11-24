@@ -62,12 +62,14 @@ function self($: EngineInterface): Promise<Self> {
   })
   return asked
 }
-let top: Promise<string> | undefined
+let top: Promise<string | undefined> | undefined
 /** This session's CLAUDE.local.md, at its worktree's top as bosskit reads the boss marker (worktree(), boss_marker), so a
- * session started in a subfolder still finds it; outside git, in the session's directory. One git call per session start. */
+ * session started in a subfolder still finds it; outside git, in the session's directory. The top is asked once per
+ * session start; a failed ask (not a worktree yet, or git failed) is not kept: the next read asks again. */
 async function localMd($: EngineInterface) {
-  top ??= $.session.cwd().then(cwd => $.process.run(['git', 'rev-parse', '--show-toplevel'], { cwd, timeoutMs: 10_000 })).then(r => (r.exitCode === 0 ? r.stdout.trim() : ''), () => '')
-  const dir = await top
+  const asked = (top ??= $.session.cwd().then(cwd => $.process.run(['git', 'rev-parse', '--show-toplevel'], { cwd, timeoutMs: 10_000 })).then(r => (r.exitCode === 0 ? r.stdout.trim() : undefined), () => undefined))
+  const dir = await asked
+  if (!dir && top === asked) top = undefined
   return $.fs.read(dir ? `${dir}/CLAUDE.local.md` : 'CLAUDE.local.md').catch(() => '')
 }
 const kindArgs = (s: Self) => (s.kind ? ['--host-kind', s.kind] : [])
@@ -109,7 +111,7 @@ async function workerRefresh($: EngineInterface, patch: Partial<Live> = {}) {
   const got: WorkerDeck | null = exitCode === 0 ? JSON.parse(stdout) : null
   loadedKit ??= got?.kit || undefined
   await update($, mine, cur => got ?? (cur ? { ...cur, error: stderr.slice(0, 200) } : null))
-  if (got?.worker && !workerShown) {
+  if (got?.worker && !workerShown && workerNow()) {
     workerShown = true
     void $.ui.open({ id: PANE, title: WORKER_TITLE })
   }
@@ -232,7 +234,10 @@ export const register: Register = on => {
     if (await promote($)) return { text: 'Boss pane opened.' }
     if (role === 'worker') {
       await workerRefresh($)
-      if (!(await read($, mine))?.worker) return { text: `${NOT_BOSS} No boss ledger has a dispatch row for this workspace either.` }
+      const shown = (await read($, mine))?.worker
+      // The timer promoted this session while the refresh ran.
+      if (bossNow()) return { text: 'Boss pane opened.' }
+      if (!shown) return { text: `${NOT_BOSS} No boss ledger has a dispatch row for this workspace either.` }
       await $.ui.open({ id: PANE, title: WORKER_TITLE })
       return { text: 'Worker pane refreshed.' }
     }

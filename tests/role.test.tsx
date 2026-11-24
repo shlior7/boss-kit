@@ -20,8 +20,8 @@ const MARKER = '# Boss workspace ws-me\n'
 
 type Run = { exitCode: number; stdout: string; stderr: string; isStdoutTruncated: boolean; isStderrTruncated: boolean }
 /** A host session `ws-me` whose worktree top is /w/acme, started in `cwd`; CLAUDE.local.md is read only at the top.
- * `worker` answers the worker data script, so a test can hold it in flight. */
-function host(on: On, o: { cwd: string; local: () => string; worker: () => Promise<{ value: Run }>; opened: string[] }) {
+ * `worker` answers the worker data script, so a test can hold it in flight; `git` the top-level lookup. */
+function host(on: On, o: { cwd: string; local: () => string; worker: () => Promise<{ value: Run }>; opened: string[]; git?: () => { value: Run } }) {
   const clock = mock.clock(on)
   on('fs.read', async (_$, e) => {
     // The test engine resolves a relative path against the runner's own directory: outside /w, it stands for the session's.
@@ -36,7 +36,7 @@ function host(on: On, o: { cwd: string; local: () => string; worker: () => Promi
   on('ui.open', async (_$, e) => (o.opened.push(e.title ?? ''), { value: { isPlaced: true as const } }))
   on('process.run', async (_$, e) => {
     if (e.argv.includes('boss-host-session')) return ok({ kind: 'hosta', id: 'ws-me', terminal: '' })
-    if (e.argv[0] === 'git') return ok('/w/acme\n')
+    if (e.argv[0] === 'git') return o.git?.() ?? ok('/w/acme\n')
     if (e.argv.includes('--worker')) return o.worker()
     return ok(DECK)
   })
@@ -78,7 +78,7 @@ test('a marker at the worktree top is found from a session started in a subfolde
   expect(await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])).toEqual({ text: 'Boss pane refreshed.' })
 })
 
-test('a session already the boss never draws the worker view, even with a worker deck left from before a reload', async ($, on) => {
+test('a reload that makes the session the boss clears the worker deck it kept', async ($, on) => {
   let local = ''
   const opened: string[] = []
   const clock = host(on, { cwd: '/w/acme', local: () => local, opened, worker: async () => ok(WORKER) })
@@ -94,4 +94,73 @@ test('a session already the boss never draws the worker view, even with a worker
   expect(opened.at(-1)).toBe('Boss')
   expect(await texts()).toContain('merge #7')
   expect((await texts()).some(t => t.startsWith('WORKER  '))).toBe(false)
+})
+
+test('a worker refresh mid-write when the session is promoted does not retitle the pane Worker', async ($, on) => {
+  let local = ''
+  let held: (() => void) | undefined
+  const opened: string[] = []
+  const clock = host(on, { cwd: '/w/acme', local: () => local, opened, worker: async () => ok(WORKER) })
+  // Hold the refresh's write of the worker deck, so the promotion lands between it and the pane's open.
+  on('state.set', async (_$, e, next) => {
+    if (e.key === 'mine' && !held && JSON.stringify(e.value).includes('webhook-retries')) await new Promise<void>(r => (held = r))
+    return next(e)
+  })
+  await start($, '/w/acme')
+  await clock.advance(1)
+  expect(held).toBeDefined()
+
+  local = MARKER
+  await clock.advance(60_000)
+  expect(opened).toEqual(['Boss'])
+  held?.()
+  await clock.advance(1)
+  expect(opened).toEqual(['Boss'])
+})
+
+test('/boss-deck answers "Boss pane opened." when the timer promotes the session during its worker refresh', async ($, on) => {
+  let local = ''
+  let release: (v: { value: Run }) => void = () => {}
+  let calls = 0
+  const opened: string[] = []
+  const clock = host(on, { cwd: '/w/acme', local: () => local, opened, worker: () => (calls++ ? new Promise(r => (release = r)) : Promise.resolve(ok({ at: 0, worker: null }))) })
+  await start($, '/w/acme')
+  await clock.advance(1)
+
+  const said = $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])
+  await clock.advance(1)  // its worker refresh waits on the data script
+  local = MARKER
+  await clock.advance(60_000)
+  release(ok({ at: 0, worker: null }))
+  expect(await said).toEqual({ text: 'Boss pane opened.' })
+  expect(opened).toEqual(['Boss'])
+})
+
+test('a failed top-level lookup is asked again, so a marker written at the top later is found from a subfolder', async ($, on) => {
+  let gits = 0
+  const opened: string[] = []
+  const clock = host(on, {
+    cwd: '/w/acme/packages/api', local: () => MARKER, opened, worker: async () => ok({ at: 0, worker: null }),
+    git: () => (gits++ ? ok('/w/acme\n') : { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }),
+  })
+  await start($, '/w/acme/packages/api')
+  expect(opened).toEqual([])
+  await clock.advance(60_000)
+  expect(opened).toEqual(['Boss'])
+})
+
+test('the boss session draws the boss view even when a stale worker deck is still stored', async ($, on) => {
+  const opened: string[] = []
+  host(on, { cwd: '/w/acme', local: () => MARKER, opened, worker: async () => ok(WORKER) })
+  // Every read of the worker deck answers a leftover one, as if a late write had landed after the boss cleared it.
+  on('state.get', async (_$, e, next) => {
+    const got = await next(e)
+    return e.key === 'mine' ? ({ value: { value: { shape: 'mine-3', value: WORKER }, version: (got as { value: { version: number } }).value.version } }) as never : got
+  })
+  await start($, '/w/acme')
+  expect(opened).toEqual(['Boss'])
+  await $.command.run({ command: 'boss-deck', args: '' } as Parameters<typeof $.command.run>[0])  // the boss deck has loaded
+  const texts = await (await pane($))()
+  expect(texts).toContain('merge #7')
+  expect(texts.some(t => t.startsWith('WORKER  '))).toBe(false)
 })
