@@ -20,6 +20,10 @@
 # against its own baseline, so an envelope taller than the pane still fires.
 # Workers keep their PR draft and post a status comment ending with the marker there; the boss marks it ready. `--ready < pr-list.json` prints the numbers (tests/test-watch.sh).
 # Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen (digits ignored: a status-line clock ticks every minute), 135 (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
+# Manual mode: when the user types in the worker's own session, its prompt hook logs a `manual` event. `boss-event --manual`
+# says "new" the first time any watcher asks about that event (recorded in the boss's cache: one wake per burst, also for a
+# burst that landed before this watcher started), which fires "WORKER MANUAL"; while it says "on" the idle fallback never
+# fires (an envelope, blocked or a gone terminal still do).
 # On a fire it logs the stage to the boss's events.jsonl through bin/boss-event (DONE, BLOCKED, PR READY or merged), for the boss-deck stages.
 # Env: BOSS_HOST (default: first host), BOSS_HOST_CLI (default: superset); boss-host sets both to what the adapter resolved.
 # Poll 20 s, timeout 3 h (BOSS_WATCH_POLL_S, BOSS_WATCH_POLLS: 540). Needs the superset CLI, jq (gh for <branch>).
@@ -49,7 +53,8 @@ pick(){ jq -r '.[] | select(.state == "MERGED" or (.state == "OPEN" and ((.isDra
 [ "$1" = --ready ] && { pick; exit; }
 W=$1; T=$2; B=$3
 # log a stage for the boss-deck; a failure here never stops the watcher
-ev(){ "${BOSS_BIN:-$(dirname "$0")/../../bin}/boss-event" "$W" "$@" >/dev/null 2>&1 || true; }
+EV=${BOSS_BIN:-$(dirname "$0")/../../bin}/boss-event
+ev(){ "$EV" "$W" "$@" >/dev/null 2>&1 || true; }
 S=${BOSS_HOST_CLI:-superset}
 H=${BOSS_HOST:-$("$S" hosts list --json | jq -r 'if type=="array" then .[0].id else .hosts[0].id end')}
 WT=$("$S" workspaces list --host "$H" --json 2>/dev/null | jq -r --arg w "$W" '(if type == "array" then . else .workspaces end)[]? | select(.id == $w) | .worktreePath // empty')
@@ -82,10 +87,15 @@ for i in $(seq 1 "${BOSS_WATCH_POLLS:-540}"); do
         echo "PR READY #$new"; echo "$txt" | tail -30 | sed 's/││.*$//'; exit 0; }
     fi
   fi
+  m=$("$EV" --manual "$W" 2>/dev/null); man=0
+  case "$m" in
+    new*) echo "WORKER MANUAL (the user is working in it by hand: ${m#new }; read its .boss-worker/notes.md and screen, steer only with boss-host note, re-arm the watcher)"; exit 0;;
+    on) man=1;;
+  esac
   st=$("$S" snapshot --host "$H" --json 2>/dev/null | jq -r --arg t "$T" '.. | objects | select(.terminalId? == $t or .id? == $t) | .agent.state // empty' | head -1)
   if [ "$st" = blocked ]; then ev BLOCKED "blocked on input"; echo "AGENT BLOCKED ON INPUT"; echo "$txt" | tail -30 | sed 's/││.*$//'; exit 0; fi
   h=$(echo "$txt" | tail -25 | tr -d 0-9 | cksum)
-  if [ "$st" = idle ] && [ "$h" = "$lasth" ]; then idle=$((idle+1)); else idle=0; fi
+  if [ "$st" = idle ] && [ "$h" = "$lasth" ] && [ "$man" = 0 ]; then idle=$((idle+1)); else idle=0; fi
   lasth=$h
   need=9; echo "$txt" | tail -12 | grep -qE "[0-9]+ (shells?|monitors?)|Monitor event" && need=135
   if [ "$idle" -ge "$need" ]; then echo "AGENT IDLE WITHOUT ENVELOPE"; echo "$txt" | tail -40 | sed 's/││.*$//'; exit 0; fi

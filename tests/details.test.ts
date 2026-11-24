@@ -214,3 +214,13 @@ test('pages as links: the pages file by title first, then proof links, each URL 
   expect(pageLinks(pages, proof, [{ label: 'page', url: 'https://example.com/run.mp4' }])).toEqual([{ label: 'after run', url: 'https://example.com/a' }, { label: 'demo', url: 'https://example.com/run.mp4' }])
   expect(pageLinks(undefined)).toEqual([])
 })
+
+test('a worker the user is working in by hand reads "with you (manual)", active, and the boss only checks in', () => {
+  const w = { ...worker, stage: 'manual' as const, state: 'idle', since: 100, events: [ev('10:02', 1, 'sent'), ev('10:40', 100, 'manual', 'why does the retry loop spin?')] }
+  const r = workerRow(w, 400)
+  expect(r.parts.map(p => p.text)).toEqual(['with you (manual)', '5m', 'why does the retry loop spin?'])
+  expect(r.dim).toBe(false)
+  expect(isActive(w)).toBe(true)
+  expect(rank(w)).toBeLessThan(rank({ ...worker, stage: 'review' }))
+  expect(nextStep(w)).toBe('you: keep going · boss: check in, steer by note only')
+})
