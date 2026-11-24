@@ -21,11 +21,15 @@ Steps, in order, each printed:
      runs from ~/.claude/boss-kit: the rename keeps it running and later paths resolve through the symlink.
   5. One 'fyi' mail to each live boss (written straight to its inbox: the script types into no terminal, so nothing
      lands in a boss's input box). Skipped by --no-mail.
+  A pull that changed this script, bin/bosskit.py or bin/bosshost.py restarts it (exec) on the new copy before step 2, so steps
+  2-5 never run stale logic; the restarted run skips the pull, prints one "restarted" line, and reports the whole old..new.
   6. One final block: kit old..new, each plugin old -> new, and the restart line.
 --dry-run changes no working-tree file, plugin or inbox and sends no mail. It runs git fetch, which does write to the kit's
 .git (objects, origin's remote-tracking refs, FETCH_HEAD), then reads the plugin list and the diffs at the one upstream
 commit it resolved, so it reports what a real run would do: would install, would update, would reinstall. If the fetch or
 the upstream lookup fails it prints a warning and plans from the local HEAD. If the kit has diverged it stops, as a real run does.
+When the pull would change this script (or what it imports), steps 2-5 are planned by the current script and the dry run says so:
+a real run restarts on the new one, whose plan may differ.
 
 The kit is $BOSS_KIT, else $BOSS_KIT_HOME, else the one this script is in.
 """
@@ -44,6 +48,9 @@ LOG_LINES = 10
 MARKET = "boss-kit"
 # Plugins the marketplace dropped, each with the plugin that holds it now: uninstalled once that one is in place.
 RETIRED = {"boss-deck": "boss"}
+# The script and the modules it imports: a pull that changes any of them restarts the run on the new copy (see main).
+SELF = ("bin/boss-kit-update", "bin/bosskit.py", "bin/bosshost.py")
+RESTARTED = "BOSS_KIT_UPDATE_FROM"  # set by the restart to the sha the kit was at before the pull: skips the pull, so no loop
 RESTART = "Restart each Claude Code session (exit, then `claude --continue`) to load it."
 
 
@@ -294,12 +301,30 @@ def main(argv):
         for l in lines:
             print("  " + l)
 
-    print(f"boss-kit-update{' (dry run: no files, plugins or mail change; git fetch updates .git)' if dry else ''}: kit {kit}")
-    old, new, ref, note = pull(kit, dry)
+    start = os.environ.pop(RESTARTED, "")  # popped: boss-migrate and claude do not inherit it
+    restarted = bool(start)
+    if start:  # restarted on the new script after the pull: the kit is already at the new commit
+        old, new, ref, note = git(kit, "rev-parse", "--short", start).stdout.strip(), git(kit, "rev-parse", "--short", "HEAD").stdout.strip(), \
+            git(kit, "rev-parse", "HEAD").stdout.strip(), ""
+        print("boss-kit-update: restarted on the new version (the pull changed the update script)")
+    else:
+        print(f"boss-kit-update{' (dry run: no files, plugins or mail change; git fetch updates .git)' if dry else ''}: kit {kit}")
+        start = git(kit, "rev-parse", "HEAD").stdout.strip()
+        old, new, ref, note = pull(kit, dry)
     log = git(kit, "log", "--oneline", f"-{LOG_LINES}", f"{old}..{new}").stdout.strip() if old != new else ""
-    head = (f"would git pull --ff-only: {old}..{new}" if old != new else f"would git pull --ff-only (already at {new})") if dry \
-        else f"updated {old}..{new}" if old != new else f"already at {new}"
-    step(1, "kit", [head] + ([note] if note else []) + [f"  {l}" for l in log.splitlines()])
+    new_self = old != new and git(kit, "diff", "--quiet", start, ref, "--", *SELF).returncode != 0
+    if new_self and dry:
+        note = "this pull changes the update script: a real run restarts on the new one, so steps 2-5 below are planned by the current one and may differ"
+    if not restarted:
+        head = (f"would git pull --ff-only: {old}..{new}" if old != new else f"would git pull --ff-only (already at {new})") if dry \
+            else f"updated {old}..{new}" if old != new else f"already at {new}"
+        step(1, "kit", [head] + ([note] if note else []) + [f"  {l}" for l in log.splitlines()])
+    if new_self and not dry and not restarted:
+        script = os.path.join(kit, "bin", "boss-kit-update")
+        if os.path.exists(script):
+            os.environ[RESTARTED] = start
+            sys.stdout.flush()
+            os.execv(sys.executable, [sys.executable, script, *argv])
     before = installed()
     lines, bad = update_plugins(kit, ref, dry, before)
     failed |= bad

@@ -8,16 +8,26 @@
   boss-host create --repo R --branch B (--prompt-file F | --prompt T) [--model M] [--effort E] [--name N] [--folder F] [--task T]
                                              start a worker; prints its id, logs `sent` (--task, else the prompt's first line)
                                              and writes its DISPATCHED row first in the ledger's "## Dispatches <today>" table
-  boss-host send ID (--text T | --file F) [--terminal T]   message a worker; logs it as the worker's `msg` event
+  boss-host send ID (--text T | --file F) [--terminal T]   message a worker; logs it as the worker's `msg` event first
+                                             (its prompt hook tells the boss's prompts from the user's by that text), and
+                                             takes the event back when the send fails
+  boss-host note ID (--text T | --file F)    leave a worker a note, never typed into its terminal: <worktree>/.boss-worker/
+                                             inbox/<ns>.md, which its next prompt gets as context (the way to steer a worker
+                                             the user is working in by hand: its newest event is `manual`); the worktree is
+                                             the host's (Host.worktree), as the worker's prompt hook reads it
   boss-host rename ID NAME | move ID FOLDER | open ID | archive ID | archive-cmd ID | screen ID TERMINAL
   boss-host close [--dry-run] ID TERMINAL... | close-dead [--dry-run] [ID...]
-send, close and archive refuse a worker whose newest ledger row names another boss (ask it with boss-mail);
+send, note, close and archive resolve an id shorter than 8 characters to its one full id first, then refuse a worker
+whose newest ledger row names another boss (ask it with boss-mail);
 --force-owner overrides that, for the user.
   boss-host watch ID [BRANCH] [--terminal T] [--task ID] the watcher (run with run_in_background). A plugin with its own watcher runs
                                              that; otherwise this one: every 20 s, for up to 3 h, it exits (waking the boss) on a
                                              new envelope message from the worker, PR READY on BRANCH, a blocked agent, 9 idle
                                              polls (3 min) without an envelope, a gone worker, or 9 polls in a row the host
-                                             does not answer (a failed read is never a gone worker), and logs the stage.
+                                             does not answer (a failed read is never a gone worker), and logs the stage. A
+                                             `manual` event (the user typed in the worker's session) wakes it once per
+                                             burst (bosskit.manual_wake records the wake in the boss's cache, for every
+                                             watcher); while the newest event is `manual`, idle never fires.
                                              --task ID: an envelope whose task: is another id never fires (pass the dispatched task).
   boss-host sig < text                       the envelope a text holds, as the watcher reads it (DONE|<task>|<summary start>)
 A host that cannot do something says so and names what to do instead (exit 3).
@@ -79,6 +89,11 @@ def register_watcher(ctx, wid, term, branch):
     return path
 
 
+def manual_note(e):
+    return (f"WORKER MANUAL (the user is working in it by hand: {e['note']}; read its .boss-worker/notes.md and screen, "
+            "steer only with boss-host note, re-arm the watcher)")
+
+
 def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print, task=""):
     boss = host.self_id()
     ev = lambda stage, note: bosskit.add_event(ctx, wid, stage, note)
@@ -116,6 +131,11 @@ def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print, task=""):
                     ev("merged" if merged else "PR READY", f"PR #{n}")
                     out(f"PR READY #{n}")
                     return 0
+        word, e = bosskit.manual_wake(ctx, wid)  # one wake per manual burst, recorded for every watcher
+        if word == "new":
+            out(manual_note(e))
+            return 0
+        manual = word == "on"
         w = host.worker(wid)
         if w is None:  # the host did not answer: not gone
             unread += 1
@@ -132,7 +152,7 @@ def watch(ctx, host, wid, branch="", poll_s=20, polls=540, out=print, task=""):
             ev("BLOCKED", "waiting on input")
             out("AGENT BLOCKED ON INPUT (a permission prompt or a question: boss-host open " + wid + ")")
             return 0
-        idle = idle + 1 if state == "idle" else 0
+        idle = idle + 1 if state == "idle" and not manual else 0  # the user's own session: idle is theirs
         if idle >= IDLE_POLLS:
             out("AGENT IDLE WITHOUT ENVELOPE (check the worker and its PR)")
             return 0
@@ -163,11 +183,12 @@ def ledger(ctx):
 
 
 def check_owner(ctx, wid):
-    """Exit when the newest ledger row for *wid* names another boss; no row, or no Boss cell, is anyone's."""
+    """Exit when the newest ledger row for *wid* (any row it is a prefix of) names another boss; no row, or no Boss cell,
+    is anyone's."""
     d = deck()
-    row = d.ledger_tasks(ledger(ctx)).get(wid[:8])
-    if row and not d.is_mine(row[4], ctx.bid):
-        sys.exit(f"boss-host: {wid} is owned by {row[4]}, use boss-mail (or --force-owner)")
+    for key, row in d.ledger_tasks(ledger(ctx)).items():
+        if key.startswith(wid[:8]) and not d.is_mine(row[4], ctx.bid):
+            sys.exit(f"boss-host: {wid} is owned by {row[4]}, use boss-mail (or --force-owner)")
 
 
 def ctx_or_none():
@@ -199,7 +220,12 @@ def main(argv):
     host = bosshost.get(ctx.cfg if ctx else {}, ctx.host if ctx else None)
     dry, force = "--dry-run" in args, "--force-owner" in args
     args = [a for a in args if a not in ("--dry-run", "--force-owner")]
-    if ctx and not force and cmd in ("send", "close", "archive") and args:
+    if cmd in ("send", "note", "close", "archive") and args and len(args[0]) < 8:  # a short prefix: its one full id first
+        found, _ = pick(host.workers([args[0]]), args[:1])
+        if len(found) > 1:
+            sys.exit(f"boss-host {cmd}: {args[0]} names {len(found)} workers on {host.name}: use its full id")
+        args[0] = found[0]["id"] if found else args[0]  # none listed: the ledger check below still sees the prefix
+    if ctx and not force and cmd in ("send", "note", "close", "archive") and args:
         check_owner(ctx, args[0])
     try:
         if cmd == "plugins":
@@ -228,7 +254,8 @@ def main(argv):
             given, name, model = flag(args, "--task"), flag(args, "--name", ""), flag(args, "--model", "")
             task = given or prompt.strip().splitlines()[0][:120]
             wid = host.create(repo, branch, prompt, model, flag(args, "--effort", ""), name, flag(args, "--folder", ""))
-            if ctx:
+            if ctx:  # the prompt's head first: the worker's prompt hook tells the dispatch prompt by it
+                bosskit.add_event(ctx, wid, "brief", re.sub(r"\s+", " ", prompt).strip()[:200])
                 bosskit.add_event(ctx, wid, "sent", task)
                 row = [time.strftime("%Y-%m-%d"), f"{given}: {name}" if given and name else task, wid, model, "DISPATCHED", "", ctx.bid]
                 bosskit.add_dispatch(ledger(ctx), row, row[0])
@@ -239,9 +266,21 @@ def main(argv):
             text = bosskit._read(f) if f else text
             if not text:
                 sys.exit("boss-host send: needs --text or --file")
-            host.send(wid, text, term)
-            if ctx:
-                bosskit.add_event(ctx, wid, "msg", re.sub(r"\s+", " ", text).strip()[:200])
+            bosskit.send_logged(ctx, wid, text, lambda: host.send(wid, text, term))
+        elif cmd == "note" and args:
+            wid = args.pop(0)
+            f, text = flag(args, "--file"), flag(args, "--text")
+            text = bosskit._read(f) if f else text
+            if not text:
+                sys.exit("boss-host note: needs --text or --file")
+            wt = host.worktree(wid)
+            if not wt:
+                sys.exit(f"boss-host note: no worktree for {wid} on {host.name}")
+            box = os.path.join(wt, ".boss-worker", "inbox")
+            os.makedirs(box, exist_ok=True)
+            path = os.path.join(box, f"{time.time_ns()}.md")
+            bosskit.save_text(path, text.strip() + "\n")
+            print(path)
         elif cmd == "rename" and len(args) == 2:
             host.rename(*args)
         elif cmd == "move" and len(args) == 2:

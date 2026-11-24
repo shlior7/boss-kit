@@ -4,8 +4,9 @@ export type ProofLink = { label: string; url: string }
 export type Page = { url: string; title: string; at: number }
 /** One line of a workspace's stage log (events.jsonl), with its local time. */
 export type StageEvent = { at: number; ws: string; stage: string; note: string; hm: string }
-/** Whose move a workspace is on. 'waiting': checked or ready, yet its PR stays draft (or it has none): the user's call. */
-export type Stage = 'move' | 'waiting' | 'checking' | 'working' | 'review' | 'done'
+/** Whose move a workspace is on. 'waiting': checked or ready, yet its PR stays draft (or it has none): the user's call.
+ * 'manual': its newest event is `manual`: the user is working in its session by hand. */
+export type Stage = 'move' | 'waiting' | 'checking' | 'manual' | 'working' | 'review' | 'done'
 export type Worker = {
   ws: string
   id: string

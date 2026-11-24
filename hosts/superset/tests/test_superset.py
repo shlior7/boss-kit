@@ -50,6 +50,17 @@ class Superset(unittest.TestCase):
         self.assertEqual(h.archive_cmd("w1"), "superset workspaces archive w1 --local")
         self.assertEqual(bosshost.get({"hosts": {"superset": {"host_id": "h2"}}}, "superset").host_id(), "h2")
 
+    def test_worktree_comes_from_the_workspaces_list_not_the_snapshot(self):
+        h = self.host({"host_id": "h1"}, {
+            "snapshot": json.dumps({"workspaces": [{"id": "w1", "name": "cart", "terminals": []}]}),  # no worktree path in it
+            "workspaces list --local": json.dumps([{"id": "w1", "worktreePath": "/wt/w1"},
+                                                   {"id": "w2", "worktreePath": "/wt/w2", "archivedAt": "2026-01-02"}])})
+        self.assertNotIn("worktree", h.worker("w1"))
+        self.assertEqual((h.worktree("w1"), h.worktree("w2"), h.worktree("w9")), ("/wt/w1", "", ""))  # archived: its folder is gone
+        got = []
+        h.sh = lambda *a, timeout=40: got.append(timeout) or ""  # a host that does not answer
+        self.assertEqual((h.worktree("w1", timeout=3), got), ("", [3]))  # the prompt hook's lookup is capped
+
     def test_host_defaults_to_the_first_host(self):
         self.assertEqual(self.host({}, {"hosts list": json.dumps([{"id": "first"}, {"id": "second"}])}).host_id(), "first")
 

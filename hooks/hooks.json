@@ -7,6 +7,11 @@
         "hooks": [{ "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/boss-guard\"", "timeout": 10 }]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [{ "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/boss-deck-data.py\" --prompt", "timeout": 10 }]
+      }
+    ],
     "Stop": [
       {
         "hooks": [{ "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/boss-next-hook\"", "timeout": 10 }]

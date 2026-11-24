@@ -955,9 +955,60 @@ def tracker_snapshot(ctx):
 def add_event(ctx, ws, stage, note="", now=None):
     """Append one stage event to this boss's events.jsonl and return it."""
     e = {"at": int(now or time.time()), "ws": ws, "stage": stage, "note": note}
-    with open(os.path.join(ctx.bdir, "events.jsonl"), "a") as f:
+    path = os.path.join(ctx.bdir, "events.jsonl")
+    with locked(path), open(path, "a") as f:
         f.write(json.dumps(e) + "\n")
     return e
+
+
+def send_logged(ctx, ws, text, send):
+    """Log *text* as workspace *ws*'s `msg` event, then send() it: logged first, since the worker's prompt hook may read it
+    the moment the text lands. The event is taken back if the send fails; an event log that cannot be written never
+    stops the send."""
+    try:
+        e = add_event(ctx, ws, "msg", re.sub(r"\s+", " ", text).strip()[:200]) if ctx else None
+    except OSError:
+        e = None
+    try:
+        send()
+    except BaseException:
+        try:
+            if e:
+                drop_event(ctx, e)
+        except OSError:
+            pass
+        raise
+
+
+def drop_event(ctx, e):
+    """Take back an event add_event returned (a message whose send failed): its newest identical line goes."""
+    path, line = os.path.join(ctx.bdir, "events.jsonl"), json.dumps(e)
+    with locked(path):
+        lines = _read(path).splitlines()
+        if line in lines:
+            del lines[len(lines) - 1 - lines[::-1].index(line)]
+            save_text(path, "".join(l + "\n" for l in lines))
+
+
+def manual_wake(ctx, ws):
+    """'new', 'on' or '' for workspace *ws*'s newest event in this boss's log: '' when it is not `manual`; 'new' the first
+    time any watcher asks about that manual event, which it records in the boss's cache (so a re-armed watcher, or one
+    started after the event landed, agrees on one wake per burst); 'on' after. Returns (word, event)."""
+    e = next((e for e in reversed(events(ctx.bdir)) if e["ws"][:8] == ws[:8]), None)
+    if not e or e["stage"].lower() != "manual":
+        return "", e
+    path = os.path.join(ctx.cache, "manual-seen.json")
+    try:
+        seen = json.load(open(path))
+    except (OSError, ValueError):
+        seen = {}
+    key = f"{e['at']} {e['note']}"  # ponytail: same-second bursts with the same note collide; add a sequence id if it matters
+    if seen.get(ws[:8]) == key:
+        return "on", e
+    os.makedirs(ctx.cache, exist_ok=True)
+    # ponytail: unlocked read-modify-write, so two watchers on one workspace can both claim "new"; lock it if that happens
+    save_json(path, {**seen, ws[:8]: key})
+    return "new", e
 
 
 def events(bdir):
