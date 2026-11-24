@@ -16,7 +16,7 @@ Config, under `hosts.superset`: `host_id` (the host's machine id; empty = `$BOSS
 
 ## The watcher (`watch.sh`)
 
-`boss-host watch <workspace> <branch>` runs it. Every 20 s, for up to 3 h, it reads the terminal, strips Claude Code's reply box and the side pane, and exits (waking the boss) when:
+`boss-host watch <workspace> <branch> [--task <id>]` runs it (`--task`: another task's envelope never fires; the transcript read is the agent's own session, else the worktree's newest with a stderr line). Every 20 s, for up to 3 h, it reads the terminal, strips Claude Code's reply box and the side pane, and exits (waking the boss) when:
 - a **new** envelope appears, on one line or split over two, counted only when the token is directly followed by `task: <id>`, compared by `task:` and summary, skipping `<placeholder>` templates and the boss's own message box. When the screen shows none, it reads the worker's last replies from its Claude Code transcript (`~/.claude/projects/<worktree path>/`), since a pane is often 32 rows and a tall envelope's first line never reaches it;
 - with a branch, a PR on it gets a DONE comment, leaves draft or merges (`PR READY #n`), whatever the screen shows;
 - the agent's state becomes `blocked`;
