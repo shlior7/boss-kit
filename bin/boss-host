@@ -303,6 +303,8 @@ def main(argv):
         elif cmd == "watch" and args:
             if not ctx:
                 sys.exit("boss-host watch: no boss project here")
+            if "--task" in args and not (args.index("--task") + 1 < len(args) and args[args.index("--task") + 1]):
+                sys.exit("boss-host watch: --task needs a task id")
             term, task = flag(args, "--terminal", ""), flag(args, "--task", "")
             wid, branch = args[0], (args[1] if len(args) > 1 else "")
             script = host.watch_script()

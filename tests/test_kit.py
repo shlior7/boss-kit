@@ -1908,6 +1908,9 @@ class Watch(Home):
         ctx = bosskit.load(self.wt)
         reg = json.load(open(os.path.join(ctx.cache, "..", "..", "boss-9", "cache", "watchers", f"{pid}.json")))
         self.assertEqual((reg["ws"], reg["term"], reg["branch"]), ("aaaa1111", "t9", "fix/x"))
+        r = subprocess.run([os.path.join(BIN, "boss-host"), "watch", "aaaa1111", "fix/x", "--task"], cwd=self.wt, capture_output=True, text=True, env=env)
+        self.assertNotEqual(r.returncode, 0)  # a trailing --task without an id is a usage error, never an unfiltered watch
+        self.assertIn("--task needs a task id", r.stderr)
 
 
 class Isolation(Home):
