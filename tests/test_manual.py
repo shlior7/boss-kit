@@ -123,7 +123,8 @@ class PromptHook(ManualHome):
             self.dispatch()
             os.remove(os.path.join(self.fixdir, "list.json"))  # the host stops answering
             self.prompt("hand-check the parser", 1000)
-        self.assertEqual(got, [self.deck.HOOK_HOST_S])  # one capped call, then the cache
+        self.assertEqual(len(got), 1, got)  # one host call, then the cache
+        self.assertLessEqual(got[0] or 99, 3)  # capped well inside the hook's 10 s
         self.assertEqual(self.status()["mode"], "manual")
 
     def test_only_the_dispatched_terminal_counts(self):
@@ -263,6 +264,10 @@ class Notes(ManualHome):
             w.main(["note", WS[:4], "--text", "fyi"])
         self.assertIn("owned by ws-other", str(e.exception))
         self.assertFalse(os.path.exists(os.path.join(self.wt, ".boss-worker", "inbox")))
+        os.remove(os.path.join(self.fixdir, "snapshot.json"))  # the host lists nothing: the ledger still knows the prefix
+        with self.assertRaises(SystemExit) as e, mock.patch("sys.stdout"):
+            w.main(["note", WS[:4], "--text", "fyi"])
+        self.assertIn("owned by ws-other", str(e.exception))
 
     def test_the_hook_prints_the_notes_as_context_and_stays_quiet_outside_a_worker(self):
         self.note("fyi: CI is flaky on node 20")

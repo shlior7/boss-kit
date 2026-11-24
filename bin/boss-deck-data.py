@@ -19,8 +19,9 @@ Every worker appends one {url, title, at} line per page it publishes to .boss-wo
 in its boss folder. Both panes list them, and the header names config's page provider when `pages` sets one.
 
 Prompt mode (--prompt): the boss plugin's UserPromptSubmit hook, in every session (hooks/hooks.json); it acts only in a
-dispatched worker's, in the worktree its host names (Host.worktree, as boss-host note writes there; never the prompt's
-cwd). A prompt that matches a `msg` event (boss-host send and boss-status-ask log the text before typing it) or a `brief`
+dispatched worker's (only its terminal's session when the row names a terminal and the host sets the session's), in
+the worktree its host names (Host.worktree, as boss-host note writes there, cached, at most HOOK_HOST_S; never the
+prompt's cwd). A prompt that matches a `msg` event (boss-host send and boss-status-ask log the text before typing it) or a `brief`
 (boss-host create logs the dispatch prompt's head) is the boss's, each such event once and for MSG_TTL_S; any other is
 the user's own: the first of a burst (prompts under BURST_S apart, with no event since the burst's `manual`) logs
 `manual "<first 80 chars>"` to the dispatching boss's events and marks .boss-worker/status.json mode=manual (under the

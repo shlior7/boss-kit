@@ -17,7 +17,8 @@
                                              the host's (Host.worktree), as the worker's prompt hook reads it
   boss-host rename ID NAME | move ID FOLDER | open ID | archive ID | archive-cmd ID | screen ID TERMINAL
   boss-host close [--dry-run] ID TERMINAL... | close-dead [--dry-run] [ID...]
-send, note, close and archive refuse a worker whose newest ledger row names another boss (ask it with boss-mail);
+send, note, close and archive resolve an id shorter than 8 characters to its one full id first, then refuse a worker
+whose newest ledger row names another boss (ask it with boss-mail);
 --force-owner overrides that, for the user.
   boss-host watch ID [BRANCH] [--terminal T] the watcher (run with run_in_background). A plugin with its own watcher runs
                                              that; otherwise this one: every 20 s, for up to 3 h, it exits (waking the boss) on a
@@ -179,11 +180,12 @@ def ledger(ctx):
 
 
 def check_owner(ctx, wid):
-    """Exit when the newest ledger row for *wid* names another boss; no row, or no Boss cell, is anyone's."""
+    """Exit when the newest ledger row for *wid* (any row it is a prefix of) names another boss; no row, or no Boss cell,
+    is anyone's."""
     d = deck()
-    row = d.ledger_tasks(ledger(ctx)).get(wid[:8])
-    if row and not d.is_mine(row[4], ctx.bid):
-        sys.exit(f"boss-host: {wid} is owned by {row[4]}, use boss-mail (or --force-owner)")
+    for key, row in d.ledger_tasks(ledger(ctx)).items():
+        if key.startswith(wid[:8]) and not d.is_mine(row[4], ctx.bid):
+            sys.exit(f"boss-host: {wid} is owned by {row[4]}, use boss-mail (or --force-owner)")
 
 
 def ctx_or_none():
@@ -217,9 +219,9 @@ def main(argv):
     args = [a for a in args if a not in ("--dry-run", "--force-owner")]
     if cmd in ("send", "note", "close", "archive") and args and len(args[0]) < 8:  # a short prefix: its one full id first
         found, _ = pick(host.workers([args[0]]), args[:1])
-        if len(found) != 1:
+        if len(found) > 1:
             sys.exit(f"boss-host {cmd}: {args[0]} names {len(found)} workers on {host.name}: use its full id")
-        args[0] = found[0]["id"]
+        args[0] = found[0]["id"] if found else args[0]  # none listed: the ledger check below still sees the prefix
     if ctx and not force and cmd in ("send", "note", "close", "archive") and args:
         check_owner(ctx, args[0])
     try:
