@@ -2118,7 +2118,7 @@ class KitUpdate(Home):
         self.update("--no-mail")  # a first run: the kit now holds bin/
         with open(os.path.join(self.origin, "bin", "bosshost.py"), "a") as f:
             f.write("\n# changed\n")
-        git(self.origin, "commit", "-qam", "bosshost", "--author=t <t@example.com>")
+        git(self.origin, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qam", "bosshost")
         r = self.update("--no-mail")
         self.assertEqual(r.stdout.count("restarted on the new version"), 1, r.stdout + r.stderr)
 
