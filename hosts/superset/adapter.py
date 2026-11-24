@@ -52,13 +52,13 @@ class Host(bosshost.Host):
         spaces = spaces.get("workspaces", []) if isinstance(spaces, dict) else []
         return next((w for w in spaces if w.get("id") == ws), {})
 
-    def _local(self):
-        rows = _json(self.sh("workspaces", "list", "--local", "--json"), [])
+    def _local(self, timeout=40):
+        rows = _json(self.sh("workspaces", "list", "--local", "--json", timeout=timeout), [])
         return rows if isinstance(rows, list) else rows.get("workspaces", [])
 
-    def worktree(self, ws):
-        """From `workspaces list` (the snapshot has no worktree path): one quick local call; '' when archived."""
-        w = next((w for w in self._local() if (w.get("id", "").startswith(ws[:8]) or ws.startswith(w.get("id") or "\0"))
+    def worktree(self, ws, timeout=None):
+        """From `workspaces list` (the snapshot has no worktree path): one quick local call; '' when archived or timed out."""
+        w = next((w for w in self._local(timeout or 40) if (w.get("id", "").startswith(ws[:8]) or ws.startswith(w.get("id") or "\0"))
                   and not w.get("archivedAt")), None)
         return (w or {}).get("worktreePath") or ""
 

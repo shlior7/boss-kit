@@ -735,6 +735,9 @@ def save_status(wt, s):
 BURST_S = 1800  # the user's prompts closer than this are one manual burst: one `manual` event, one wake for the boss
 MATCH_CHARS = 80  # a prompt is the boss's when its start matches a `msg` or `brief` event's (logged at 200, normalized)
 MSG_TTL_S = 86400  # a boss message older than this no longer matches: the user typing "status?" days later is the user
+# ponytail: an unused msg or brief stays matchable for MSG_TTL_S, so the user typing its exact start in that window counts
+# as the boss; consume a brief at the first prompt after `sent` if it matters
+HOOK_HOST_S = 3  # the hook's one host call (the worktree, on a cache miss) gives up after this: never stall a prompt
 BOSS_TEXT = ("msg", "brief")  # boss-host send and boss-status-ask log `msg`, boss-host create the dispatch prompt as `brief`
 
 
@@ -749,14 +752,15 @@ def is_boss_prompt(prompt, evs, status, now):
     used = {tuple(k) for k in status.get("matched") or [] if isinstance(k, list) and len(k) == 2}
     hit = next((e for e in evs if head and e["stage"].lower() in BOSS_TEXT and now - e["at"] <= MSG_TTL_S
                 and e["note"][:MATCH_CHARS] == head and (e["at"], head) not in used), None)
-    if hit:
+    if hit:  # ponytail: two boss messages with the same start in the same second count as one; add a sequence id if it matters
         status["matched"] = [list(k) for k in used if now - k[0] <= MSG_TTL_S] + [[hit["at"], head]]
     return bool(hit)
 
 
 def take_notes(wt):
     """The boss's unread notes (.boss-worker/inbox/*.md, oldest first) as one context line, moved to inbox/read/; '' if none.
-    A note another prompt's hook took first is its to deliver."""
+    A note another prompt's hook took first is its to deliver; an entry that cannot be read (a directory, no permission,
+    not text) stays where it is and the rest are delivered."""
     box = os.path.join(wt, ".boss-worker", "inbox")
     names = sorted(f for f in os.listdir(box) if f.endswith(".md")) if os.path.isdir(box) else []
     if names:
@@ -767,7 +771,7 @@ def take_notes(wt):
             with open(os.path.join(box, n)) as f:
                 text = norm(f.read())
             os.replace(os.path.join(box, n), os.path.join(box, "read", n))
-        except FileNotFoundError:
+        except (OSError, ValueError):  # taken by another prompt's hook, or a bad entry (ValueError: not UTF-8)
             continue
         texts.append(text)
     if not texts:
@@ -776,17 +780,46 @@ def take_notes(wt):
             "in this session win; fold what helps into your work and keep going): " + " | ".join(t for t in texts if t))
 
 
-def prompt_hook(home, ws, prompt, now=None):
-    """A prompt in workspace *ws*'s session: classify it, log `manual` once per burst, mark status.json, and return the
-    boss's unread notes as context ('' when none, or when no boss dispatched *ws*). The worktree is the host's for *ws*,
-    as boss-host note resolves it (never the prompt's cwd: that may be another checkout); '' when the host has none."""
+def hook_worktree(home, project, bid, ws):
+    """Workspace *ws*'s worktree as its host names it (Host.worktree, as boss-host note resolves it), cached in the boss's
+    cache once found, so a slow host costs at most one prompt HOOK_HOST_S; '' when the host has none or did not answer."""
+    path = os.path.join(home, project, "bosses", bid, "cache", "worktrees.json") if bid else ""
+    try:
+        cached = json.load(open(path)).get(ws) if path else None
+    except (OSError, ValueError, AttributeError):
+        cached = None
+    if cached and os.path.isdir(cached):
+        return cached
+    wt = bosshost.get(bosskit.config_for(home, project, bid)).worktree(ws, timeout=HOOK_HOST_S)
+    if wt and path:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with bosskit.locked(path):
+                old = json.load(open(path)) if os.path.exists(path) else {}
+                bosskit.save_json(path, {**(old if isinstance(old, dict) else {}), ws: wt})
+        except (OSError, ValueError):
+            pass
+    return wt
+
+
+def prompt_hook(home, ws, prompt, now=None, term=""):
+    """A prompt in workspace *ws*'s session (terminal *term*, '' when the host sets none): classify it, log `manual` once
+    per burst, mark status.json, and return the boss's unread notes as context ('' when none, or when no boss dispatched
+    *ws*). When the dispatch row names a terminal ("1a2b3c4d / 5e6f") and *term* is known, only that terminal's session
+    counts: another Claude session in the workspace is not the worker. The worktree is the host's (hook_worktree; never
+    the prompt's cwd: that may be another checkout); '' when the host has none."""
     found = find_dispatch(home, ws)
     if not found:
         return ""
-    project, _, row = found
+    project, cfg, row = found
     pdir = os.path.join(home, project)
+    terms = [t for t, text in ledger_terms(os.path.join(pdir, cfg.get("ledger", "ledger.md")), ws[:8]).items() if text.strip() == row[5]]
+    if terms and term and not any(term.startswith(t) for t in terms):
+        return ""
+    # ponytail: a legacy row without a Boss cell logs `manual` to the project's live main boss, which may not be the one
+    # that dispatched it; write the Boss cell on old rows if that bites
     bid = worker_boss(bosskit.registry(home), project, row[4])
-    wt = bosshost.get(bosskit.config_for(home, project, bid)).worktree(ws)
+    wt = hook_worktree(home, project, bid, ws)
     if not wt or not os.path.isdir(wt):
         return ""
     os.makedirs(os.path.join(wt, ".boss-worker"), exist_ok=True)
@@ -799,6 +832,8 @@ def prompt_hook(home, ws, prompt, now=None):
             st.pop("mode", None)
         else:
             # a new burst: the first, a long pause, or any event since the burst's `manual` (a boss message, DONE, BLOCKED)
+            # ponytail: the claim is serialized by this worktree's status lock only; two worktrees of one workspace could
+            # each log a burst, add a claim in the boss dir if that ever happens
             if st.get("mode") != "manual" or now - int(st.get("manual_at") or 0) > BURST_S or evs[-1:] and evs[-1]["stage"].lower() != "manual":
                 if bid:
                     bdir = os.path.join(pdir, "bosses", bid)
@@ -815,7 +850,8 @@ def prompt_main(stdin):
     try:
         inp = json.load(stdin)
         ws = bosskit.self_id()
-        note = prompt_hook(bosskit.home(), ws, str(inp.get("prompt") or "")) if ws else ""
+        term = next((t for _, sid, t in bosshost.session_ids() if sid == ws), "")
+        note = prompt_hook(bosskit.home(), ws, str(inp.get("prompt") or ""), term=term) if ws else ""
     except Exception:  # a hook that crashes must never block the user's prompt
         return
     if note:

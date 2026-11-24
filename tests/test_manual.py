@@ -49,6 +49,11 @@ class ManualHome(Home):
         json.dump([{"id": WS, "worktreePath": self.wt}], open(os.path.join(self.fixdir, "list.json"), "w"))
         json.dump({"workspaces": [{"id": WS, "name": "webhooks", "terminals": []}]}, open(os.path.join(self.fixdir, "snapshot.json"), "w"))
 
+    def row(self, cell=WS[:8], boss=""):
+        open(os.path.join(self.home, "widgets", "ledger.md"), "w").write(
+            "## Dispatches 2026-01-02\n\n| Date | Task | Workspace | Model | Status | Proof | Boss |\n|---|---|---|---|---|---|---|\n"
+            f"| 2026-01-02 | fix-42: retry webhooks | {cell} | mid | DISPATCHED | | {boss} |\n")
+
     def ev(self, at, stage, note=""):
         bosskit.add_event(self.boss, WS, stage, note, now=at)
 
@@ -109,6 +114,31 @@ class PromptHook(ManualHome):
                 self.assertTrue(t.is_alive(), "wrote status.json without the lock")
             t.join()
         self.assertEqual((self.status()["mode"], self.status()["tasks_done"]), ("manual", 1))
+
+    def test_the_worktree_lookup_is_short_and_cached(self):
+        host = bosshost.get({}, "fake")
+        real, got = host.worktree, []
+        host.worktree = lambda ws, timeout=None: got.append(timeout) or real(ws)
+        with mock.patch.object(self.deck.bosshost, "get", lambda *a: host):
+            self.dispatch()
+            os.remove(os.path.join(self.fixdir, "list.json"))  # the host stops answering
+            self.prompt("hand-check the parser", 1000)
+        self.assertEqual(got, [self.deck.HOOK_HOST_S])  # one capped call, then the cache
+        self.assertEqual(self.status()["mode"], "manual")
+
+    def test_only_the_dispatched_terminal_counts(self):
+        self.row(f"{WS[:8]} / 5e6f")
+        w = load_script("boss-host")
+        with mock.patch("sys.stdout"):
+            w.main(["note", WS, "--text", "fyi"])
+        env = {**hook_env(self), "FAKE_SESSION": WS}
+        hook = lambda term, text: subprocess.run(HOOK, input=json.dumps({"prompt": text}), capture_output=True, text=True,
+                                                 env={**env, "FAKE_TERMINAL": term} if term else env)
+        self.assertEqual(hook("9a9a0000-0000", "an unrelated session in the same workspace").stdout, "")
+        self.assertEqual(self.manual(), [])
+        self.assertIn("fyi", hook("5e6f0000-0000", "the worker's own session").stdout)
+        self.assertEqual([n for _, n in self.manual()], ["the worker's own session"])
+        self.assertEqual(hook("", "no terminal id: today's behaviour").returncode, 0)
 
     def test_no_dispatch_row_does_nothing(self):
         self.assertEqual(self.deck.prompt_hook(self.home, "9f9f9f9f-0000", "hi", now=1000), "")
@@ -214,6 +244,26 @@ class Notes(ManualHome):
         self.assertIn("first", ctx)
         self.assertEqual(len(os.listdir(os.path.join(box, "read"))), 2)
 
+    def test_bad_inbox_entries_are_skipped_and_the_rest_delivered(self):
+        box = os.path.join(self.wt, ".boss-worker", "inbox")
+        os.makedirs(os.path.join(box, "2.md"))  # a directory
+        for n, body in (("1.md", "first"), ("3.md", "locked"), ("4.md", "last")):
+            open(os.path.join(box, n), "w").write(body)
+        os.chmod(os.path.join(box, "3.md"), 0)
+        self.addCleanup(os.chmod, os.path.join(box, "3.md"), 0o644)
+        ctx = self.deck.take_notes(self.wt)
+        self.assertTrue(ctx.startswith("2 notes from boss"), ctx)
+        self.assertIn("first | last", ctx)
+        self.assertEqual(sorted(os.listdir(box)), ["2.md", "3.md", "read"])
+
+    def test_a_short_prefix_is_resolved_before_the_owner_check(self):
+        self.row(boss="ws-other")  # another boss dispatched it
+        w = load_script("boss-host")
+        with self.assertRaises(SystemExit) as e, mock.patch("sys.stdout"):
+            w.main(["note", WS[:4], "--text", "fyi"])
+        self.assertIn("owned by ws-other", str(e.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.wt, ".boss-worker", "inbox")))
+
     def test_the_hook_prints_the_notes_as_context_and_stays_quiet_outside_a_worker(self):
         self.note("fyi: CI is flaky on node 20")
         env = hook_env(self)
@@ -252,6 +302,17 @@ class SendLogsFirst(ManualHome):
         with mock.patch.object(ask.bosshost, "get", lambda *a: host), self.assertRaises(bosshost.Unsupported):
             ask.main([WS, "-"])
         self.assertEqual(self.stages(), ["sent"])
+
+    def test_an_unwritable_event_log_never_stops_the_send(self):
+        os.makedirs(os.path.join(bosskit.load().bdir, "events.jsonl"))  # an event log that cannot be appended to
+        w, ask = load_script("boss-host"), load_script("boss-status-ask")
+        host = bosshost.get({}, "fake")
+        host.send = mock.Mock()
+        with mock.patch.object(w.bosshost, "get", lambda *a: host):
+            self.assertEqual(w.main(["send", WS, "--text", "also cover 429"]), 0)
+        with mock.patch.object(ask.bosshost, "get", lambda *a: host):
+            ask.main([WS, "-"])
+        self.assertEqual(host.send.call_count, 2)
 
     def test_create_logs_the_prompts_head_before_sent(self):
         w = load_script("boss-host")

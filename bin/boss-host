@@ -215,6 +215,11 @@ def main(argv):
     host = bosshost.get(ctx.cfg if ctx else {}, ctx.host if ctx else None)
     dry, force = "--dry-run" in args, "--force-owner" in args
     args = [a for a in args if a not in ("--dry-run", "--force-owner")]
+    if cmd in ("send", "note", "close", "archive") and args and len(args[0]) < 8:  # a short prefix: its one full id first
+        found, _ = pick(host.workers([args[0]]), args[:1])
+        if len(found) != 1:
+            sys.exit(f"boss-host {cmd}: {args[0]} names {len(found)} workers on {host.name}: use its full id")
+        args[0] = found[0]["id"]
     if ctx and not force and cmd in ("send", "note", "close", "archive") and args:
         check_owner(ctx, args[0])
     try:
@@ -256,14 +261,7 @@ def main(argv):
             text = bosskit._read(f) if f else text
             if not text:
                 sys.exit("boss-host send: needs --text or --file")
-            # logged first: the worker's prompt hook may read it the moment the text lands; taken back if the send fails
-            e = bosskit.add_event(ctx, wid, "msg", re.sub(r"\s+", " ", text).strip()[:200]) if ctx else None
-            try:
-                host.send(wid, text, term)
-            except BaseException:
-                if e:
-                    bosskit.drop_event(ctx, e)
-                raise
+            bosskit.send_logged(ctx, wid, text, lambda: host.send(wid, text, term))
         elif cmd == "note" and args:
             wid = args.pop(0)
             f, text = flag(args, "--file"), flag(args, "--text")

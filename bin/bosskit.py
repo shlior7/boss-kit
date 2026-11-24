@@ -961,6 +961,25 @@ def add_event(ctx, ws, stage, note="", now=None):
     return e
 
 
+def send_logged(ctx, ws, text, send):
+    """Log *text* as workspace *ws*'s `msg` event, then send() it: logged first, since the worker's prompt hook may read it
+    the moment the text lands. The event is taken back if the send fails; an event log that cannot be written never
+    stops the send."""
+    try:
+        e = add_event(ctx, ws, "msg", re.sub(r"\s+", " ", text).strip()[:200]) if ctx else None
+    except OSError:
+        e = None
+    try:
+        send()
+    except BaseException:
+        try:
+            if e:
+                drop_event(ctx, e)
+        except OSError:
+            pass
+        raise
+
+
 def drop_event(ctx, e):
     """Take back an event add_event returned (a message whose send failed): its newest identical line goes."""
     path, line = os.path.join(ctx.bdir, "events.jsonl"), json.dumps(e)
@@ -983,10 +1002,11 @@ def manual_wake(ctx, ws):
         seen = json.load(open(path))
     except (OSError, ValueError):
         seen = {}
-    key = f"{e['at']} {e['note']}"
+    key = f"{e['at']} {e['note']}"  # ponytail: same-second bursts with the same note collide; add a sequence id if it matters
     if seen.get(ws[:8]) == key:
         return "on", e
     os.makedirs(ctx.cache, exist_ok=True)
+    # ponytail: unlocked read-modify-write, so two watchers on one workspace can both claim "new"; lock it if that happens
     save_json(path, {**seen, ws[:8]: key})
     return "new", e
 

@@ -12,7 +12,6 @@ the terminal to let the host pick the worker's agent. Only ask sessions your led
 yours; for another boss's, boss-mail.
 """
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -41,13 +40,7 @@ def send(ws, term, who):
     except SystemExit:
         ctx = None
     body = text(who)
-    e = bosskit.add_event(ctx, ws, "msg", re.sub(r"\s+", " ", body).strip()[:200]) if ctx else None
-    try:
-        bosshost.get(ctx.cfg if ctx else {}).send(ws, body, None if term == "-" else term)
-    except BaseException:
-        if e:
-            bosskit.drop_event(ctx, e)
-        raise
+    bosskit.send_logged(ctx, ws, body, lambda: bosshost.get(ctx.cfg if ctx else {}).send(ws, body, None if term == "-" else term))
 
 
 def main(argv):

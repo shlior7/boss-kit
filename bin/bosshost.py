@@ -206,8 +206,9 @@ class Host:
         """One worker; {} when it is gone, None when the host could not be read."""
         return next((w for w in self.workers([wid]) if w.get("id", "").startswith(wid[:8]) or wid.startswith(w.get("id", "\0"))), {})
 
-    def worktree(self, wid):
-        """A worker's worktree path ('' when unknown), from the workers listing: a host's worker() may not carry it."""
+    def worktree(self, wid, timeout=None):
+        """A worker's worktree path ('' when unknown), from the workers listing: a host's worker() may not carry it.
+        *timeout* caps a host call that can take one (the prompt hook's lookup)."""
         return (Host.worker(self, wid) or {}).get("worktree") or ""
 
     def by_branch(self, branch):
