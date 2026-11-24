@@ -2085,6 +2085,64 @@ class KitUpdate(Home):
         self.assertFalse(os.path.lexists(os.path.join(self.cfg, "skills", "boss")))
         self.assertEqual(self.inbox("widgets", "live-a"), [])
 
+    def put_bin(self, name="bin/bosskit.py", tail=""):
+        """Commit a copy of bin/ to origin whose boss-kit-update marks its own step 2 ('ok+new' for 'ok  '): code a pull brings."""
+        dst = os.path.join(self.origin, "bin")
+        shutil.copytree(BIN, dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
+        f = os.path.join(dst, "boss-kit-update")
+        text = open(f).read().replace("'ok  ' if ok", "'ok+new' if ok")
+        open(f, "w").write(text)
+        if tail:
+            open(os.path.join(self.origin, name), "a").write(tail)
+        git(self.origin, "add", "bin")
+        git(self.origin, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "bin")
+
+    def test_a_pull_that_changes_the_script_runs_the_new_step_2_once_without_looping(self):
+        self.put_bin()
+        r = self.update()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = r.stdout
+        self.assertEqual(out.count("restarted on the new version"), 1)
+        self.assertEqual(out.count("[1/5]"), 1)  # printed before the restart, not again after it
+        self.assertEqual(out.count("[2/5]"), 1)  # step 2 ran once, on the new script
+        self.assertIn("ok+new claude plugin install boss@boss-kit", out)
+        self.assertNotIn("ok   claude", out)
+        self.assertEqual(open(self.claude_log).read().splitlines(),
+                         ["plugin marketplace update boss-kit", "plugin install boss@boss-kit", "plugin update boss-deck@boss-kit"])
+        self.assertRegex(out.split("\n\nKit:")[1], r"^\s+[0-9a-f]+\.\.[0-9a-f]+\n")  # the final block still spans the whole pull
+        (m,) = self.inbox("widgets", "live-a")  # one mail, from the restarted run
+        self.assertRegex(m["subject"], r"^kit updated [0-9a-f]+\.\.[0-9a-f]+:")
+
+    def test_a_change_in_an_imported_module_restarts_too(self):
+        self.put_bin(tail="\n# changed\n")
+        self.update("--no-mail")  # a first run: the kit now holds bin/
+        with open(os.path.join(self.origin, "bin", "bosshost.py"), "a") as f:
+            f.write("\n# changed\n")
+        git(self.origin, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qam", "bosshost")
+        r = self.update("--no-mail")
+        self.assertEqual(r.stdout.count("restarted on the new version"), 1, r.stdout + r.stderr)
+
+    def test_a_pull_that_changes_nothing_else_does_not_restart(self):
+        self.put_bin()
+        self.update("--no-mail")  # the kit now holds bin/
+        self.commit(self.origin, "two")
+        r = self.update("--no-mail")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("restarted", r.stdout)
+        self.assertEqual(r.stdout.count("[2/5]"), 1)
+        self.assertTrue(os.path.exists(os.path.join(self.kit, "two")))
+
+    def test_a_dry_run_says_the_script_will_restart_when_the_pull_changes_it(self):
+        self.put_bin()
+        r = self.update("--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("this pull changes the update script: a real run restarts on the new one", r.stdout)
+        self.assertNotIn("restarted", r.stdout)
+        self.commit(self.origin, "two")  # a kit that already has bin/: a pull of other files carries no such note
+        self.update("--no-mail")
+        self.commit(self.origin, "three")
+        self.assertNotIn("update script", self.update("--dry-run").stdout)
+
     def test_no_mail_skips_only_the_mail(self):
         self.commit(self.origin, "two")
         r = self.update("--no-mail")
