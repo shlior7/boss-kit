@@ -122,7 +122,7 @@ case "$1 $2" in
 esac
 C
   chmod +x "$t/cli"
-  local evbin=$t/none; [ -n "$EVENTS" ] && { evbin=$t/evbin; mkdir "$t/evbin"; printf '#!/bin/bash\n# --last: the first line until the 3rd terminals read, then the second\nd=%s; [ "$(cat "$d/n" 2>/dev/null || echo 0)" -ge 3 ] && sed -n 2p "$d/events" || sed -n 1p "$d/events"\n' "$t" > "$t/evbin/boss-event"
+  local evbin=$t/none; [ -n "$EVENTS" ] && { evbin=$t/evbin; mkdir "$t/evbin"; printf '#!/bin/bash\n# --manual: the first line until the 3rd terminals read, then the second\nd=%s; [ "$(cat "$d/n" 2>/dev/null || echo 0)" -ge 3 ] && sed -n 2p "$d/events" || sed -n 1p "$d/events"\n' "$t" > "$t/evbin/boss-event"
     chmod +x "$t/evbin/boss-event"; printf '%s\n' "$EVENTS" > "$t/events"; }
   CLAUDE_CONFIG_DIR=$t/claude BOSS_HOST=m-7 BOSS_HOST_CLI=$t/cli BOSS_BIN=$evbin BOSS_WATCH_POLL_S=0 BOSS_WATCH_POLLS=$1 "$S" w1 t1 > "$t/out" 2>&1 & local pid=$!
   for _ in $(seq 600); do kill -0 $pid 2>/dev/null || break; sleep 0.2; done; kill $pid 2>/dev/null; wait $pid 2>/dev/null
@@ -136,12 +136,11 @@ fires "envelope taller than the pane: read from the worker's transcript" "ENVELO
 fires "an old envelope in the transcript never fires" "TIMEOUT" 5 "$w/working" "$w/working" "$w/t1" "$w/t1"
 sed 's/ · 2 shells//' "$w/tall" > "$w/noshell"
 fires "idle on a screen whose only change is the status-line clock" "AGENT IDLE WITHOUT ENVELOPE" 20 "$w/noshell" "$w/noshell"
-# Manual mode (EVENTS: boss-event --last before, then from the 3rd read): the newest event `manual` pauses the idle fallback;
-# a manual event newer than the one at start fires once.
-m='{"at":200,"ws":"w1","stage":"manual","note":"dig in"}'
-EVENTS="$m
-$m" fires "the user's own session, idle: no idle fire while the newest event is manual" "TIMEOUT" 20 "$w/noshell" "$w/noshell"
-EVENTS='{"at":100,"ws":"w1","stage":"sent","note":"fix-1"}'"
-$m" fires "a new manual burst wakes the boss once" "WORKER MANUAL (the user is working in it by hand: read its .boss-worker/notes.md and screen, steer only with boss-host note, re-arm the watcher)" 20 "$w/noshell" "$w/noshell"
+# Manual mode (EVENTS: what boss-event --manual says before, then from the 3rd read; bosskit.manual_wake decides it):
+# "on" (a burst a watcher already woke the boss for) pauses the idle fallback; "new" fires once.
+EVENTS="on
+on" fires "the user's own session, idle: no idle fire while the newest event is manual" "TIMEOUT" 20 "$w/noshell" "$w/noshell"
+EVENTS="
+new dig in" fires "a new manual burst wakes the boss once" "WORKER MANUAL (the user is working in it by hand: dig in; read its .boss-worker/notes.md and screen, steer only with boss-host note, re-arm the watcher)" 20 "$w/noshell" "$w/noshell"
 rm -rf "$w"
 exit $fail

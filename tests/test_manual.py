@@ -2,19 +2,34 @@
 
 Run: python3 -m unittest discover -s tests
 """
+import io
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from unittest import mock
 
-from test_kit import BIN, Home, deck_json, load_script, stub_tools  # noqa: F401
+from test_kit import BIN, Home, deck_json, git, load_script, stub_tools  # noqa: F401
 import bosshost  # noqa: E402
 import bosskit  # noqa: E402
 
 WS = "1a2b3c4d-0000-4000-8000-000000000001"
+
+
+HOOK = [sys.executable, os.path.join(BIN, "boss-deck-data.py"), "--prompt"]
+
+
+def hook_env(t):
+    """The hook's env: the test home and fake host, without this machine's own session env."""
+    kit_hosts = os.path.join(os.path.dirname(BIN), "hosts")
+    with mock.patch.dict(os.environ, {"BOSS_HOST_PATH": kit_hosts}):
+        ours = {v for m in bosshost.plugins().values() for v in m["session_env"] + m["terminal_env"]}
+    env = {k: v for k, v in stub_tools(t.tmp, t.fixdir).items() if k not in ours | {"BOSS_SESSION_ID"}}
+    env["BOSS_HOME"] = t.home
+    return env
 
 
 class ManualHome(Home):
@@ -41,7 +56,13 @@ class ManualHome(Home):
         return [(e["at"], e["note"]) for e in bosskit.events(self.bdir) if e["stage"] == "manual"]
 
     def prompt(self, text, at):
-        return self.deck.prompt_hook(self.home, WS, self.wt, text, now=at)
+        return self.deck.prompt_hook(self.home, WS, text, now=at)
+
+    def dispatch(self, at=900, prompt="Repo acme/widgets. Task id: fix-42 ..."):
+        """boss-host create's two events, then the dispatch prompt reaching the hook."""
+        self.ev(at, "brief", prompt)
+        self.ev(at, "sent", "fix-42")
+        self.prompt(prompt, at + 50)
 
     def status(self):
         return json.load(open(os.path.join(self.wt, ".boss-worker", "status.json")))
@@ -49,8 +70,7 @@ class ManualHome(Home):
 
 class PromptHook(ManualHome):
     def test_the_boss_prompts_are_told_from_the_users_own(self):
-        self.ev(900, "sent", "fix-42")
-        self.prompt("Repo acme/widgets. Task id: fix-42 ...", 950)  # the dispatch prompt: the first since `sent`
+        self.dispatch()  # the dispatch prompt matches create's `brief`
         self.ev(1000, "msg", "also cover 429 retries, then rebase on main")
         self.prompt("also cover  429 retries,\nthen rebase on main", 1001)  # boss-host send's text, as typed
         self.assertEqual(self.manual(), [])
@@ -60,8 +80,7 @@ class PromptHook(ManualHome):
         self.assertEqual(self.status()["mode"], "manual")
 
     def test_one_manual_event_per_burst(self):
-        self.ev(900, "sent", "fix-42")
-        self.prompt("dispatch", 950)
+        self.dispatch()
         for at in (1000, 1300, 2000):  # under 30 min apart: one burst
             self.prompt(f"look at line {at}", at)
         self.prompt("back after lunch: try the queue", 2000 + self.deck.BURST_S + 1)
@@ -71,17 +90,75 @@ class PromptHook(ManualHome):
         self.assertEqual([at for at, _ in self.manual()], [1000, 2000 + self.deck.BURST_S + 1, 5100])
 
     def test_status_keeps_the_panes_progress_and_the_pane_keeps_the_mode(self):
-        self.ev(900, "sent", "fix-42")
-        self.prompt("dispatch", 950)
+        self.dispatch()
         self.deck.write_status(self.wt, json.dumps({"tasks_done": 1, "tasks_total": 3, "current": "tests"}), now=960)
         self.prompt("hand-check the parser", 1000)
         self.deck.write_status(self.wt, json.dumps({"tasks_done": 2, "tasks_total": 3, "current": "tests"}), now=1010)
         s = self.status()
         self.assertEqual((s["mode"], s["tasks_done"]), ("manual", 2))
 
+    def test_the_pane_and_the_hook_take_turns_on_status_json(self):
+        self.dispatch()
+        path = os.path.join(self.wt, ".boss-worker", "status.json")
+        for write in (lambda: self.deck.write_status(self.wt, json.dumps({"tasks_done": 1, "tasks_total": 3}), now=960),
+                      lambda: self.prompt("hand-check the parser", 1000)):
+            with bosskit.locked(path):  # the other writer is mid read-modify-replace
+                t = threading.Thread(target=write)
+                t.start()
+                t.join(0.3)
+                self.assertTrue(t.is_alive(), "wrote status.json without the lock")
+            t.join()
+        self.assertEqual((self.status()["mode"], self.status()["tasks_done"]), ("manual", 1))
+
     def test_no_dispatch_row_does_nothing(self):
-        self.assertEqual(self.deck.prompt_hook(self.home, "9f9f9f9f-0000", self.wt, "hi", now=1000), "")
+        self.assertEqual(self.deck.prompt_hook(self.home, "9f9f9f9f-0000", "hi", now=1000), "")
         self.assertFalse(os.path.exists(os.path.join(self.wt, ".boss-worker")))
+
+    def test_the_dispatch_prompt_that_beat_the_ledger_row_leaves_the_users_first_prompt_manual(self):
+        # create starts the agent before it writes the row: the dispatch prompt's hook found no row and did nothing
+        self.ev(900, "brief", "Repo acme/widgets. Task id: fix-42 ...")
+        self.ev(900, "sent", "fix-42")
+        self.prompt("what is this repo's test command?", 2000)  # the user's own first prompt
+        self.assertEqual(self.manual(), [(2000, "what is this repo's test command?")])
+
+    def test_a_boss_message_counts_once_and_not_days_later(self):
+        self.dispatch()
+        self.ev(1000, "msg", "status?")
+        self.prompt("status?", 1001)
+        self.prompt("status?", 1100)  # the user typing the same words: the message was already used
+        self.assertEqual([at for at, _ in self.manual()], [1100])
+        self.ev(5000, "msg", "rebase on main")
+        self.prompt("rebase on main", 5000 + self.deck.MSG_TTL_S + 1)  # never delivered as a prompt; the user, a day on
+        self.assertEqual([at for at, _ in self.manual()], [1100, 5000 + self.deck.MSG_TTL_S + 1])
+
+    def test_an_event_after_the_burst_starts_a_new_one(self):
+        self.dispatch()
+        self.prompt("dig into the parser", 1000)
+        self.ev(1200, "BLOCKED", "waiting on input")  # the watcher fired: the newest event is no longer manual
+        self.prompt("yes, allow it", 1300)  # within 30 min, but the re-armed watcher needs a fresh manual event
+        self.assertEqual([at for at, _ in self.manual()], [1000, 1300])
+
+    def test_the_status_check_is_the_boss_prompt(self):
+        self.dispatch()
+        ask = load_script("boss-status-ask")
+        host = bosshost.get({}, "fake")
+        with mock.patch.object(ask.bosshost, "get", lambda *a: host):
+            ask.main([WS, "-"])
+        self.prompt(ask.text(), int(time.time()))  # as typed into the worker
+        self.assertEqual(self.manual(), [])
+
+    def test_the_worktree_is_the_hosts_never_the_prompts_cwd(self):
+        self.dispatch()
+        other = os.path.join(self.tmp, "other")  # another checkout the session cd'd into
+        os.makedirs(other)
+        git(other, "init", "-q")
+        env = hook_env(self)
+        out = subprocess.run(HOOK, input=json.dumps({"prompt": "hand-check", "cwd": other}), capture_output=True, text=True,
+                             env={**env, "FAKE_SESSION": WS})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(self.status()["mode"], "manual")
+        self.assertFalse(os.path.exists(os.path.join(other, ".boss-worker")))
+        self.assertNotIn(".boss-worker", open(os.path.join(other, ".git", "info", "exclude")).read())
 
 
 class Notes(ManualHome):
@@ -91,8 +168,7 @@ class Notes(ManualHome):
             self.assertEqual(w.main(["note", WS, "--text", text]), 0)
 
     def test_a_note_reaches_the_next_prompt_once_and_is_marked_read(self):
-        self.ev(900, "sent", "fix-42")
-        self.prompt("dispatch", 950)
+        self.dispatch()
         self.note("fix-43 changes the retry table: keep the old column")
         time.sleep(0.001)
         self.note("no rush")
@@ -111,14 +187,37 @@ class Notes(ManualHome):
         self.note("fyi")
         self.assertFalse(os.path.exists(os.path.join(self.fixdir, "calls")))  # the fake host logs every send there
 
+    def test_a_note_resolves_the_worktree_from_the_listing_not_the_hosts_worker(self):
+        host = bosshost.get({}, "fake")
+        host.worker = lambda wid: {"id": WS, "name": "webhooks", "terminals": []}  # superset's snapshot: no worktree in it
+        w = load_script("boss-host")
+        with mock.patch.object(w.bosshost, "get", lambda *a: host), mock.patch("sys.stdout"):
+            self.assertEqual(w.main(["note", WS, "--text", "fyi"]), 0)
+        self.assertEqual(len(os.listdir(os.path.join(self.wt, ".boss-worker", "inbox"))), 1)
+
+    def test_a_note_another_prompt_took_first_is_skipped(self):
+        self.note("first")
+        time.sleep(0.001)
+        self.note("second")
+        box = os.path.join(self.wt, ".boss-worker", "inbox")
+        real, calls = os.replace, []
+
+        def racing(src, dst):  # the other prompt's hook takes "second" while this one moves "first"
+            calls.append(src)
+            if len(calls) == 1:
+                b = sorted(f for f in os.listdir(box) if f.endswith(".md"))[1]
+                real(os.path.join(box, b), os.path.join(box, "read", b))
+            real(src, dst)
+        with mock.patch.object(self.deck.os, "replace", racing):
+            ctx = self.deck.take_notes(self.wt)
+        self.assertTrue(ctx.startswith("1 note from boss"), ctx)
+        self.assertIn("first", ctx)
+        self.assertEqual(len(os.listdir(os.path.join(box, "read"))), 2)
+
     def test_the_hook_prints_the_notes_as_context_and_stays_quiet_outside_a_worker(self):
         self.note("fyi: CI is flaky on node 20")
-        kit_hosts = os.path.join(os.path.dirname(BIN), "hosts")
-        with mock.patch.dict(os.environ, {"BOSS_HOST_PATH": kit_hosts}):  # this machine's own session env stays out
-            ours = {v for m in bosshost.plugins().values() for v in m["session_env"] + m["terminal_env"]}
-        env = {k: v for k, v in stub_tools(self.tmp, self.fixdir).items() if k not in ours | {"BOSS_SESSION_ID"}}
-        env["BOSS_HOME"] = self.home
-        hook = [sys.executable, os.path.join(BIN, "boss-deck-data.py"), "--prompt"]
+        env = hook_env(self)
+        hook = HOOK
         inp = json.dumps({"prompt": "hi", "cwd": self.wt})
         quiet = subprocess.run(hook, input=inp, capture_output=True, text=True, env=env)  # no host session: nothing
         self.assertEqual((quiet.returncode, quiet.stdout), (0, ""))
@@ -131,14 +230,35 @@ class Notes(ManualHome):
 
 
 class SendLogsFirst(ManualHome):
+    def stages(self):
+        return [e["stage"] for e in bosskit.events(bosskit.load().bdir)]  # main() resolves the boss from the cwd
+
     def test_the_msg_event_is_logged_before_the_text_is_typed(self):
         w = load_script("boss-host")
         host = bosshost.get({}, "fake")
         seen = []
-        host.send = lambda wid, text, term=None: seen.append([e["stage"] for e in bosskit.events(bosskit.load().bdir)])  # main() resolves the boss from the cwd
+        host.send = lambda wid, text, term=None: seen.append(self.stages())
         with mock.patch.object(w.bosshost, "get", lambda *a: host):
             self.assertEqual(w.main(["send", WS, "--text", "also cover 429"]), 0)
         self.assertEqual(seen, [["msg"]])
+
+    def test_a_failed_send_takes_its_msg_back(self):
+        w, ask = load_script("boss-host"), load_script("boss-status-ask")
+        host = bosshost.get({}, "fake")
+        host.send = mock.Mock(side_effect=bosshost.Unsupported("fake: the terminal is gone"))
+        bosskit.add_event(bosskit.load(), WS, "sent", "fix-42")
+        with mock.patch.object(w.bosshost, "get", lambda *a: host), mock.patch("sys.stderr"):
+            self.assertEqual(w.main(["send", WS, "--text", "also cover 429"]), 3)
+        with mock.patch.object(ask.bosshost, "get", lambda *a: host), self.assertRaises(bosshost.Unsupported):
+            ask.main([WS, "-"])
+        self.assertEqual(self.stages(), ["sent"])
+
+    def test_create_logs_the_prompts_head_before_sent(self):
+        w = load_script("boss-host")
+        with mock.patch("sys.stdout"):
+            w.main(["create", "--repo", "acme/widgets", "--branch", "fix/42", "--task", "fix-42", "--prompt", "Repo acme/widgets.\n  Task id: fix-42"])
+        evs = [(e["stage"], e["note"]) for e in bosskit.events(bosskit.load().bdir)]
+        self.assertEqual(evs, [("brief", "Repo acme/widgets. Task id: fix-42"), ("sent", "fix-42")])
 
 
 class WatchManual(ManualHome):
@@ -175,22 +295,31 @@ class WatchManual(ManualHome):
         # re-armed: the same burst never fires again, and an idle user session is not "idle without envelope"
         self.assertEqual(self.run_watch(["idle"] * 20), "TIMEOUT")
 
+    def test_a_burst_at_the_baselines_second_or_before_the_watcher_started_still_wakes(self):
+        bosskit.add_event(self.mine, WS, "sent", "fix-42", now=100)
+        got = self.run_watch(["working"] * 20, lambda i: i == 2 and bosskit.add_event(self.mine, WS, "manual", "same second", now=100))
+        self.assertTrue(got.startswith("WORKER MANUAL"), got)
+        bosskit.add_event(self.mine, WS, "msg", "status?", now=200)
+        bosskit.add_event(self.mine, WS, "manual", "landed while the boss re-armed", now=300)
+        self.assertTrue(self.run_watch(["working"] * 20).startswith("WORKER MANUAL"))
+        self.assertEqual(self.run_watch(["idle"] * 20), "TIMEOUT")
+
     def test_blocked_gone_and_idle_after_the_burst_still_fire(self):
         bosskit.add_event(self.mine, WS, "manual", "dig in", now=200)
+        bosskit.manual_wake(self.ctx, WS)  # an earlier watcher woke the boss for it
         self.assertTrue(self.run_watch(["idle", "blocked"]).startswith("AGENT BLOCKED"))
         bosskit.add_event(self.mine, WS, "manual", "dig in", now=300)
+        bosskit.manual_wake(self.ctx, WS)
         self.assertTrue(self.run_watch(["gone"]).startswith("WORKER GONE"))
         bosskit.add_event(self.mine, WS, "msg", "status?", now=400)  # the boss spoke since: idle counts again
         self.assertTrue(self.run_watch(["idle"] * 20).startswith("AGENT IDLE WITHOUT ENVELOPE"))
 
-    def test_boss_event_last_reads_the_newest(self):
+    def test_boss_event_manual_says_new_once_then_on(self):
         bosskit.add_event(self.mine, WS, "sent", "fix-42", now=100)
         bosskit.add_event(self.mine, WS, "manual", "dig in", now=200)
         bosskit.add_event(self.mine, "ffffffff", "sent", "other", now=300)
-        out = subprocess.run([os.path.join(BIN, "boss-event"), "--last", WS[:8]], cwd=self.wt, capture_output=True, text=True)
-        self.assertEqual(json.loads(out.stdout)["stage"], "manual", out.stderr)
-        none = subprocess.run([os.path.join(BIN, "boss-event"), "--last", "99999999"], cwd=self.wt, capture_output=True, text=True)
-        self.assertEqual((none.returncode, none.stdout), (0, ""))
+        ask = lambda ws: subprocess.run([os.path.join(BIN, "boss-event"), "--manual", ws], cwd=self.wt, capture_output=True, text=True)
+        self.assertEqual([ask(WS[:8]).stdout, ask(WS[:8]).stdout, ask("ffffffff").stdout], ["new dig in\n", "on\n", ""])
 
 
 class DeckStage(unittest.TestCase):

@@ -2,8 +2,9 @@
 """boss-event: log one stage of a workspace's lifecycle, for the boss-deck stages and timeline.
 
   boss-event <workspace> <stage> [note...]
-  boss-event --last <workspace>      that workspace's newest event in this boss's log as one JSON line, nothing if none
-                                     (a host plugin's own watcher reads it: a newest `manual` event pauses its idle fire)
+  boss-event --manual <workspace>    "new <note>" the first time a watcher asks about that workspace's newest event when it
+                                     is `manual` (recorded: one wake per burst), "on" after, nothing when the newest is not
+                                     `manual` (a host plugin's own watcher asks each poll: bosskit.manual_wake)
 
 Appends {at, ws, stage, note} to $BOSS_HOME/<project>/bosses/<boss-id>/events.jsonl (paths: bin/bosskit.py).
 The boss logs sent (a dispatch), checked, ready and retired; the watcher (boss-host watch) logs DONE, BLOCKED,
@@ -19,11 +20,10 @@ import bosskit  # noqa: E402
 
 
 def main(argv):
-    if len(argv) == 2 and argv[0] == "--last":
-        ctx = bosskit.load()
-        e = next((e for e in reversed(bosskit.events(ctx.bdir)) if e["ws"][:8] == argv[1][:8]), None)
-        if e:
-            print(json.dumps(e))
+    if len(argv) == 2 and argv[0] == "--manual":
+        word, e = bosskit.manual_wake(bosskit.load(), argv[1])
+        if word:
+            print(f"new {e['note']}" if word == "new" else word)
         return
     if len(argv) < 2 or argv[0].startswith("-"):
         sys.exit(__doc__)

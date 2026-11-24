@@ -6,12 +6,13 @@
 The boss runs this on EVERY workspace it owns before a cleanup, at each status report and at each DONE,
 so the user always has the layover: which workspaces and sessions exist, why each stays, which can go.
 It sends the questions through this boss's host (bin/bosshost.py; a host that needs it clears the input line
-first) and logs a `msg` event. --dry-run prints the text only. Use FULL worker and terminal ids; pass `-` as
+first) and logs a `msg` event with the text, before it types (a worker's prompt hook tells the boss's prompts by it;
+taken back if the send fails). --dry-run prints the text only. Use FULL worker and terminal ids; pass `-` as
 the terminal to let the host pick the worker's agent. Only ask sessions your ledger dispatch rows name as
 yours; for another boss's, boss-mail.
 """
 import os
-import subprocess
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,10 +37,17 @@ def text(who="boss"):
 
 def send(ws, term, who):
     try:
-        cfg = bosskit.load().cfg
+        ctx = bosskit.load()
     except SystemExit:
-        cfg = {}
-    bosshost.get(cfg).send(ws, text(who), None if term == "-" else term)
+        ctx = None
+    body = text(who)
+    e = bosskit.add_event(ctx, ws, "msg", re.sub(r"\s+", " ", body).strip()[:200]) if ctx else None
+    try:
+        bosshost.get(ctx.cfg if ctx else {}).send(ws, body, None if term == "-" else term)
+    except BaseException:
+        if e:
+            bosskit.drop_event(ctx, e)
+        raise
 
 
 def main(argv):
@@ -62,7 +70,6 @@ def main(argv):
             print(f"{ws} {term}\n{text(who)}")
             continue
         send(ws, term, who)
-        subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), "boss-event"), ws, "msg", "status check"])
 
 
 if __name__ == "__main__":

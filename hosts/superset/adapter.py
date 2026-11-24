@@ -52,10 +52,18 @@ class Host(bosshost.Host):
         spaces = spaces.get("workspaces", []) if isinstance(spaces, dict) else []
         return next((w for w in spaces if w.get("id") == ws), {})
 
-    def by_branch(self, branch):
+    def _local(self):
         rows = _json(self.sh("workspaces", "list", "--local", "--json"), [])
-        rows = rows if isinstance(rows, list) else rows.get("workspaces", [])
-        w = next((w for w in rows if w.get("branch") == branch and not w.get("archivedAt")), None)
+        return rows if isinstance(rows, list) else rows.get("workspaces", [])
+
+    def worktree(self, ws):
+        """From `workspaces list` (the snapshot has no worktree path): one quick local call; '' when archived."""
+        w = next((w for w in self._local() if (w.get("id", "").startswith(ws[:8]) or ws.startswith(w.get("id") or "\0"))
+                  and not w.get("archivedAt")), None)
+        return (w or {}).get("worktreePath") or ""
+
+    def by_branch(self, branch):
+        w = next((w for w in self._local() if w.get("branch") == branch and not w.get("archivedAt")), None)
         return {"id": w["id"], "worktree": w.get("worktreePath") or ""} if w else None
 
     def _project(self, repo):

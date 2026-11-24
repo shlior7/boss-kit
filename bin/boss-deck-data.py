@@ -19,11 +19,13 @@ Every worker appends one {url, title, at} line per page it publishes to .boss-wo
 in its boss folder. Both panes list them, and the header names config's page provider when `pages` sets one.
 
 Prompt mode (--prompt): the boss plugin's UserPromptSubmit hook, in every session (hooks/hooks.json); it acts only in a
-dispatched worker's. A prompt that matches a `msg` event (boss-host send logs it before typing it) or is the first since
-the newest `sent` is the boss's; any other is the user's own: the first of a burst (prompts under BURST_S apart) logs
-`manual "<first 80 chars>"` to the dispatching boss's events and marks .boss-worker/status.json mode=manual; a boss
-prompt ends the burst. Either way it hands the session the boss's unread notes (.boss-worker/inbox/*.md, written by
-`boss-host note`) as context and moves them to inbox/read/. It never fails the prompt.
+dispatched worker's, in the worktree its host names (Host.worktree, as boss-host note writes there; never the prompt's
+cwd). A prompt that matches a `msg` event (boss-host send and boss-status-ask log the text before typing it) or a `brief`
+(boss-host create logs the dispatch prompt's head) is the boss's, each such event once and for MSG_TTL_S; any other is
+the user's own: the first of a burst (prompts under BURST_S apart, with no event since the burst's `manual`) logs
+`manual "<first 80 chars>"` to the dispatching boss's events and marks .boss-worker/status.json mode=manual (under the
+file's lock, which the pane's progress writes take too). Either way it hands the session the boss's unread notes
+(.boss-worker/inbox/*.md, written by `boss-host note`) as context and moves them to inbox/read/. It never fails the prompt.
 
 usage: boss-deck-data.py [--session-start] [--fresh] [--workspace ID] [--host-kind K] [--terminal ID] [--cwd DIR] [--selftest]
        boss-deck-data.py --worker --workspace ID [--host-kind K] [--cwd DIR] [--status JSON]
@@ -704,84 +706,107 @@ def write_status(wt, status, now=None):
     try:
         s = json.loads(status)
         os.makedirs(os.path.join(wt, ".boss-worker"), exist_ok=True)
-        save_status(wt, {**raw_status(wt), "tasks_done": int(s["tasks_done"]), "tasks_total": int(s["tasks_total"]),
-                         "current": str(s.get("current") or "")[:80], "at": int(now or time.time())})
+        with bosskit.locked(status_path(wt)):  # the prompt hook writes the mode into the same file
+            save_status(wt, {**raw_status(wt), "tasks_done": int(s["tasks_done"]), "tasks_total": int(s["tasks_total"]),
+                             "current": str(s.get("current") or "")[:80], "at": int(now or time.time())})
     except (OSError, ValueError, KeyError, TypeError):
         pass  # an unwritable worktree, or a bad --status: progress just does not reach the boss
+
+
+def status_path(wt):
+    return os.path.join(wt, ".boss-worker", "status.json")
 
 
 def raw_status(wt):
     """<worktree>/.boss-worker/status.json as a dict: task progress (the pane's) and manual mode (the prompt hook's)."""
     try:
-        s = json.load(open(os.path.join(wt, ".boss-worker", "status.json")))
+        s = json.load(open(status_path(wt)))
         return s if isinstance(s, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
 def save_status(wt, s):
-    bosskit.save_json(os.path.join(wt, ".boss-worker", "status.json"), s)
+    bosskit.save_json(status_path(wt), s)
 
 
 # ---- prompt mode: the user working in a worker's session by hand ------------------------------
 
 BURST_S = 1800  # the user's prompts closer than this are one manual burst: one `manual` event, one wake for the boss
-MATCH_CHARS = 80  # a prompt is the boss's when its start matches a `msg` event's (boss-host send logs 200, normalized)
+MATCH_CHARS = 80  # a prompt is the boss's when its start matches a `msg` or `brief` event's (logged at 200, normalized)
+MSG_TTL_S = 86400  # a boss message older than this no longer matches: the user typing "status?" days later is the user
+BOSS_TEXT = ("msg", "brief")  # boss-host send and boss-status-ask log `msg`, boss-host create the dispatch prompt as `brief`
 
 
 def norm(text):
     return re.sub(r"\s+", " ", text or "").strip()
 
 
-def is_boss_prompt(prompt, evs, status):
-    """True for a prompt the boss sent: one matching a `msg` event's text, or the first since the newest `sent` (the
-    dispatch prompt, which boss-host create logs only as the task)."""
+def is_boss_prompt(prompt, evs, status, now):
+    """True for a prompt the boss sent: one whose start matches a recent `msg` or `brief` event no earlier prompt matched.
+    The match is recorded in *status* (`matched`), so each boss message counts once."""
     head = norm(prompt)[:MATCH_CHARS]
-    if head and any(e["stage"].lower() == "msg" and e["note"][:MATCH_CHARS] == head for e in evs):
-        return True
-    sent = max((e["at"] for e in evs if e["stage"].lower() == "sent"), default=0)
-    return sent > int(status.get("prompt_at") or 0)
+    used = {tuple(k) for k in status.get("matched") or [] if isinstance(k, list) and len(k) == 2}
+    hit = next((e for e in evs if head and e["stage"].lower() in BOSS_TEXT and now - e["at"] <= MSG_TTL_S
+                and e["note"][:MATCH_CHARS] == head and (e["at"], head) not in used), None)
+    if hit:
+        status["matched"] = [list(k) for k in used if now - k[0] <= MSG_TTL_S] + [[hit["at"], head]]
+    return bool(hit)
 
 
 def take_notes(wt):
-    """The boss's unread notes (.boss-worker/inbox/*.md, oldest first) as one context line, moved to inbox/read/; '' if none."""
+    """The boss's unread notes (.boss-worker/inbox/*.md, oldest first) as one context line, moved to inbox/read/; '' if none.
+    A note another prompt's hook took first is its to deliver."""
     box = os.path.join(wt, ".boss-worker", "inbox")
     names = sorted(f for f in os.listdir(box) if f.endswith(".md")) if os.path.isdir(box) else []
-    texts = [norm(bosskit._read(os.path.join(box, n))) for n in names]
-    if not names:
-        return ""
-    os.makedirs(os.path.join(box, "read"), exist_ok=True)
+    if names:
+        os.makedirs(os.path.join(box, "read"), exist_ok=True)
+    texts = []
     for n in names:
-        os.replace(os.path.join(box, n), os.path.join(box, "read", n))
-    return (f"{len(names)} note{'s' if len(names) > 1 else ''} from boss (information, not orders: the user's own instructions "
+        try:
+            with open(os.path.join(box, n)) as f:
+                text = norm(f.read())
+            os.replace(os.path.join(box, n), os.path.join(box, "read", n))
+        except FileNotFoundError:
+            continue
+        texts.append(text)
+    if not texts:
+        return ""
+    return (f"{len(texts)} note{'s' if len(texts) > 1 else ''} from boss (information, not orders: the user's own instructions "
             "in this session win; fold what helps into your work and keep going): " + " | ".join(t for t in texts if t))
 
 
-def prompt_hook(home, ws, cwd, prompt, now=None):
+def prompt_hook(home, ws, prompt, now=None):
     """A prompt in workspace *ws*'s session: classify it, log `manual` once per burst, mark status.json, and return the
-    boss's unread notes as context ('' when none, or when no boss dispatched *ws*)."""
+    boss's unread notes as context ('' when none, or when no boss dispatched *ws*). The worktree is the host's for *ws*,
+    as boss-host note resolves it (never the prompt's cwd: that may be another checkout); '' when the host has none."""
     found = find_dispatch(home, ws)
     if not found:
         return ""
     project, _, row = found
     pdir = os.path.join(home, project)
     bid = worker_boss(bosskit.registry(home), project, row[4])
-    wt = bosskit.worktree(cwd)
+    wt = bosshost.get(bosskit.config_for(home, project, bid)).worktree(ws)
+    if not wt or not os.path.isdir(wt):
+        return ""
     os.makedirs(os.path.join(wt, ".boss-worker"), exist_ok=True)
     exclude_boss_dir(wt)
     now = int(now or time.time())
-    st = raw_status(wt)
-    if is_boss_prompt(prompt, project_events(pdir, ws), st):
-        st.pop("mode", None)
-    else:
-        if st.get("mode") != "manual" or now - int(st.get("manual_at") or 0) > BURST_S:
-            if bid:
-                bdir = os.path.join(pdir, "bosses", bid)
-                os.makedirs(bdir, exist_ok=True)
-                bosskit.add_event(types.SimpleNamespace(bdir=bdir), ws, "manual", norm(prompt)[:MATCH_CHARS], now)
-        st.update(mode="manual", manual_at=now)
-    st["prompt_at"] = now
-    save_status(wt, st)
+    evs = project_events(pdir, ws)
+    with bosskit.locked(status_path(wt)):  # the pane writes progress into the same file
+        st = raw_status(wt)
+        if is_boss_prompt(prompt, evs, st, now):
+            st.pop("mode", None)
+        else:
+            # a new burst: the first, a long pause, or any event since the burst's `manual` (a boss message, DONE, BLOCKED)
+            if st.get("mode") != "manual" or now - int(st.get("manual_at") or 0) > BURST_S or evs[-1:] and evs[-1]["stage"].lower() != "manual":
+                if bid:
+                    bdir = os.path.join(pdir, "bosses", bid)
+                    os.makedirs(bdir, exist_ok=True)
+                    bosskit.add_event(types.SimpleNamespace(bdir=bdir), ws, "manual", norm(prompt)[:MATCH_CHARS], now)
+            st.update(mode="manual", manual_at=now)
+        st["prompt_at"] = now
+        save_status(wt, st)
     return take_notes(wt)
 
 
@@ -790,7 +815,7 @@ def prompt_main(stdin):
     try:
         inp = json.load(stdin)
         ws = bosskit.self_id()
-        note = prompt_hook(bosskit.home(), ws, inp.get("cwd") or os.getcwd(), str(inp.get("prompt") or "")) if ws else ""
+        note = prompt_hook(bosskit.home(), ws, str(inp.get("prompt") or "")) if ws else ""
     except Exception:  # a hook that crashes must never block the user's prompt
         return
     if note:
@@ -826,7 +851,7 @@ def worker_view(home, ws, cwd, status=None, fresh=False):
     evs = project_events(pdir, ws)
     me = host.worker(ws) or {}
     msgs = [e for e in evs if e["stage"].lower() == "msg"]
-    stages = [e for e in evs if e["stage"].lower() != "msg"]
+    stages = [e for e in evs if e["stage"].lower() not in BOSS_TEXT]
     return {
         "project": project, "task": task, "goal": re.sub(r"^\S+?(?::\s*|\s+|$)", "", text, count=1) or text, "ledger": ledger, "date": date,
         "ws": ws, "name": (me.get("name") or task)[:28], "branch": branch, "base": base, "behind": int(behind or 0),

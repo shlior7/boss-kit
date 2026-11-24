@@ -1707,7 +1707,8 @@ class Hosts(Home):
                                          ["fake", "send", "new00001", "also   cover 429", None]])
         ctx = bosskit.load(self.wt)
         self.assertEqual([(e["ws"], e["stage"], e["note"]) for e in bosskit.events(ctx.bdir)],
-                         [("new00001", "sent", "fix-42: retry webhooks"), ("new00001", "msg", "also cover 429")])
+                         [("new00001", "brief", "fix-42: retry webhooks more"), ("new00001", "sent", "fix-42: retry webhooks"),
+                          ("new00001", "msg", "also cover 429")])
         self.assertEqual(json.loads(run("session").stdout), {"kind": "fake", "id": "boss-1", "terminal": ""})
 
     def test_boss_host_create_writes_the_dispatch_row_first_in_todays_section(self):
