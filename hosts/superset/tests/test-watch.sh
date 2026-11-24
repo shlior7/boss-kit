@@ -137,7 +137,8 @@ fires "idle on a screen whose only change is the status-line clock" "AGENT IDLE 
 rm -rf "$w"
 # The transcript read is pinned to the watched agent's own session, and --task drops another task's envelope.
 # pin <polls> <what happens at poll 3> [<watch.sh args after the terminal>]: the watcher's output (first stdout line, then "stderr: ..." lines);
-# NOREG=1 leaves the worker out of the session registry.
+# NOREG=1 leaves the worker out of the session registry; CREATED=<ms> is the terminal's createdAt (default 1000000, before the worker's
+# session started; later = the host restarted); OLDLIVE=1 keeps the older session alive too.
 # Two transcripts in the worker's project dir: an older session's (holds a task-old envelope) and the worker's own (holds none).
 # The session registry names both; the terminal was created at 1000000 s, the worker's session started two seconds later.
 # what: touch-old (the older session's file becomes the newest), own-envelope (the worker posts its own), own-foreign (the worker's
@@ -146,8 +147,10 @@ env_line(){ jq -cn --arg t "$2" --arg s "$3" '{type: "assistant", message: {cont
 pin(){ local t pd; t=$(mktemp -d); pd=$t/claude/projects/-work-acme-widgets; mkdir -p "$pd" "$t/claude/sessions"
   env_line x task-old "an older session" > "$pd/old-sess.jsonl"; echo '{"type":"user","message":{"content":"go"}}' > "$pd/own-sess.jsonl"
   touch -t 202001010000 "$pd/old-sess.jsonl"; touch -t 202601010000 "$pd/own-sess.jsonl"
-  echo '{"pid": 1, "sessionId": "old-sess", "cwd": "/work/acme/widgets", "startedAt": 100000}' > "$t/claude/sessions/1.json"
-  echo '{"pid": '$$', "sessionId": "own-sess", "cwd": "/work/acme/widgets", "startedAt": 1002000}' > "$t/claude/sessions/2.json"
+  local dead; dead=$(sh -c 'echo $$')   # a pid that has exited: the older session ended
+  echo '{"pid": '$([ -n "$OLDLIVE" ] && echo $$ || echo "$dead")', "sessionId": "old-sess", "cwd": "/work/acme/widgets", "startedAt": 100000, "updatedAt": 200000}' > "$t/claude/sessions/1.json"
+  echo '{"pid": '$$', "sessionId": "own-sess", "cwd": "/work/acme/widgets", "startedAt": 1002000, "updatedAt": 1900000}' > "$t/claude/sessions/2.json"
+  echo "${CREATED:-1000000}" > "$t/created"
   [ -n "$NOREG" ] && rm "$t/claude/sessions/2.json"
   printf '%s' "$2" > "$t/what"
   cat > "$t/cli" <<'C'
@@ -155,7 +158,7 @@ pin(){ local t pd; t=$(mktemp -d); pd=$t/claude/projects/-work-acme-widgets; mkd
 d=$(dirname "$0"); pd=$d/claude/projects/-work-acme-widgets
 case "$1 $2" in
   "workspaces list") echo '[{"id":"w1","worktreePath":"/work/acme/widgets"}]' ;;
-  "terminals list") echo '{"sessions":[{"terminalId":"t1","createdAt":1000000},{"terminalId":"t9","createdAt":5}]}' ;;
+  "terminals list") echo '{"sessions":[{"terminalId":"t1","createdAt":'$(cat "$d/created")'},{"terminalId":"t9","createdAt":5}]}' ;;
   "terminals read") n=$(($(cat "$d/n" 2>/dev/null || echo 0) + 1)); echo $n > "$d/n"
     if [ $n -eq 3 ]; then case $(cat "$d/what") in
       touch-old) touch "$pd/old-sess.jsonl" ;;
@@ -176,6 +179,12 @@ pinned "the worker's own envelope fires" "ENVELOPE DONE|widgets-12|mine" 6 own-e
 pinned "--task: its own task's envelope fires" "ENVELOPE DONE|widgets-12|mine" 6 own-envelope --task widgets-12
 pinned "--task: another task's envelope in the worker's own transcript never fires" "TIMEOUT" 6 own-foreign --task widgets-12
 pinned "no --task: that envelope fires" "ENVELOPE DONE|other-9|not mine" 6 own-foreign
+# the host restarted: the terminal's createdAt is later than the session's startedAt; the one live session is still the worker's
+CREATED=2000000000 pinned "host restart (createdAt after startedAt): the one live session is pinned, no stderr line" "ENVELOPE DONE|widgets-12|mine" 6 own-envelope
+CREATED=2000000000 pinned "host restart: the older session's envelope in the newest file never fires" "TIMEOUT" 6 touch-old
+# two live sessions: the one started closest after createdAt, else the most recently updated (said on stderr)
+OLDLIVE=1 pinned "two live sessions: the one started after the terminal" "ENVELOPE DONE|widgets-12|mine|stderr: watch.sh: several live sessions in /work/acme/widgets; took the one started closest after the terminal" 6 own-envelope
+OLDLIVE=1 CREATED=2000000000 pinned "two live sessions, host restart: the most recently updated" "ENVELOPE DONE|widgets-12|mine|stderr: watch.sh: several live sessions in /work/acme/widgets; took the most recently updated" 6 own-envelope
 got=$(NOREG=1 pin 6 touch-old | tr '\n' '|')
 case "$got" in "ENVELOPE DONE|task-old|an older session|stderr: watch.sh: could not resolve the agent's own session; reading the newest transcript in "*"/projects/-work-acme-widgets (any session's)|")
   echo "ok   unresolved session: falls back to the newest transcript and says so on one stderr line";;

@@ -63,14 +63,22 @@ S=${BOSS_HOST_CLI:-superset}
 H=${BOSS_HOST:-$("$S" hosts list --json | jq -r 'if type=="array" then .[0].id else .hosts[0].id end')}
 WT=$("$S" workspaces list --host "$H" --json 2>/dev/null | jq -r --arg w "$W" '(if type == "array" then . else .workspaces end)[]? | select(.id == $w) | .worktreePath // empty')
 TD=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$(printf %s "$WT" | sed 's/[^A-Za-z0-9]/-/g')
-# The agent's own session: the live Claude session in this worktree that started closest after the terminal was created.
-# Prints the transcript path, nothing when it cannot tell.
-own(){ local c f
+# The agent's own session: among the live Claude sessions (registry sessions/<pid>.json) in this worktree with a transcript, the only
+# one; of several, the one started closest after the terminal's createdAt (a host restart moves createdAt past startedAt: then
+# none qualifies), else the most recently updated, said on stderr. Prints the transcript path, nothing when there is none.
+own(){ local c f rows pick
+  [ -n "$WT" ] || return 0
   c=$("$S" terminals list --workspace "$W" --host "$H" --json 2>/dev/null | jq -r --arg t "$T" '(.sessions // .)[]? | select(.terminalId == $t) | .createdAt // empty' | head -1)
-  [ -n "$c" ] && [ -n "$WT" ] || return 0
-  for f in "${TD%/projects/*}"/sessions/*.json; do [ -f "$f" ] || continue
-    jq -r --argjson c "$c" --arg w "$WT" 'select(.cwd == $w and .startedAt >= $c - 5000) | "\(.startedAt - $c) \(.pid) \(.sessionId)"' "$f" 2>/dev/null; done |
-    sort -n | while read -r _ pid sid; do kill -0 "$pid" 2>/dev/null && [ -f "$TD/$sid.jsonl" ] && { echo "$TD/$sid.jsonl"; break; }; done; }
+  rows=$(for f in "${TD%/projects/*}"/sessions/*.json; do [ -f "$f" ] || continue
+    jq -r --arg w "$WT" 'select(.cwd == $w) | "\(.pid) \(.sessionId) \(.startedAt // 0) \(.updatedAt // 0)"' "$f" 2>/dev/null; done |
+    while read -r pid sid st up; do kill -0 "$pid" 2>/dev/null && [ -f "$TD/$sid.jsonl" ] && echo "$sid $st $up"; done)
+  [ -n "$rows" ] || return 0
+  if [ "$(echo "$rows" | wc -l)" -gt 1 ]; then
+    pick=$(echo "$rows" | awk -v c="${c:-0}" '$2 >= c - 5000 && c > 0 { print $2 - c, $1 }' | sort -n | head -1 | cut -d' ' -f2)
+    if [ -n "$pick" ]; then echo "watch.sh: several live sessions in $WT; took the one started closest after the terminal" >&2
+    else pick=$(echo "$rows" | sort -k3,3nr | head -1 | cut -d' ' -f1); echo "watch.sh: several live sessions in $WT; took the most recently updated" >&2; fi
+    echo "$TD/$pick.jsonl"
+  else echo "$TD/${rows%% *}.jsonl"; fi; }
 OWN=$(own)
 [ -z "$OWN" ] && echo "watch.sh: could not resolve the agent's own session; reading the newest transcript in $TD (any session's)" >&2
 said(){ local f=$OWN; [ -n "$f" ] || { [ -n "$WT" ] && f=$(ls -t "$TD"/*.jsonl 2>/dev/null | head -1) && [ -n "$f" ]; } || return 0
