@@ -94,6 +94,7 @@ function session(on: On, deck: WorkerDeck | object, opened: string[], runs: stri
     return { value: { isPlaced: true as const } }
   })
   on('process.run', async (_$, e) => {
+    if (e.argv[0] === 'git') return { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv.includes('boss-host-session')) {
       runs.push(['boss-host-session'])
       if (failedLookups-- > 0) return { value: { exitCode: 1, stdout: '', stderr: 'Traceback', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -218,6 +219,7 @@ test('a worker session onboarded as the boss mid-session becomes the boss on its
     return { value: { isPlaced: true as const } }
   })
   on('process.run', async (_$, e) => {
+    if (e.argv[0] === 'git') return { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }
     const sess = e.argv.includes('boss-host-session')
     if (!sess) runs.push([...e.argv])
     const stdout = JSON.stringify(sess ? { kind: 'hosta', id: 'ws-me', terminal: '' } : { at: 0, worker: null })
@@ -261,6 +263,7 @@ function plain(on: On, local: () => string, opened: string[], runs: string[][], 
   on('command.register', async (_$, e) => (commands.push(e.name), { value: { command: e.name } }) as never)
   on('ui.open', async (_$, e) => (opened.push(e.title ?? ''), { value: { isPlaced: true as const } }))
   on('process.run', async (_$, e) => {
+    if (e.argv[0] === 'git') return { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }
     const sess = e.argv.includes('boss-host-session')
     if (!sess) runs.push([...e.argv])
     const stdout = JSON.stringify(sess ? {} : { at: 0, next: '', attention: [], workers: [], watchers: [], prs: [], board: {} })

@@ -62,6 +62,16 @@ function self($: EngineInterface): Promise<Self> {
   })
   return asked
 }
+let top: Promise<string | undefined> | undefined
+/** This session's CLAUDE.local.md, at its worktree's top as bosskit reads the boss marker (worktree(), boss_marker), so a
+ * session started in a subfolder still finds it; outside git, in the session's directory. The top is asked once per
+ * session start; a failed ask (not a worktree yet, or git failed) is not kept: the next read asks again. */
+async function localMd($: EngineInterface) {
+  const asked = (top ??= $.session.cwd().then(cwd => $.process.run(['git', 'rev-parse', '--show-toplevel'], { cwd, timeoutMs: 10_000 })).then(r => (r.exitCode === 0 ? r.stdout.trim() : undefined), () => undefined))
+  const dir = await asked
+  if (!dir && top === asked) top = undefined
+  return $.fs.read(dir ? `${dir}/CLAUDE.local.md` : 'CLAUDE.local.md').catch(() => '')
+}
 const kindArgs = (s: Self) => (s.kind ? ['--host-kind', s.kind] : [])
 const idArgs = (s: Self) => (s.id ? ['--workspace', s.id] : [])
 
@@ -96,10 +106,12 @@ async function workerRefresh($: EngineInterface, patch: Partial<Live> = {}) {
   const status = JSON.stringify(progress((await read($, live))?.tasks ?? []))
   const argv = [...DATA_CMD, ...kindArgs(me), '--worker', ...idArgs(me), '--cwd', await $.session.cwd(), '--status', status]
   const { exitCode, stdout, stderr } = await $.process.run(argv, { timeoutMs: 90_000 })
+  // Promoted to the boss while this ran (up to 90 s): drop it, or the worker view and title would come back.
+  if (!workerNow()) return
   const got: WorkerDeck | null = exitCode === 0 ? JSON.parse(stdout) : null
   loadedKit ??= got?.kit || undefined
   await update($, mine, cur => got ?? (cur ? { ...cur, error: stderr.slice(0, 200) } : null))
-  if (got?.worker && !workerShown) {
+  if (got?.worker && !workerShown && workerNow()) {
     workerShown = true
     void $.ui.open({ id: PANE, title: WORKER_TITLE })
   }
@@ -161,7 +173,7 @@ async function workerPeek($: EngineInterface, w: Worker) {
 
 /** Picks this session's role and starts its pane. A failed host lookup decides nothing: it asks again a minute later. */
 async function start($: EngineInterface) {
-  const local = await $.fs.read('CLAUDE.local.md').catch(() => '')
+  const local = await localMd($)
   const me = await self($)
   if (me.failed) {
     $.clock.after(REFRESH_MS, () => void start($))
@@ -183,6 +195,8 @@ async function start($: EngineInterface) {
 async function startBoss($: EngineInterface) {
   role = 'boss'
   loadedKit = undefined
+  // A worker deck from before (a promotion, or a reload that kept the atoms) is not this session's any more.
+  void update($, mine, () => null)
   void $.ui.open({ id: PANE, title: TITLE })
   void refresh($, true)
   $.clock.every(REFRESH_MS, () => void refresh($))
@@ -190,18 +204,18 @@ async function startBoss($: EngineInterface) {
 
 /** Read through a call so the re-check after an await is not narrowed away. */
 const bossNow = () => role === 'boss'
+const workerNow = () => role === 'worker'
 
 /** A session that is not the boss yet but whose CLAUDE.local.md now marks it the boss (`/boss onboard` mid-session)
  * becomes the boss, as start() would have made it; never the reverse. True when it switched. */
 async function promote($: EngineInterface) {
   if (role === 'boss') return false
-  const local = await $.fs.read('CLAUDE.local.md').catch(() => '')
+  const local = await localMd($)
   const me = await self($)
   // Re-checked after the awaits: a tick and /boss-deck may race here, and only the first switches.
   if (bossNow() || me.failed || !isBoss(local, me.id)) return false
   waitTimer?.cancel()
   waitTimer = undefined
-  void update($, mine, () => null)
   await startBoss($)
   return true
 }
@@ -209,6 +223,7 @@ async function promote($: EngineInterface) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     hostSession = undefined
+    top = undefined
     // Every session has /boss-deck: outside a boss or a dispatched worker it says how to set one up.
     await $.command.register({ name: 'boss-deck', description: 'Open the boss pane (or this worker\'s) and refresh it now' })
     await start($)
@@ -219,7 +234,10 @@ export const register: Register = on => {
     if (await promote($)) return { text: 'Boss pane opened.' }
     if (role === 'worker') {
       await workerRefresh($)
-      if (!(await read($, mine))?.worker) return { text: `${NOT_BOSS} No boss ledger has a dispatch row for this workspace either.` }
+      const shown = (await read($, mine))?.worker
+      // The timer promoted this session while the refresh ran.
+      if (bossNow()) return { text: 'Boss pane opened.' }
+      if (!shown) return { text: `${NOT_BOSS} No boss ledger has a dispatch row for this workspace either.` }
       await $.ui.open({ id: PANE, title: WORKER_TITLE })
       return { text: 'Worker pane refreshed.' }
     }
@@ -340,9 +358,9 @@ export const register: Register = on => {
       </Text>
     )
 
-    // A worker session: its own dispatch, top to bottom; empty sections drop out.
+    // A worker session: its own dispatch, top to bottom; empty sections drop out. Never in the boss's session.
     const mw = await read($, mine)
-    if (role === 'worker' || mw?.worker) {
+    if (role !== 'boss' && (role === 'worker' || mw?.worker)) {
       const v = mw?.worker
       if (!v) return <Text dimColor>{mw?.error ? `data error: ${mw.error}` : 'loading…'}</Text>
       const l = await read($, live)
