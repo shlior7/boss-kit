@@ -1,43 +1,106 @@
 #!/bin/bash
-# mem-gate -- <command...>
+# mem-gate [--lane gate|server] -- <command...>
 # Machine-wide admission gate for heavy local runs (full test suites, Playwright stacks, builds).
-# Waits for a free slot (MEM_GATE_SLOTS, default 2) and for memory headroom, then runs the command.
+# Waits for a free slot and for memory headroom, then runs the command.
 # Headroom = the kernel's pressure level is normal (kern.memorystatus_vm_pressure_level 1; 2 = warn, 4 = critical) AND
 # kern.memorystatus_level (available %) >= MEM_GATE_MIN_FREE (default 25). Swap % is shown but not gated: macOS keeps
 # swap files long after pressure ends, so a swap threshold would block forever.
 # Slots are lock dirs under $MEM_GATE_DIR (default ~/.cache/mem-gate); a dead holder's slot is reclaimed.
-# `mem-gate --status` prints free %, swap % and the slot holders. Exit code is the command's.
+#
+# Lanes: `gate` (default; MEM_GATE_SLOTS, default 2) is for runs that finish: lint, types, tests, builds.
+# `server` (MEM_GATE_SERVER_SLOTS, default 1) is for processes that live for hours: dev servers, demo recorders. They have
+# their own cap so one cannot starve the short gates, and they still wait for the same memory headroom.
+#
+# Idle release: a holder older than MEM_GATE_TTL seconds (default 1200) whose whole process tree has used ~0% CPU
+# (<= 1%) for MEM_GATE_IDLE seconds (default 600) loses its slot. The process is NOT signalled or killed; it keeps running,
+# only no longer counted, and a line goes to $DIR/log. A busy holder is never released, however long it runs.
+# MEM_GATE_POLL (default 20) is the seconds between samples and between a waiter's retries.
+#
+# `mem-gate --status` prints free %, swap %, each holder's age and idle time, and the queue (depth, oldest wait).
+# Exit code is the command's.
 set -u
-DIR=${MEM_GATE_DIR:-$HOME/.cache/mem-gate}; SLOTS=${MEM_GATE_SLOTS:-2}
-MIN_FREE=${MEM_GATE_MIN_FREE:-25}; POLL=${MEM_GATE_POLL:-20}
+DIR=${MEM_GATE_DIR:-$HOME/.cache/mem-gate}; SLOTS=${MEM_GATE_SLOTS:-2}; SERVER_SLOTS=${MEM_GATE_SERVER_SLOTS:-1}
+MIN_FREE=${MEM_GATE_MIN_FREE:-25}; POLL=${MEM_GATE_POLL:-20}; TTL=${MEM_GATE_TTL:-1200}; IDLE=${MEM_GATE_IDLE:-600}
 mkdir -p "$DIR"
 
 free_pct() { sysctl -n kern.memorystatus_level 2>/dev/null || echo 0; }
 level() { sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null || echo 4; }
 swap_pct() { sysctl -n vm.swapusage | awk '{t=$3; u=$6; gsub("M","",t); gsub("M","",u); print (t+0>0)? int(u*100/t) : 0}'; }
-reap() { for s in "$DIR"/slot.*; do [ -d "$s" ] || continue; p=$(cat "$s/pid" 2>/dev/null); kill -0 "$p" 2>/dev/null || rm -rf "$s"; done; }
+reap() {
+  for s in "$DIR"/slot.* "$DIR"/server.*; do [ -d "$s" ] || continue; p=$(cat "$s/pid" 2>/dev/null); kill -0 "$p" 2>/dev/null || rm -rf "$s"; done
+  for w in "$DIR"/wait.*; do [ -f "$w" ] || continue; kill -0 "${w##*.}" 2>/dev/null || rm -f "$w"; done
+}
+fmt() { if [ "$1" -ge 3600 ]; then printf '%dh%02dm' $(($1 / 3600)) $(($1 % 3600 / 60)); elif [ "$1" -ge 60 ]; then printf '%dm' $(($1 / 60)); else printf '%ds' "$1"; fi; }
+# CPU seconds used so far by the processes under pid $1, not counting the subtree of pid $2 (the sampler).
+tree_cpu() {
+  ps -axo pid=,ppid=,time= | awk -v root="$1" -v skip="$2" '
+    { par[$1] = $2; n = split($3, a, ":"); t = 0; for (i = 1; i <= n; i++) t = t * 60 + a[i]; cpu[$1] = t }
+    END { for (p in par) { x = p; while (x != "" && x != 0) { if (x == skip) break; if (x == root) { s += cpu[p]; break } x = par[x] } } printf "%.2f\n", s }'
+}
 
 if [ "${1:-}" = "--status" ]; then
-  reap; echo "pressure_level=$(level) free=$(free_pct)% swap=$(swap_pct)% slots=$SLOTS min_free=$MIN_FREE"
-  for s in "$DIR"/slot.*; do [ -d "$s" ] && echo "  $(basename "$s"): pid $(cat "$s/pid") $(cat "$s/cmd" 2>/dev/null)"; done; exit 0
+  reap; now=$(date +%s)
+  echo "pressure_level=$(level) free=$(free_pct)% swap=$(swap_pct)% slots=$SLOTS server_slots=$SERVER_SLOTS min_free=$MIN_FREE ttl=${TTL}s idle=${IDLE}s"
+  for s in "$DIR"/slot.* "$DIR"/server.*; do
+    [ -d "$s" ] || continue
+    start=$(cat "$s/start" 2>/dev/null || echo "$now"); idle=$(cat "$s/idle_since" 2>/dev/null || echo "$start")
+    echo "  $(basename "$s"): pid $(cat "$s/pid") age $(fmt $((now - start))) idle $(fmt $((now - idle))) $(cat "$s/cmd" 2>/dev/null)"
+  done
+  n=0; oldest=$now; lanes=""
+  for w in "$DIR"/wait.*; do
+    [ -f "$w" ] || continue; read -r since lane _ < "$w"; n=$((n + 1)); [ "$since" -lt "$oldest" ] && oldest=$since
+    case "$lanes" in *"$lane"*) ;; *) lanes="$lanes $lane" ;; esac
+  done
+  if [ "$n" -gt 0 ]; then
+    per=""; for l in $lanes; do per="$per, $l $(cat "$DIR"/wait.* | awk -v l="$l" '$2 == l' | wc -l | tr -d ' ')"; done
+    echo "  queue: $n waiting (${per#, }), oldest $(fmt $((now - oldest)))"
+  else echo "  queue: 0 waiting"; fi
+  [ -s "$DIR/log" ] && echo "  releases: $DIR/log"
+  exit 0
 fi
-[ "${1:-}" = "--" ] && shift
-[ $# -gt 0 ] || { echo "usage: mem-gate -- <command...> | mem-gate --status" >&2; exit 2; }
 
-said=""; slot=""
+lane=gate
+if [ "${1:-}" = "--lane" ]; then lane=${2:-}; shift 2 2>/dev/null; fi
+[ "${1:-}" = "--" ] && shift
+case "$lane" in gate) prefix=slot; cap=$SLOTS ;; server) prefix=server; cap=$SERVER_SLOTS ;; *) echo "mem-gate: unknown lane '$lane' (gate or server)" >&2; exit 2 ;; esac
+[ $# -gt 0 ] || { echo "usage: mem-gate [--lane gate|server] -- <command...> | mem-gate --status" >&2; exit 2; }
+
+sampler=""; slot=""
+# Free what is ours on exit; the slot only if it is still ours (an idle release may have handed it on).
+trap '[ -n "$sampler" ] && kill "$sampler" 2>/dev/null; rm -f "$DIR/wait.$$"; [ -n "$slot" ] && [ "$(cat "$slot/pid" 2>/dev/null)" = "$$" ] && rm -rf "$slot"' EXIT
+echo "$(date +%s) $lane $*" | cut -c1-140 > "$DIR/wait.$$"
+said=""
 while :; do
   reap
   f=$(free_pct); w=$(swap_pct); l=$(level)
   if [ "${l:-4}" -eq 1 ] && [ "${f:-0}" -ge "$MIN_FREE" ]; then
-    for i in $(seq 1 "$SLOTS"); do
-      if mkdir "$DIR/slot.$i" 2>/dev/null; then echo $$ > "$DIR/slot.$i/pid"; echo "$*" | cut -c1-120 > "$DIR/slot.$i/cmd"; slot="$DIR/slot.$i"; break; fi
+    for i in $(seq 1 "$cap"); do
+      if mkdir "$DIR/$prefix.$i" 2>/dev/null; then
+        echo $$ > "$DIR/$prefix.$i/pid"; echo "$*" | cut -c1-120 > "$DIR/$prefix.$i/cmd"; date +%s > "$DIR/$prefix.$i/start"
+        slot="$DIR/$prefix.$i"; break
+      fi
     done
   fi
   [ -n "$slot" ] && break
-  msg="mem-gate: waiting (level=${l} free=${f}% swap=${w}%, slots busy or headroom low)"
+  msg="mem-gate: waiting for the $lane lane (level=${l} free=${f}% swap=${w}%, slots busy or headroom low)"
   [ "$msg" != "$said" ] && { echo "$msg" >&2; said=$msg; }
   sleep "$POLL"
 done
-trap 'rm -rf "$slot"' EXIT
+rm -f "$DIR/wait.$$"
 echo "mem-gate: admitted to $(basename "$slot") (free=${f}% swap=${w}%)" >&2
+
+# Sampler: tracks when the tree last did work, and frees the slot once it has been idle long enough. It dies with us.
+(
+  me=$(sh -c 'echo $PPID'); t0=$(date +%s); prev=$(tree_cpu $$ "$me"); last=$t0; idle_since=$t0
+  while sleep "$POLL"; kill -0 $$ 2>/dev/null && [ "$(cat "$slot/pid" 2>/dev/null)" = "$$" ]; do
+    now=$(date +%s); cur=$(tree_cpu $$ "$me")
+    awk -v c="$cur" -v p="$prev" -v e=$((now - last)) 'BEGIN { exit !(c >= p && c - p <= e * 0.01 + 0.05) }' || idle_since=$now
+    prev=$cur; last=$now; echo "$idle_since" > "$slot/idle_since"
+    if [ $((now - t0)) -ge "$TTL" ] && [ $((now - idle_since)) -ge "$IDLE" ]; then
+      echo "$(date '+%F %T') mem-gate: released $(basename "$slot") of pid $$ ($lane lane, age $(fmt $((now - t0))), idle $(fmt $((now - idle_since)))): $*; the process is still running, not killed" >> "$DIR/log"
+      rm -rf "$slot"; break
+    fi
+  done
+) >> "$DIR/log" 2>&1 < /dev/null &
+sampler=$!
 "$@"
