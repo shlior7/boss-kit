@@ -742,6 +742,13 @@ HOOK_HOST_S = 3  # the hook's one host call (the worktree, on a cache miss) give
 BOSS_TEXT = ("msg", "brief")  # boss-host send and boss-status-ask log `msg`, boss-host create the dispatch prompt as `brief`
 
 
+HARNESS_TAGS = ("<task-notification>",)  # prompts Claude Code itself submits (a finished background task); neither the user nor the boss
+
+
+def is_harness_prompt(prompt):
+    return norm(prompt).startswith(HARNESS_TAGS)
+
+
 def norm(text):
     return re.sub(r"\s+", " ", text or "").strip()
 
@@ -827,9 +834,12 @@ def prompt_hook(home, ws, prompt, now=None, term=""):
     exclude_boss_dir(wt)
     now = int(now or time.time())
     evs = project_events(pdir, ws)
+    harness = is_harness_prompt(prompt)
     with bosskit.locked(status_path(wt)):  # the pane writes progress into the same file
         st = raw_status(wt)
-        if is_boss_prompt(prompt, evs, st, now):
+        if harness:
+            pass  # not the user typing: no `manual`, and a manual burst stays as it was
+        elif is_boss_prompt(prompt, evs, st, now):
             st.pop("mode", None)
         else:
             # a new burst: the first, a long pause, or any event since the burst's `manual` (a boss message, DONE, BLOCKED)
@@ -841,7 +851,8 @@ def prompt_hook(home, ws, prompt, now=None, term=""):
                     os.makedirs(bdir, exist_ok=True)
                     bosskit.add_event(types.SimpleNamespace(bdir=bdir), ws, "manual", norm(prompt)[:MATCH_CHARS], now)
             st.update(mode="manual", manual_at=now)
-        st["prompt_at"] = now
+        if not harness:
+            st["prompt_at"] = now
         save_status(wt, st)
     return take_notes(wt)
 

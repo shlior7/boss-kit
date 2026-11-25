@@ -84,6 +84,22 @@ class PromptHook(ManualHome):
         self.assertEqual(self.manual(), [(1100, "why does the retry loop spin on a 500?")])
         self.assertEqual(self.status()["mode"], "manual")
 
+    def test_a_harness_prompt_is_neither_the_user_nor_the_boss(self):
+        self.dispatch()
+        done = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>"
+        self.prompt(done, 1000)  # a background command finished: Claude Code submits it as a prompt
+        self.assertEqual(self.manual(), [])
+        self.assertNotIn("mode", self.status())
+        self.prompt("hand-check the parser", 1100)
+        before = self.status()
+        self.prompt(done, 1200)  # mid-burst: the burst is untouched
+        self.assertEqual(self.manual(), [(1100, "hand-check the parser")])
+        self.assertEqual({k: self.status()[k] for k in ("mode", "manual_at")}, {k: before[k] for k in ("mode", "manual_at")})
+        w = load_script("boss-host")
+        with mock.patch("sys.stdout"):
+            w.main(["note", WS, "--text", "rebase first"])
+        self.assertIn("rebase first", self.prompt(done, 1300))  # the notes still arrive
+
     def test_one_manual_event_per_burst(self):
         self.dispatch()
         for at in (1000, 1300, 2000):  # under 30 min apart: one burst
