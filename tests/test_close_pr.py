@@ -12,7 +12,8 @@ G = load_script("boss-guard")
 # gh pr view prints pr.json, with state CLOSED once close.flag exists; gh pr close logs its args and fails when fail.flag exists.
 FAKE_GH = """#!/bin/sh
 case "$1 $2" in
-  "pr view") if [ -f "$FIX/close.flag" ]; then sed 's/"OPEN"/"CLOSED"/' "$FIX/pr.json"; else cat "$FIX/pr.json"; fi;;
+  "pr view") if [ -f "$FIX/viewfail.flag" ] && [ -f "$FIX/close.flag" ]; then echo "HTTP 502" >&2; exit 1
+    elif [ -f "$FIX/close.flag" ]; then sed 's/"OPEN"/"CLOSED"/' "$FIX/pr.json"; else cat "$FIX/pr.json"; fi;;
   "pr close") echo "$*" >> "$FIX/close.log"
     if [ -f "$FIX/fail.flag" ]; then echo "GraphQL: could not close" >&2; exit 1; fi
     [ -f "$FIX/noop.flag" ] || touch "$FIX/close.flag";;
@@ -38,12 +39,18 @@ class ClosePr(Home):
         git(self.worker, "init", "-q", "-b", "feat/x")
         git(self.worker, "-c", "user.name=jane", "-c", "user.email=jane@example.com", "commit", "-q", "--allow-empty", "-m", "x")
         git(self.worker, "update-ref", "refs/remotes/origin/feat/x", "HEAD")
-        self.put("list.json", [{"id": self.WS, "branch": "feat/x", "worktreePath": self.worker}])
+        git(self.worker, "remote", "add", "origin", "https://github.com/acme/widgets.git")
+        self.workers((self.WS, self.worker))
         self.put("pr.json", {"number": 7, "state": "OPEN", "headRefName": "feat/x", "url": "https://github.com/acme/widgets/pull/7"})
         self.ctx = bosskit.load(self.wt)
 
     def put(self, name, data):
         json.dump(data, open(os.path.join(self.fixdir, name), "w"))
+
+    def workers(self, *rows):
+        """The fake host's workers, each (id, worktree) on branch feat/x."""
+        self.put("snapshot.json", {"workspaces": [{"id": i, "branch": "feat/x"} for i, _ in rows]})
+        self.put("list.json", [{"id": i, "worktreePath": wt} for i, wt in rows])
 
     def flag(self, name):
         open(os.path.join(self.fixdir, name), "w").close()
@@ -99,12 +106,55 @@ class ClosePr(Home):
         self.assertEqual(self.close().returncode, 1)  # the approval is spent, and the PR is closed now
 
     def test_a_pr_with_no_workspace_of_ours_closes_too(self):
-        self.put("list.json", [])
+        self.workers()
         r = self.close()
         self.assertIn(f'bin/boss-event pr close-ok "{REF}"', r.stdout)
         bosskit.add_event(self.ctx, "pr", "close-ok", REF)
         self.assertEqual(self.close().returncode, 0)
         self.assertEqual(self.stages()[-1], ("closed", REF))
+
+    def other_repo_worktree(self, dirty=False):
+        """A worktree on a same-named branch of another repo (acme/gadgets)."""
+        wt = os.path.join(self.tmp, "gadgets-wt")
+        os.makedirs(wt)
+        git(wt, "init", "-q", "-b", "feat/x")
+        git(wt, "-c", "user.name=jane", "-c", "user.email=jane@example.com", "commit", "-q", "--allow-empty", "-m", "x")
+        git(wt, "update-ref", "refs/remotes/origin/feat/x", "HEAD")
+        git(wt, "remote", "add", "origin", "git@github.com:acme/gadgets.git")
+        if dirty:
+            open(os.path.join(wt, "wip.txt"), "w").close()
+        return wt
+
+    def test_a_same_named_branch_in_another_repo_does_not_hide_this_prs_worktree(self):
+        bosskit.add_event(self.ctx, self.WS, "close-ok", REF)
+        other = "9a9a9a9a-0000-4000-8000-000000000009"
+        open(os.path.join(self.worker, "wip.txt"), "w").close()
+        self.workers((other, self.other_repo_worktree()), (self.WS, self.worker))  # the other repo's worker is listed first
+        r = self.close()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(f"refused: worktree {self.worker} has work on feat/x: uncommitted: ?? wip.txt", r.stdout)
+        self.assertEqual(self.closes(), [])
+
+    def test_another_repos_dirty_worktree_does_not_block_and_its_id_is_not_used(self):
+        other = "9a9a9a9a-0000-4000-8000-000000000009"
+        self.workers((other, self.other_repo_worktree(dirty=True)), (self.WS, self.worker))
+        self.assertIn(f'bin/boss-event {self.WS} close-ok "{REF}"', self.close().stdout)
+        bosskit.add_event(self.ctx, self.WS, "close-ok", REF)
+        self.assertEqual(self.close().returncode, 0)
+        self.assertEqual(self.stages()[-1], ("closed", REF))
+        self.assertEqual([e["ws"] for e in bosskit.events(self.ctx.bdir)][-1], self.WS)
+
+    def test_close_succeeded_but_the_state_read_fails_still_spends_the_approval(self):
+        bosskit.add_event(self.ctx, self.WS, "close-ok", REF)
+        self.flag("viewfail.flag")  # the confirming gh pr view (after the close) fails
+        r = self.close()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("state could not be confirmed", r.stderr)
+        self.assertEqual(self.closes(), ["pr close 7"])
+        self.assertEqual(self.stages(), [("close-ok", REF), ("closed", f"{REF} (unconfirmed)")])
+        os.remove(os.path.join(self.fixdir, "viewfail.flag"))  # the PR is reopened later: the old OK is gone
+        os.remove(os.path.join(self.fixdir, "close.flag"))
+        self.assertIn("no close-ok event", self.close().stdout)
 
     def test_a_gh_failure_logs_nothing(self):
         bosskit.add_event(self.ctx, self.WS, "close-ok", REF)

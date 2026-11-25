@@ -6,8 +6,8 @@
 Closes only a PR the boss logged as user-approved: a `close-ok` event whose note names the PR as owner/repo#N (any repo, a
 workspace of ours or not). Without it, it refuses and prints the exact boss-event line to log after the user's OK. It also
 refuses a PR that is not open, and a PR whose head branch has uncommitted or unpushed work in one of this boss's worktrees
-(it names the worktree). Then `gh pr close`, confirms state CLOSED with `gh pr view`, and logs a `closed` event; a failed
-close logs nothing. A `closed` event spends the approval. Run from the repo, or pass -R / set GH_REPO.
+of the PR's repo (it names the worktree). Then `gh pr close`, confirms state CLOSED with `gh pr view`, and logs a `closed` event;
+a failed close logs nothing, one that succeeded but could not be confirmed logs `closed` marked unconfirmed and exits non-zero. A `closed` event spends the approval. Run from the repo, or pass -R / set GH_REPO.
 """
 import json
 import os
@@ -24,14 +24,16 @@ def gh(*args):
     return r.returncode, r.stdout, r.stderr
 
 
-def pr_view(n, repo, fields):
+def pr_view(n, repo, fields, fatal=True):
     rc, out, err = gh("pr", "view", n, *repo, "--json", fields)
     try:
         if rc == 0:
             return json.loads(out)
     except ValueError:
         pass
-    sys.exit(f"boss-close-pr: gh pr view: {(err or out).strip()[:300]}")
+    if fatal:
+        sys.exit(f"boss-close-pr: gh pr view: {(err or out).strip()[:300]}")
+    return None
 
 
 def approved(events, ref):
@@ -76,9 +78,9 @@ def main(argv):
         ctx = bosskit.load()
     except SystemExit:
         sys.exit("boss-close-pr: no boss project here: it reads the close-ok event from the boss's log")
-    try:
-        w = bosshost.get(ctx.cfg).by_branch(branch)
-        mine = [w] if w else []
+    try:  # every worker on this branch name whose worktree is this PR's repo (a same-named branch elsewhere is not it)
+        mine = [w for w in bosshost.get(ctx.cfg).workers() if w.get("branch") == branch and w.get("worktree")
+                and bosskit.remote_repo(w["worktree"]) in (f"{parts[-4]}/{parts[-3]}".lower(), "")]  # "": no origin, cannot tell, check it
     except bosshost.Unsupported:
         mine = []
         print("note: this host cannot list workers: the worktree check is skipped")
@@ -100,10 +102,12 @@ def main(argv):
     rc, out, err = gh("pr", "close", n, *repo, *extra)
     if rc:
         sys.exit(f"boss-close-pr: gh pr close failed:\n{(err or out).strip()}")
-    state = pr_view(n, repo, "state")["state"]
-    if state != "CLOSED":
-        sys.exit(f"boss-close-pr: gh pr close returned, but {ref} is {state}")
-    bosskit.add_event(ctx, ws, "closed", ref)
+    seen = pr_view(n, repo, "state", fatal=False)
+    if seen and seen["state"] != "CLOSED":
+        sys.exit(f"boss-close-pr: gh pr close returned, but {ref} is {seen['state']}")
+    bosskit.add_event(ctx, ws, "closed", ref if seen else f"{ref} (unconfirmed)")  # gh pr close succeeded: spend the OK either way
+    if not seen:
+        sys.exit(f"boss-close-pr: gh pr close succeeded, but {ref}'s state could not be confirmed (logged `closed`, unconfirmed): check it with gh pr view")
     print(f"closed {ref}")
 
 
