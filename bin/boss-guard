@@ -3,7 +3,7 @@
 
 Reads the hook input JSON on stdin. Only a Bash call in a boss session (bosskit.is_boss for its cwd) can be denied;
 anything else is allowed silently. It denies, with one line naming the rule and the allowed path:
-  gh pr merge (any form, --auto too), gh pr close, gh pr edit --base/-B             (section 3, 8: bin/boss-merge)
+  gh pr merge (any form, --auto too), gh pr close, gh pr edit --base/-B             (section 3, 8: bin/boss-merge, boss-close-pr)
   git push with -f/--force*/--mirror/+refspec, git push to the base branch or --all  (section 3)
   git rebase (any; --help/-h alone is allowed: it changes nothing)                  (section 3: merge the base in)
   boss-host watch without run_in_background, or with a trailing &                  (section 6)
@@ -84,7 +84,7 @@ def gh_rule(args):
             return "gh pr merge --auto is blocked in a boss session (section 3: never --auto). Use bin/boss-merge N after the user's OK."
         return "gh pr merge is blocked in a boss session (sections 3, 8: merge only with the user's OK). Use bin/boss-merge N."
     if sub == "close":
-        return "gh pr close is blocked in a boss session (section 3: close a PR only with the user's OK). Ask the user first; playbooks/merge.md has the close steps."
+        return "gh pr close is blocked in a boss session (section 3: close a PR only with the user's OK). Ask the user first, log close-ok, then run bin/boss-close-pr N (playbooks/merge.md has the steps)."
     if sub == "edit" and any(a in ("--base", "-B") or a.startswith("--base=") for a in rest):
         return "gh pr edit --base is blocked in a boss session (section 3: change PR bases only with the user's OK). Ask the user first."
     return None
