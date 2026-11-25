@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""boss-close-pr: close one PR the user approved closing (the close twin of boss-merge; boss-guard denies a raw gh pr close).
+
+  boss-close-pr <pr> [-R owner/repo] [--comment "..."] [--delete-branch]
+
+Closes only a PR the boss logged as user-approved: a `close-ok` event whose note names the PR as owner/repo#N (any repo, a
+workspace of ours or not). Without it, it refuses and prints the exact boss-event line to log after the user's OK. It also
+refuses a PR that is not open, and a PR whose head branch has uncommitted or unpushed work in one of this boss's worktrees
+(it names the worktree). Then `gh pr close`, confirms state CLOSED with `gh pr view`, and logs a `closed` event; a failed
+close logs nothing. A `closed` event spends the approval. Run from the repo, or pass -R / set GH_REPO.
+"""
+import json
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bosshost  # noqa: E402
+import bosskit  # noqa: E402
+
+
+def gh(*args):
+    r = subprocess.run(["gh", *args], capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+
+
+def pr_view(n, repo, fields):
+    rc, out, err = gh("pr", "view", n, *repo, "--json", fields)
+    try:
+        if rc == 0:
+            return json.loads(out)
+    except ValueError:
+        pass
+    sys.exit(f"boss-close-pr: gh pr view: {(err or out).strip()[:300]}")
+
+
+def approved(events, ref):
+    """Whether *ref* has a `close-ok` event not yet spent by a later `closed` one."""
+    ok = False
+    for e in events:
+        if ref in e["note"].split() and e["stage"] in ("close-ok", "closed"):
+            ok = e["stage"] == "close-ok"
+    return ok
+
+
+def parse(argv):
+    """(pr number, ['-R', slug] or [], comment args, delete-branch args), or None when argv is malformed."""
+    args, repo, extra, n = list(argv), [], [], ""
+    while args:
+        a = args.pop(0)
+        if a in ("-R", "--repo", "--comment", "-b", "--body") and args:
+            v = args.pop(0)
+            if a in ("-R", "--repo"):
+                repo = ["-R", v]
+            else:
+                extra += ["--comment", v]
+        elif a == "--delete-branch":
+            extra.append(a)
+        elif a.lstrip("#").isdigit() and not n:
+            n = a.lstrip("#")
+        else:
+            return None
+    return (n, repo, extra) if n else None
+
+
+def main(argv):
+    parsed = parse(argv)
+    if not parsed:
+        sys.exit(__doc__)
+    n, repo, extra = parsed
+    pr = pr_view(n, repo, "number,state,headRefName,url")
+    parts = pr["url"].split("/")  # https://host/owner/repo/pull/N
+    ref = f"{parts[-4]}/{parts[-3]}#{pr['number']}"
+    branch = pr["headRefName"]
+    try:
+        ctx = bosskit.load()
+    except SystemExit:
+        sys.exit("boss-close-pr: no boss project here: it reads the close-ok event from the boss's log")
+    try:
+        w = bosshost.get(ctx.cfg).by_branch(branch)
+        mine = [w] if w else []
+    except bosshost.Unsupported:
+        mine = []
+        print("note: this host cannot list workers: the worktree check is skipped")
+    ws = mine[0]["id"] if mine else "pr"
+
+    why = []
+    if pr["state"] != "OPEN":
+        why.append(f"{ref} is {pr['state']}")
+    if not approved(bosskit.events(ctx.bdir), ref):
+        why.append(f"no close-ok event for {ref}: after the user's OK, log it: bin/boss-event {ws} close-ok \"{ref}\"")
+    for w in mine:
+        wt = w.get("worktree") or ""
+        left = [l for l in bosskit.leftovers(wt, branch) if not l.startswith("ignored:")] if wt else []
+        why += [f"worktree {wt} has work on {branch}: {l}" for l in left]
+    if why:
+        print("\n".join(f"refused: {w}" for w in why))
+        sys.exit(1)
+
+    rc, out, err = gh("pr", "close", n, *repo, *extra)
+    if rc:
+        sys.exit(f"boss-close-pr: gh pr close failed:\n{(err or out).strip()}")
+    state = pr_view(n, repo, "state")["state"]
+    if state != "CLOSED":
+        sys.exit(f"boss-close-pr: gh pr close returned, but {ref} is {state}")
+    bosskit.add_event(ctx, ws, "closed", ref)
+    print(f"closed {ref}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
