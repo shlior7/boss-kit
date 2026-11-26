@@ -228,8 +228,8 @@ class Answers(Home):
         self.assertEqual(ch["project"]["github"]["comments"], ["verify", "merged"])
         ch, _ = bosskit.onboard_changes({"comments": ["Status note (current)", "Demo video (current)"]}, ctx.layers)
         self.assertEqual(ch["project"]["github"]["comments"], ["status", "proof", "demo"])
-        ch, _ = bosskit.onboard_changes({"cleanup": "Archive, then tell me", "wake": "Yes", "report": "Voice"}, ctx.layers)
-        self.assertEqual(ch, {"project": {"cleanup": "auto"}, "boss": {"wake": True}, "user": {"report": {"style": "voice"}}})
+        ch, _ = bosskit.onboard_changes({"cleanup": "Archive, then tell me", "wake": "No", "report": "Voice"}, ctx.layers)
+        self.assertEqual(ch, {"project": {"cleanup": "auto"}, "boss": {"wake": False}, "user": {"report": {"style": "voice"}}})
         ch, _ = bosskit.onboard_changes({"report": "Detailed"}, ctx.layers)  # style is already action-first: only verbosity differs
         self.assertEqual(ch, {"user": {"report": {"verbosity": "detailed"}}})
         _, ex = bosskit.onboard_changes({"domain": "Main boss (current)"}, ctx.layers)
