@@ -62,7 +62,7 @@ DEFAULTS = {
     "hosts": {},                # each host plugin's own settings, under its name
     "base_branch": "main",
     "ledger": "ledger.md",
-    "wake": False,              # mail to this boss also messages its session
+    "wake": True,               # mail to this boss also messages its session (false: only --urgent mail does)
     "extra_prs": [],
     "tracker": {"type": "none"},
     "models": {"strong": "opus", "mid": "sonnet", "cheap": "haiku"},

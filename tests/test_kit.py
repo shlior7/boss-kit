@@ -240,7 +240,27 @@ class UrgentMail(Home):
     def cli(self, cwd, *args):
         return subprocess.run([sys.executable, os.path.join(BIN, "boss-mail"), *args], cwd=cwd, capture_output=True, text=True)
 
+    def test_wake_is_on_by_default_and_a_busy_target_is_skipped(self):
+        self.assertIs(bosskit.DEFAULTS["wake"], True)
+        self.assertIs(self.ctx.cfg["wake"], True)
+        _, _, woke = self.mail.send(self.ctx, "widgets", "fyi", "x", "b")
+        self.assertEqual(woke, {"widgets/w1": "woke"})
+        self.state("working")
+        self.assertEqual(self.mail.send(self.ctx, "widgets", "fyi", "x", "b")[2], {"widgets/w1": "skipped (busy)"})
+
+    def test_send_without_kind_is_fyi_and_a_bad_kind_lists_the_kinds(self):
+        r = self.cli(self.wt, "send", "--to", "widgets", "--subject", "x", "--body", "b")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (m,) = [json.load(open(os.path.join(d, f))) for d, _, fs in os.walk(os.path.join(self.home, "widgets", "bosses")) for f in fs if f.endswith(".json") and "inbox" in d]
+        self.assertEqual(m["kind"], "fyi")
+        r = self.cli(self.wt, "send", "--to", "widgets", "--kind", "nope", "--subject", "x")
+        self.assertNotEqual(r.returncode, 0)
+        for k in ("question", "request", "fyi"):
+            self.assertIn(k, r.stderr)
+
     def test_urgent_wakes_an_idle_boss_with_wake_off_with_one_fixed_line(self):
+        os.makedirs(os.path.join(self.home, "widgets", "bosses", "w1"))
+        bosskit.save_json(os.path.join(self.home, "widgets", "bosses", "w1", "config.json"), {"wake": False})
         _, _, woke = self.mail.send(self.ctx, "widgets", "question", "is #42 safe?", "body")
         self.assertEqual((woke, self.sends()), ({"widgets/w1": "skipped (wake off)"}, []))  # not urgent: wake off holds
         _, _, woke = self.mail.send(self.ctx, "widgets", "question", "is #42 safe?", "secret body text", urgent=True)
@@ -2449,6 +2469,16 @@ class KitUpdate(Home):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("could not fetch origin", r.stdout)
         self.assertIn("would install: claude plugin install boss@boss-kit", r.stdout)
+
+    def test_a_second_kit_update_mail_replaces_the_first_unread_one(self):
+        mod = load_script("boss-kit-update")
+        mod.notify(self.home, "first", "log", now=time.time() - 60)
+        mod.notify(self.home, "second", "log")
+        (m,) = self.inbox("widgets", "live-a")
+        self.assertEqual(m["subject"], "second")
+        done = os.path.join(self.home, "widgets", "bosses", "live-a", "inbox", "done")
+        (old,) = [json.load(open(os.path.join(done, f))) for f in os.listdir(done)]
+        self.assertEqual((old["subject"], bool(old["done_at"])), ("first", True))
 
     def test_up_to_date_mails_nobody_and_needs_no_restart(self):
         self.update()  # install /boss, bring boss-deck to 0.8.0
