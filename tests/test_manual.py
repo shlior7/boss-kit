@@ -100,6 +100,25 @@ class PromptHook(ManualHome):
             w.main(["note", WS, "--text", "rebase first"])
         self.assertIn("rebase first", self.prompt(done, 1300))  # the notes still arrive
 
+    def test_a_peer_session_message_is_not_the_user(self):
+        self.dispatch()
+        peer = '<cross-session-message from="uds:/tmp/x">\nplease rebase on main\n</cross-session-message>'
+        self.prompt(peer, 1000)  # SendMessage from another session arrives as a prompt
+        self.assertEqual(self.manual(), [])
+        self.assertNotIn("mode", self.status())
+        self.prompt("hand-check the parser", 1100)
+        before = self.status()
+        self.prompt(peer, 1200)  # mid-burst: the burst is untouched
+        self.prompt("<cross-session-message>bare</cross-session-message>", 1250)
+        self.assertEqual(self.manual(), [(1100, "hand-check the parser")])
+        self.assertEqual(self.status(), before)
+
+    def test_slash_command_and_bash_prompts_are_the_user(self):
+        self.dispatch()
+        self.prompt("<command-name>/foo</command-name> <command-message>foo</command-message>", 1000)
+        self.prompt("<bash-input>ls</bash-input>", 5000)
+        self.assertEqual([at for at, _ in self.manual()], [1000, 5000])
+
     def test_one_manual_event_per_burst(self):
         self.dispatch()
         for at in (1000, 1300, 2000):  # under 30 min apart: one burst
