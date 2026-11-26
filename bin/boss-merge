@@ -4,7 +4,8 @@
   boss-merge <pr> [--sha <verified sha>]
 
 Refuses unless the PR is open and its head is the sha the boss verified (--sha, else the sha the boss's last `checked`
-event names for the workspace on the PR's branch), mergeable is MERGEABLE, every review thread is answered (resolved, or
+event names for the workspace on the PR's branch), the PR head is the branch tip on origin (`git ls-remote`; GitHub
+sometimes misses a push), mergeable is MERGEABLE, every review thread is answered (resolved, or
 the PR author replied in it), and no check is failing or pending. Then `gh pr merge --<method> --match-head-commit <sha>`;
 when the base branch policy refuses and you can bypass every ruleset on the base, it retries with --admin and says so.
 Never --auto, never force. Once MERGED it prints the merge commit, logs `merged "PR #N"` for the workspace, and prints the
@@ -88,6 +89,16 @@ def checked_sha(ctx, ws):
     return ""
 
 
+def remote_tip(branch):
+    """The sha of origin's *branch* by `git ls-remote`, or '' when it cannot say (no origin here, a fork, offline)."""
+    try:
+        r = subprocess.run(["git", "ls-remote", "origin", f"refs/heads/{branch}"], capture_output=True, text=True, timeout=30,
+                           env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return r.stdout.split()[0] if r.returncode == 0 and r.stdout.strip() else ""
+
+
 def can_bypass(base):
     """Whether the current user can bypass every ruleset on *base*. No rulesets (or no answer) is no."""
     rules = gh_json("api", f"repos/{{owner}}/{{repo}}/rules/branches/{base}", fatal=False) or []
@@ -126,6 +137,9 @@ def main(argv):
         why.append("no verified sha: pass --sha, or log `boss-event <ws> checked \"<sha> ...\"` after verifying")
     elif not re.fullmatch(r"[0-9a-f]{7,40}", sha) or not head.startswith(sha):
         why.append(f"head {head[:12]} is not the verified {sha[:12]}: verify the new head first")
+    tip = remote_tip(branch)
+    if tip and tip != head:  # GitHub sometimes misses a push: the branch moved, the PR's head (and its checks) did not
+        why.append(f"GitHub has not synced the last push (tip {tip[:12]}, PR head {head[:12]}): push again (no force) or wait")
     if pr["mergeable"] != "MERGEABLE":
         why.append(f"mergeable is {pr['mergeable']}" + (" (GitHub is still computing it: retry)" if pr["mergeable"] == "UNKNOWN" else ""))
     threads = gh_json("api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}", "-F", f"n={n}", "-f", f"query={THREADS}")

@@ -754,6 +754,27 @@ class Deck(Home):
         self.assertIn("repos/acme/widgets/compare/main...abc123", calls[1][2])
         self.assertIn("mergeStateStatus", deck.PR_FIELDS)
 
+    def test_sweep_flags_a_pr_whose_head_is_not_the_branch_tip_with_one_ls_remote_per_repo(self):
+        deck = load_script("boss-deck-data.py")
+        pr = {"number": 7, "title": "t", "headRefName": "feat/a", "headRefOid": "a" * 40, "baseRefName": "main"}
+        listed = json.dumps([pr, {**pr, "number": 8, "headRefName": "feat/b", "headRefOid": "b" * 40}])
+        calls = []
+
+        def fake_run(argv, timeout=40):
+            calls.append(argv)
+            if argv[:3] == ["gh", "pr", "list"]:
+                return listed
+            if "ls-remote" in argv:  # feat/a moved on, feat/b is in sync
+                return "c" * 40 + "\trefs/heads/feat/a\n" + "b" * 40 + "\trefs/heads/feat/b\n"
+            return "0\n"
+
+        with mock.patch.object(deck, "run", fake_run):
+            rows = deck.prs({"repo": "acme/widgets", "me": "jane"}, self.tmp, fresh=True)
+        self.assertEqual([(r["num"], r["unsynced"]) for r in rows], [(7, "c" * 40), (8, "")])
+        self.assertEqual(len([c for c in calls if "ls-remote" in c]), 1)
+        att = deck.attention([], [], rows)
+        self.assertEqual([i["text"] for i in att], [f"#7 GitHub has not synced the last push (tip {'c' * 8}, PR head {'a' * 8}): push again (no force)"])
+
     def test_kit_head_is_the_short_sha_of_the_kit_checkout_or_empty(self):
         deck = load_script("boss-deck-data.py")
         git(self.wt, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "x")
@@ -2597,6 +2618,13 @@ esac
 """
 
 
+# ls-remote answers from $FIX/tip (the branch tip on origin; no file: no origin); every other git call is the real one.
+FAKE_GIT = """#!/bin/sh
+if [ "$1" = "ls-remote" ]; then [ -f "$FIX/tip" ] || exit 128; echo "$(cat "$FIX/tip")\t$3"; exit 0; fi
+exec /usr/bin/git "$@"
+"""
+
+
 class Merge(Home):
     """boss-merge against a fake gh on PATH and the fake host: what it refuses, what it merges, and the --admin retry."""
 
@@ -2609,7 +2637,7 @@ class Merge(Home):
         self.fix = self.fixdir
         stubs = os.path.join(self.tmp, "stubs")
         os.makedirs(stubs)
-        for tool, body in (("gh", FAKE_GH),):
+        for tool, body in (("gh", FAKE_GH), ("git", FAKE_GIT)):
             open(os.path.join(stubs, tool), "w").write(body)
             os.chmod(os.path.join(stubs, tool), 0o755)
         self.tools = {**os.environ, "PATH": f"{stubs}:/usr/bin:/bin", "FIX": self.fix}
@@ -2649,6 +2677,19 @@ class Merge(Home):
         bosskit.add_event(self.ctx, self.WS, "checked", "0123abcd tests green")  # checked an older head
         self.assertIn("is not the verified 0123abcd", self.merge().stdout)
         self.assertEqual(self.merges(), [])
+
+    def test_unsynced_push_is_refused_and_a_matching_tip_merges(self):
+        bosskit.add_event(self.ctx, self.WS, "checked", f"{self.HEAD[:10]} tests green")
+        tip = "b" * 40  # the branch moved on origin; the PR head did not
+        open(os.path.join(self.fix, "tip"), "w").write(tip)
+        r = self.merge()
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout.strip(), f"refused: GitHub has not synced the last push (tip {tip[:12]}, PR head {self.HEAD[:12]}): push again (no force) or wait")
+        self.assertEqual(self.merges(), [])
+        open(os.path.join(self.fix, "tip"), "w").write(self.HEAD)  # in sync
+        r = self.merge()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.merges(), [f"pr merge 7 --squash --match-head-commit {self.HEAD}"])
 
     def test_unanswered_thread_is_refused_and_listed(self):
         self.threads((False, [("rev", "please rename this")]), (False, [("rev", "why?"), ("jane", "because")]))

@@ -340,6 +340,32 @@ def behind_by(repo, base, head, timeout=20):
     return int(out) if out.isdigit() else 0
 
 
+def remote_tips(repo, branches, timeout=30):
+    """{branch: sha} for *branches* of *repo* from ONE `git ls-remote` (not one per PR); {} when it cannot say."""
+    branches = sorted({b for b in branches if b})
+    if not branches:
+        return {}
+    out = run(["env", "GIT_TERMINAL_PROMPT=0", "git", "ls-remote", f"https://github.com/{repo}.git"] + [f"refs/heads/{b}" for b in branches], timeout=timeout)
+    tips = {}
+    for line in out.splitlines():
+        sha, _, ref = line.partition("\t")
+        if ref.startswith("refs/heads/"):
+            tips[ref[len("refs/heads/"):]] = sha
+    return tips
+
+
+def flag_unsynced(rows):
+    """Mark rows whose PR head sha is not the branch tip on the remote: GitHub missed the push, so no checks run on the tip.
+    Sets row["unsynced"] to the tip sha (else ""), one ls-remote per repo."""
+    for repo in {r["repo"] for r in rows}:
+        mine = [r for r in rows if r["repo"] == repo]
+        tips = remote_tips(repo, [r["head"] for r in mine])
+        for r in mine:
+            tip = tips.get(r["head"], "")
+            r["unsynced"] = tip if tip and r.get("sha") and tip != r["sha"] else ""
+    return rows
+
+
 def pr_row(repo, p, primary, behind=0):
     comments = p.get("comments") or []
     text = " ".join([p.get("body") or ""] + [c.get("body") or "" for c in comments])
@@ -353,8 +379,8 @@ def pr_row(repo, p, primary, behind=0):
         "behind": behind, "conflicts": p.get("mergeable") == "CONFLICTING" or p.get("mergeStateStatus") == "DIRTY",
         "merge": p.get("mergeable") or "", "ci": ci_summary(p.get("statusCheckRollup")),
         "reviewers": [r.get("login") or r.get("name") or "" for r in p.get("reviewRequests") or []],
-        "url": p.get("url", ""), "base": p.get("baseRefName", ""), "head": p.get("headRefName", ""),
-        "updated": p.get("updatedAt", ""),
+        "url": p.get("url", ""), "base": p.get("baseRefName", ""), "head": p.get("headRefName", ""), "sha": p.get("headRefOid", ""),
+        "unsynced": "", "updated": p.get("updatedAt", ""),
     }
 
 
@@ -379,6 +405,7 @@ def prs(cfg, cache_dir, fresh=False):
         if raw and json.loads(raw).get("state") == "OPEN":
             x = json.loads(raw)
             rows.append(pr_row(repo, x, repo == cfg["repo"], behind_by(repo, x.get("baseRefName"), x["headRefOid"]) if x.get("headRefOid") else 0))
+    flag_unsynced(rows)
     json.dump({"at": time.time(), "prs": rows}, open(cache, "w"))
     return rows
 
@@ -513,6 +540,8 @@ def attention(workers, armed, prs):
             items.append({"level": "check", "text": f"watcher {w['ws'][:8]} stale ({w['ageS'] // 60}m)"})
     for p in prs:
         tag = f"#{p['num']}" if p.get("primary") else f"{p['repo']}#{p['num']}"
+        if p.get("unsynced"):
+            items.append({"level": "act", "text": f"{tag} GitHub has not synced the last push (tip {p['unsynced'][:8]}, PR head {p['sha'][:8]}): push again (no force)"})
         if p["ci"] == "red" and not p["draft"]:
             items.append({"level": "act", "text": f"{tag} CI red"})
         elif p["review"] == "APPROVED" and p["ci"] == "green" and not p["draft"]:
