@@ -3,6 +3,7 @@
 The template keeps each rule of section 7 as one short line; this is the full wording, with its examples and steps. Read it before you verify a PR or mark it ready, and before you run the conflict sync.
 
 - `gh pr view N --json headRefOid,mergeable,mergeStateStatus,statusCheckRollup,files`. Compare head sha to what the worker reported; "pushed" is unproven until the sha is on GitHub.
+- A missed push: the PR's head sha must equal the branch tip (`git ls-remote origin refs/heads/<b>`). GitHub sometimes misses a push; then no checks run on the tip. The deck's PR sweep flags it; push again (no force) or wait.
 - CI: count failures and pending separately. Pending is not green. Say which checks you could not see.
 - Behind counts: `git rev-list --left-right --count base...head`. Dry-run conflicts: `git merge-tree --write-tree --name-only base head`.
 - Proof: open every URL in the envelope's `proof:` (a page or artifact loads; a demo video plays or is attached to the PR) and check it shows this change, not an older one. A missing or broken proof is a finding: send the worker back for it. `proof: none: <why>` is accepted only for read-only or docs work.
