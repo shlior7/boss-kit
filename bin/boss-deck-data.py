@@ -742,7 +742,9 @@ HOOK_HOST_S = 3  # the hook's one host call (the worktree, on a cache miss) give
 BOSS_TEXT = ("msg", "brief")  # boss-host send and boss-status-ask log `msg`, boss-host create the dispatch prompt as `brief`
 
 
-HARNESS_TAGS = ("<task-notification>",)  # prompts Claude Code itself submits (a finished background task); neither the user nor the boss
+# prompts Claude Code itself submits, neither the user nor the boss: a finished background task, a peer session's message
+# (which carries attributes: `<cross-session-message from="...">`; a bare tag counts too)
+HARNESS_TAGS = ("<task-notification>", "<cross-session-message ", "<cross-session-message>")
 
 
 def is_harness_prompt(prompt):
