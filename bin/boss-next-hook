@@ -6,6 +6,10 @@ Reads the hook input JSON on stdin. Only in a boss session (the worktree's boss 
 runs bosskit.lint_next on it, and on shorthand blocks the stop with the reason so the boss rewrites the line; a rewrite is
 checked again, up to MAX_BLOCKS blocks in a row per session. No "Your move" line, not a boss, or anything unreadable: it
 allows, silently.
+
+It also refuses once to end the turn while this boss has unread mail (inbox file without read_at) it has not raised yet: the
+reason names the count, kinds and senders only, and the ids are recorded in cache/mail-raised.json so a mail is raised at
+most once; never again in the same stop (stop_hook_active).
 """
 import json
 import os
@@ -65,6 +69,32 @@ def verdict(inp):
             "Then send your whole reply again with that line, not only the line: the user reads only your last message.")
 
 
+def mail_reason(cwd):
+    """The block reason for unread mail not raised before ("" if none). Kinds and senders only; records the ids it raised."""
+    ctx = bosskit.load(cwd, make=False)
+    raised_path = os.path.join(ctx.cache, "mail-raised.json")
+    try:
+        raised = set(json.load(open(raised_path)))
+    except (OSError, ValueError, TypeError):
+        raised = set()
+    new = []
+    if os.path.isdir(ctx.inbox):
+        for f in sorted(os.listdir(ctx.inbox)):
+            try:
+                m = json.load(open(os.path.join(ctx.inbox, f)))
+            except (OSError, ValueError):
+                continue
+            if f.endswith(".json") and isinstance(m, dict) and not m.get("read_at") and m.get("id") not in raised:
+                new.append(m)
+    if not new:
+        return ""
+    safe = lambda s, n: re.sub(r"[^A-Za-z0-9._-]", "", str(s or ""))[:n] or "?"
+    who = ", ".join(f"{safe(m.get('kind'), 12)} from {safe(m.get('from_project'), 40)}" for m in new)
+    os.makedirs(ctx.cache, exist_ok=True)
+    bosskit.save_json(raised_path, sorted(raised | {m.get("id") for m in new}))
+    return f"{len(new)} unread boss mail: {who}; read it with boss-mail inbox and handle it"
+
+
 def blocks_file(inp):
     sid = re.sub(r"[^\w-]", "", str(inp.get("session_id") or "none"))[:64]
     return os.path.join(tempfile.gettempdir(), f"boss-next-hook-{sid}")
@@ -77,7 +107,15 @@ def main():
         count = blocks_file(inp)
         # consecutive blocks in this session: after MAX_BLOCKS rewrites it lets the reply through, so it can never loop
         n = int(open(count).read() or 0) if inp.get("stop_hook_active") and os.path.exists(count) else 0
-        if not why or n >= MAX_BLOCKS:
+        if n >= MAX_BLOCKS:
+            why = ""
+        if not inp.get("stop_hook_active") and is_boss(inp.get("cwd") or os.getcwd()):
+            try:
+                mail = mail_reason(inp.get("cwd") or os.getcwd())
+            except (SystemExit, Exception):  # no project here, a broken config: no mail check, never a trap
+                mail = ""
+            why = "\n\n".join(x for x in (why, mail) if x)
+        if not why:
             if os.path.exists(count):
                 os.remove(count)
             return

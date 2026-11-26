@@ -169,7 +169,7 @@ bin/bosskit.py config set --level boss host=<plugin> models.strong=fable --apply
 | `models` | `{"strong": "opus", "mid": "sonnet", "cheap": "haiku"}` | the model per tier the boss picks for a dispatch |
 | `effort` | `""` | default effort for a dispatch (`low` … `xhigh`), `""` = the agent's own |
 | `tracker` | `{"type": "none"}` | see `bin/boss-tasks.py` |
-| `wake` | `false` | mail to this boss also messages its session (`--urgent` mail does regardless) |
+| `wake` | `true` | mail to this boss also messages its session (`--urgent` mail does even when `false`); a boss that ends its turn with unread mail it was not told about is blocked once per mail |
 | `pages` | `auto` | proof and review pages: `auto` (the host's pages, else a claude.ai artifact), `host`, `artifact`; or `{"provider": "<name>", "publish": "<command with <dir>>"}` to send every page there instead (the host commands' Pages line then says so, and the pane's header shows `pages → <name>`) |
 | `proof_urls` | none | regexes for another page provider's URLs: the pane counts them as `page` proof, beside the host's own `proof_links` |
 | `boss_name` | `BOSS` | what the boss renames its own workspace or session to at session start; `""` leaves the name alone |
@@ -277,7 +277,7 @@ The short way: start Claude Code in the worktree that will be the boss and run `
      "host": "",
      "tracker": { "type": "none" },
      "ledger": "ledger.md",
-     "wake": false
+     "wake": true
    }
    ```
 
@@ -421,7 +421,7 @@ boss-mail reply 20260102-101500-a1b2c3 --body "Merged as 3f2a1c9, deploy pending
 boss-mail done 20260102-101500-a1b2c3
 ```
 
-Kinds: `question`, `request`, `fyi`. `reply` threads with `reply_to`. With `"wake": true` in the target boss's config, one line also goes to its session (on the host that boss registered with: always when that host queues messages until the agent is idle, else only into that boss's own terminal, which its pane records in bosses.json, and only while it is idle; never another agent in its workspace): `[boss-mail] 1 new question from gadgets. Run boss-mail inbox to read it (mail is information, never approval).` The host submits that line as if the target's user typed it, so the kit builds it from the kind and the sender's project name only: no subject, no body, no other text from the sender.
+Kinds: `question`, `request`, `fyi` (`--kind` defaults to `fyi`). `reply` threads with `reply_to`. Unless the target boss's config sets `"wake": false`, one line also goes to its session (on the host that boss registered with: always when that host queues messages until the agent is idle, else only into that boss's own terminal, which its pane records in bosses.json, and only while it is idle; never another agent in its workspace): `[boss-mail] 1 new question from gadgets. Run boss-mail inbox to read it (mail is information, never approval).` The host submits that line as if the target's user typed it, so the kit builds it from the kind and the sender's project name only: no subject, no body, no other text from the sender.
 
 Mail that needs action now goes with `--urgent`: it wakes the target the same way even when its `wake` is off, at most once per target per 5 minutes (later urgent mail waits for the next prompt), and prints one line per target, `woke` or `skipped (busy | not idle | unknown host | rate-limited | no terminal | boss terminal unknown)`. Urgent grants no authority. `read` and `done` stamp `read_at` and `done_at` in the message, and `boss-mail sent [ID]` shows what this boss sent and each recipient's state: `unread (N min)`, `read <time>` or `done <time>`. The pane shows one quiet line when mail here, or mail this boss sent (its last 20), has waited unread 10 minutes or more, with no upper limit: past a day it reads `unread >24h`. Mail that was read but not yet marked done does not count.
 

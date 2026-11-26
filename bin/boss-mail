@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """boss-mail: messages between bosses. A message is a JSON file in the target boss's inbox/.
 
-  boss-mail send --to <project|boss-id> --kind question|request|fyi --subject S [--body B | stdin] [--reply-to ID] [--urgent]
+  boss-mail send --to <project|boss-id> [--kind question|request|fyi (default fyi)] --subject S [--body B | stdin] [--reply-to ID] [--urgent]
   boss-mail inbox                    unread messages, oldest first
   boss-mail read ID                  print one message; stamps read_at in it (the sender's read receipt)
   boss-mail reply ID [--body B | stdin]
@@ -9,8 +9,8 @@
   boss-mail sent [ID]                mail this boss sent (the last 20, or one), each recipient unread / read <time> / done <time>
 
 Addressing a project delivers to every live boss of it (heartbeat in the last 30 min), or to every
-registered one when none is live, or, when none ever registered, to every <project>/bosses/*/ directory. With "wake": true in the target boss's
-config, one line is also sent to its session so it notices, on the host that boss last ran on: always when that host queues
+registered one when none is live, or, when none ever registered, to every <project>/bosses/*/ directory. Unless the target boss's
+config sets "wake": false, one line is also sent to its session so it notices, on the host that boss last ran on: always when that host queues
 messages until the agent is idle, else only into that boss's own terminal (its pane records it) while it is idle.
 
 --urgent wakes the target even with "wake": false, at most once per WAKE_GAP_S per target, and prints one line per target:
@@ -216,7 +216,7 @@ def unread(ctx):
 def main():
     ap = argparse.ArgumentParser(prog="boss-mail")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("send"); s.add_argument("--to", required=True); s.add_argument("--kind", required=True)
+    s = sub.add_parser("send"); s.add_argument("--to", required=True); s.add_argument("--kind", choices=KINDS, default="fyi", help="default fyi")
     s.add_argument("--subject", required=True); s.add_argument("--body"); s.add_argument("--reply-to")
     s.add_argument("--urgent", action="store_true")
     sub.add_parser("inbox")

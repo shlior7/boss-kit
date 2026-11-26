@@ -273,7 +273,8 @@ def migrate(kit, dry):
 
 
 def notify(h, subject, log, now=None):
-    """Mail every live boss in the registry; the boss ids mailed. Writes inbox files only."""
+    """Mail every live boss in the registry; the boss ids mailed. Writes inbox files only. One pending kit-update mail per
+    boss: the older unread ones from this script are marked done (done_at, moved to done/) as the new one lands."""
     now = now or time.time()
     msg = {"id": time.strftime("%Y%m%d-%H%M%S-", time.localtime(now)) + secrets.token_hex(3), "from_boss": "boss-kit-update",
            "from_project": "kit", "kind": "fyi", "subject": subject,
@@ -284,6 +285,15 @@ def notify(h, subject, log, now=None):
             continue
         inbox = os.path.join(h, b["project"], "bosses", boss, "inbox")
         os.makedirs(os.path.join(inbox, "done"), exist_ok=True)
+        for f in sorted(os.listdir(inbox)):
+            p = os.path.join(inbox, f)
+            try:
+                old = json.load(open(p)) if f.endswith(".json") else None
+                if isinstance(old, dict) and old.get("from_boss") == msg["from_boss"] and not old.get("done_at"):
+                    bosskit.save_json(p, {**old, "done_at": msg["created_at"]})
+                    os.replace(p, os.path.join(inbox, "done", f))
+            except (OSError, ValueError):
+                continue
         bosskit.save_json(os.path.join(inbox, msg["id"] + ".json"), msg)
         sent.append(boss)
     return sent
