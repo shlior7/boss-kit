@@ -142,6 +142,10 @@ EVENTS="on
 on" fires "the user's own session, idle: no idle fire while the newest event is manual" "TIMEOUT" 20 "$w/noshell" "$w/noshell"
 EVENTS="
 new dig in" fires "a new manual burst wakes the boss once" "WORKER MANUAL (the user is working in it by hand: dig in; read its .boss-worker/notes.md and screen, steer only with boss-host note, re-arm the watcher)" 20 "$w/noshell" "$w/noshell"
+# A permission or security prompt the host does not report as blocked (snapshot says idle; 5 polls, under the idle fallback's 9)
+fires "a permission prompt on the screen fires blocked" "AGENT BLOCKED ON INPUT" 5 "$w/noshell" "$F/permission-prompt.screen"
+fires "a numbered approve/deny menu without the question fires blocked" "AGENT BLOCKED ON INPUT" 5 "$w/noshell" "$F/fetch-menu.screen"
+fires "prose quoting the question and a menu never fires blocked" "TIMEOUT" 5 "$w/noshell" "$F/prose-question.screen"
 rm -rf "$w"
 # The transcript read is pinned to the watched agent's own session, and --task drops another task's envelope.
 # pin <polls> <what happens at poll 3> [<watch.sh args after the terminal>]: the watcher's output (first stdout line, then "stderr: ..." lines);
@@ -153,7 +157,7 @@ rm -rf "$w"
 # The session registry names both; the terminal was created at 1000000 s, the worker's session started two seconds later.
 # what: touch-old (the older session's file becomes the newest), own-envelope (the worker posts its own), own-foreign (the worker's
 # transcript gets another task's envelope), none.
-env_line(){ jq -cn --arg t "$2" --arg s "$3" '{type: "assistant", message: {content: [{type: "text", text: ("BOSS_WORKER_DONE task: " + $t + "\nsummary: " + $s)}]}}'; }
+env_line(){ jq -cn --arg u "$1" --arg t "$2" --arg s "$3" '{type: "assistant", uuid: $u, message: {content: [{type: "text", text: ("BOSS_WORKER_DONE task: " + $t + "\nsummary: " + $s)}]}}'; }
 pin(){ local t pd; t=$(mktemp -d); pd=$t/claude/projects/-work-acme-widgets; mkdir -p "$pd" "$t/claude/sessions"
   env_line x task-old "an older session" > "$pd/old-sess.jsonl"; echo '{"type":"user","message":{"content":"go"}}' > "$pd/own-sess.jsonl"
   touch -t 202001010000 "$pd/old-sess.jsonl"; touch -t 202601010000 "$pd/own-sess.jsonl"
@@ -161,7 +165,12 @@ pin(){ local t pd; t=$(mktemp -d); pd=$t/claude/projects/-work-acme-widgets; mkd
   echo '{"pid": '$([ -n "$OLDLIVE" ] && echo $$ || echo "$dead")', "sessionId": "old-sess", "cwd": "/work/acme/widgets", "startedAt": '"${OLDSTART:-100000}"', "updatedAt": 200000}' > "$t/claude/sessions/1.json"
   echo '{"pid": '$$', "sessionId": "own-sess", "cwd": "/work/acme/widgets", "startedAt": 1002000, "updatedAt": 1900000}' > "$t/claude/sessions/2.json"
   echo "${CREATED:-1000000}" > "$t/created"
-  [ -n "$OWNOLD" ] && { env_line x widgets-12 "old run" > "$pd/own-sess.jsonl"; cp "$pd/own-sess.jsonl" "$t/own.old"; touch -t 202601010000 "$pd/own-sess.jsonl"; }
+  [ -n "$OWNOLD" ] && { env_line u-old widgets-12 "old run" > "$pd/own-sess.jsonl"; cp "$pd/own-sess.jsonl" "$t/own.old"; touch -t 202601010000 "$pd/own-sess.jsonl"; }
+  env_line u-new widgets-12 "old run" > "$t/own.repeat"   # a follow-up's envelope, word for word the old one, in a new message
+  # BOSS=1: the boss's own live session in the same worktree, started closest after the terminal (the one the pin used to take);
+  # its registry file is named after an ancestor of the watcher (sessions/<pid>.json up the parent chain), or SELF names it
+  [ -n "$BOSS" ] && { echo '{"type":"user","message":{"content":"status?"}}' > "$pd/boss-sess.jsonl"
+    echo '{"pid": '$$', "sessionId": "boss-sess", "cwd": "/work/acme/widgets", "startedAt": 1001000, "updatedAt": 1900000}' > "$t/claude/sessions/$([ -n "$SELF" ] && echo 3 || echo $$).json"; }
   [ -n "$LATE" ] && mv "$t/claude/sessions/2.json" "$t/late.json"
   [ -n "$NOREG" ] && rm "$t/claude/sessions/2.json"
   printf '%s' "$2" > "$t/what"
@@ -175,6 +184,7 @@ case "$1 $2" in
     if [ $n -eq 3 ]; then case $(cat "$d/what") in
       touch-old) touch "$pd/old-sess.jsonl" ;;
       own-envelope) cat "$d/own.line" >> "$pd/own-sess.jsonl" ;;
+      own-repeat) cat "$d/own.repeat" >> "$pd/own-sess.jsonl" ;;
       own-foreign|foreign-back) cat "$d/foreign.line" >> "$pd/own-sess.jsonl" ;;
       own-then-foreign) cat "$d/own.line" "$d/foreign.line" >> "$pd/own-sess.jsonl" ;;
       late-envelope) mv "$d/late.json" "$d/claude/sessions/2.json" ;; esac; fi
@@ -186,7 +196,7 @@ case "$1 $2" in
 esac
 C
   chmod +x "$t/cli"; env_line x widgets-12 "mine" > "$t/own.line"; env_line x other-9 "not mine" > "$t/foreign.line"
-  CLAUDE_CONFIG_DIR=$t/claude BOSS_HOST=m-7 BOSS_HOST_CLI=$t/cli BOSS_BIN=$t/none BOSS_WATCH_POLL_S=0 BOSS_WATCH_POLLS=$1 "$S" w1 t1 ${@:3} > "$t/out" 2>"$t/err" & local pid=$!
+  CLAUDE_SESSION_ID=${SELF:-} CLAUDE_CODE_SESSION_ID= CLAUDE_CONFIG_DIR=$t/claude BOSS_HOST=m-7 BOSS_HOST_CLI=$t/cli BOSS_BIN=$t/none BOSS_WATCH_POLL_S=0 BOSS_WATCH_POLLS=$1 "$S" w1 t1 ${@:3} > "$t/out" 2>"$t/err" & local pid=$!
   for _ in $(seq 600); do kill -0 $pid 2>/dev/null || break; sleep 0.2; done; kill $pid 2>/dev/null; wait $pid 2>/dev/null
   head -1 "$t/out"; sed 's/^/stderr: /' "$t/err"; rm -rf "$t"; }
 pinned(){ local name=$1 want=$2 got; shift 2; got=$(pin "$@" | tr '\n' '|' | sed 's/|$//')
@@ -210,6 +220,17 @@ OLDLIVE=1 LATE=1 pinned "the worker's session registers after the watcher starte
 pinned "--task: mine then another task's envelope in one batch fires mine" "ENVELOPE DONE|widgets-12|mine" 6 own-then-foreign --task widgets-12
 # --task: another task's envelope never touches the baseline, so the old matching envelope coming back is not new
 OWNOLD=1 pinned "--task: a foreign envelope does not reset the baseline" "TIMEOUT" 7 foreign-back --task widgets-12
+# The boss's own session in the worktree it watches (a research session in the boss's workspace) is never the pin
+BOSS=1 pinned "the boss's own session (registry file up the parent chain) is never pinned" "ENVELOPE DONE|widgets-12|mine" 6 own-envelope
+BOSS=1 SELF=boss-sess pinned "the boss's own session (\$CLAUDE_SESSION_ID) is never pinned" "ENVELOPE DONE|widgets-12|mine" 6 own-envelope
+# --session <id> pins the transcript to that Claude session (superset agents create --json prints sessionId), whatever the registry says
+OLDLIVE=1 OLDSTART=1001000 pinned "--session: the named session is read, not the one started closest after the terminal" "ENVELOPE DONE|widgets-12|mine" 6 own-envelope --session own-sess
+pinned "--session: another session's envelope never fires" "TIMEOUT" 6 own-envelope --session old-sess
+# A follow-up dispatch with the same task id: the old envelope is there at arm time and never fires; a new one does,
+# even word for word the old one (a new message: the transcript key is the message's uuid with the signature)
+OWNOLD=1 pinned "same task: the old envelope present at arm time never fires" "TIMEOUT" 6 none --task widgets-12
+OWNOLD=1 pinned "same task: a new envelope fires" "ENVELOPE DONE|widgets-12|mine" 6 own-envelope --task widgets-12
+OWNOLD=1 pinned "same task: a new envelope word for word the old one fires" "ENVELOPE DONE|widgets-12|old run" 6 own-repeat --task widgets-12
 got=$(NOREG=1 pin 6 touch-old | tr '\n' '|')
 case "$got" in "ENVELOPE DONE|task-old|an older session|stderr: watch.sh: could not resolve the agent's own session; reading the newest transcript in "*"/projects/-work-acme-widgets (any session's)|")
   echo "ok   unresolved session: falls back to the newest transcript and says so on one stderr line";;
