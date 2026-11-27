@@ -1900,17 +1900,20 @@ class Watch(Home):
         open(os.path.join(plug, "watch.sh"), "w").write('#!/bin/sh\nls "$BOSS_BIN/boss-event" >/dev/null && echo "own watcher $$ on $OWN_MACHINE $*"\n')
         os.chmod(os.path.join(plug, "watch.sh"), 0o755)
         env = {**os.environ, "BOSS_HOST_PATH": os.path.dirname(plug) + os.pathsep + HOSTS, "BOSS_HOST_KIND": "own", "OWN_SESSION": "boss-9"}
-        r = subprocess.run([os.path.join(BIN, "boss-host"), "watch", "aaaa1111", "fix/x", "--task", "fix-1"], cwd=self.wt, capture_output=True, text=True, env=env)
+        r = subprocess.run([os.path.join(BIN, "boss-host"), "watch", "aaaa1111", "fix/x", "--task", "fix-1", "--session", "s-1"], cwd=self.wt, capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         pid = r.stdout.split()[2]
         self.assertIn(" on m-1 ", r.stdout)  # the adapter's resolved instance reaches its watcher
-        self.assertTrue(r.stdout.startswith("own watcher ") and r.stdout.endswith("aaaa1111 t9 fix/x --task fix-1\n"), r.stdout)  # --task passes through
+        self.assertTrue(r.stdout.startswith("own watcher ") and r.stdout.endswith("aaaa1111 t9 fix/x --task fix-1 --session s-1\n"), r.stdout)  # --task and --session pass through
         ctx = bosskit.load(self.wt)
         reg = json.load(open(os.path.join(ctx.cache, "..", "..", "boss-9", "cache", "watchers", f"{pid}.json")))
         self.assertEqual((reg["ws"], reg["term"], reg["branch"]), ("aaaa1111", "t9", "fix/x"))
         r = subprocess.run([os.path.join(BIN, "boss-host"), "watch", "aaaa1111", "fix/x", "--task"], cwd=self.wt, capture_output=True, text=True, env=env)
         self.assertNotEqual(r.returncode, 0)  # a trailing --task without an id is a usage error, never an unfiltered watch
         self.assertIn("--task needs a task id", r.stderr)
+        r = subprocess.run([os.path.join(BIN, "boss-host"), "watch", "aaaa1111", "--session"], cwd=self.wt, capture_output=True, text=True, env=env)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--session needs a session id", r.stderr)
 
 
 class Isolation(Home):

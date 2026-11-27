@@ -1,5 +1,5 @@
 #!/bin/bash
-# watch.sh <workspaceId> <terminalId> [<branch>] [--task <id>]   the superset host plugin's watcher, started by `boss-host watch`
+# watch.sh <workspaceId> <terminalId> [<branch>] [--task <id>] [--session <claude session id>]   the superset host plugin's watcher, started by `boss-host watch`
 # (run with run_in_background; never edit while one runs)
 # The boss ALWAYS watches for done with this script, never `superset terminals wait --match`. Three facts about the screen:
 #  1. Claude Code draws the whole reply box at once, so the envelope's first line can land 48 rows above the bottom,
@@ -21,10 +21,13 @@
 # (d) The transcript read is pinned to the watched agent's own session: it is resolved from Claude Code's session
 # registry ($CLAUDE_CONFIG_DIR or ~/.claude, sessions/<pid>.json) at start and again on every poll that reads the transcript
 # (a pane registered first may be joined by the worker's): the live session in the worktree, the one started at or after the
-# terminal's createdAt among several, else the transcript that changed last. Only when none is found does it read the newest transcript of the worktree (any session's, an old
+# terminal's createdAt among several, else the transcript that changed last; never the session that runs this watcher (the boss's,
+# which may share the worktree); `--session <id>` pins it to that session's transcript and skips the registry. The baseline is
+# "<message uuid>|<sig>", so a follow-up's envelope word for word an old one still fires. Only when none is found does it read the newest transcript of the worktree (any session's, an old
 # one's envelope can fire), and says so in one stderr line. (e) `--task <id>`: an envelope whose task: is another id never fires
 # (screen or transcript); it is skipped when the last envelope is picked, so it never touches the baseline. `watch.sh --sig [--task <id>] < screen` applies the same filter.
 # Workers keep their PR draft and post a status comment ending with the marker there; the boss marks it ready. `--ready < pr-list.json` prints the numbers (tests/test-watch.sh).
+# Blocked: agent state `blocked`, or a permission prompt drawn as whole lines in the bottom 20 rows (asks); never answered.
 # Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen (digits ignored: a status-line clock ticks every minute), 135 (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
 # Manual mode: when the user types in the worker's own session, its prompt hook logs a `manual` event. `boss-event --manual`
 # says "new" the first time any watcher asks about that event (recorded in the boss's cache: one wake per burst, also for a

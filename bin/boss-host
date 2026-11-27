@@ -20,7 +20,7 @@
 send, note, close and archive resolve an id shorter than 8 characters to its one full id first, then refuse a worker
 whose newest ledger row names another boss (ask it with boss-mail);
 --force-owner overrides that, for the user.
-  boss-host watch ID [BRANCH] [--terminal T] [--task ID] the watcher (run with run_in_background). A plugin with its own watcher runs
+  boss-host watch ID [BRANCH] [--terminal T] [--task ID] [--session SID] the watcher (run with run_in_background). A plugin with its own watcher runs
                                              that; otherwise this one: every 20 s, for up to 3 h, it exits (waking the boss) on a
                                              new envelope message from the worker, PR READY on BRANCH, a blocked agent, 9 idle
                                              polls (3 min) without an envelope, a gone worker, or 9 polls in a row the host
@@ -29,6 +29,8 @@ whose newest ledger row names another boss (ask it with boss-mail);
                                              burst (bosskit.manual_wake records the wake in the boss's cache, for every
                                              watcher); while the newest event is `manual`, idle never fires.
                                              --task ID: an envelope whose task: is another id never fires (pass the dispatched task).
+                                             --session SID: a plugin watcher that reads a transcript reads that Claude session's
+                                             (the host commands say where the id comes from).
   boss-host sig < text                       the envelope a text holds, as the watcher reads it (DONE|<task>|<summary start>)
 A host that cannot do something says so and names what to do instead (exit 3).
 Env for watch: BOSS_WATCH_POLL_S (20), BOSS_WATCH_POLLS (540).
@@ -303,9 +305,10 @@ def main(argv):
         elif cmd == "watch" and args:
             if not ctx:
                 sys.exit("boss-host watch: no boss project here")
-            if "--task" in args and not (args.index("--task") + 1 < len(args) and args[args.index("--task") + 1]):
-                sys.exit("boss-host watch: --task needs a task id")
-            term, task = flag(args, "--terminal", ""), flag(args, "--task", "")
+            for f in ("--task", "--session"):
+                if f in args and not (args.index(f) + 1 < len(args) and args[args.index(f) + 1]):
+                    sys.exit(f"boss-host watch: {f} needs a {f[2:]} id")
+            term, task, session = flag(args, "--terminal", ""), flag(args, "--task", ""), flag(args, "--session", "")
             wid, branch = args[0], (args[1] if len(args) > 1 else "")
             script = host.watch_script()
             if script:  # the plugin's own watcher, in this process, so the pane's watcher file stays true
@@ -315,7 +318,7 @@ def main(argv):
                 os.environ["BOSS_BIN"] = os.path.dirname(os.path.abspath(__file__))
                 os.environ["BOSS_PR_DRAFT"] = "1" if (ctx.cfg.get("github") or {}).get("draft", True) else "0"
                 os.environ.update({k: v for k, v in host.watch_env().items() if v})
-                os.execv(script, [script, wid, term, *([branch] if branch else []), *(["--task", task] if task else [])])
+                os.execv(script, [script, wid, term, *([branch] if branch else []), *(["--task", task] if task else []), *(["--session", session] if session else [])])
             path = register_watcher(ctx, wid, term, branch)
             try:
                 return watch(ctx, host, wid, branch, float(os.environ.get("BOSS_WATCH_POLL_S", 20)), int(os.environ.get("BOSS_WATCH_POLLS", 540)), task=task)
