@@ -1,0 +1,18 @@
+⏺ Running the migration dry run first.                                                         │ workers
+                                                                                               │  widgets-12  working
+⏺ Bash(./scripts/migrate --dry-run)                                                            │
+  ⎿  3 tables to change                                                                        │
+                                                                                               │
+───────────────────────────────────────────────────────────────────────────────────────────────│
+ Bash command                                                                                  │
+                                                                                               │
+   ./scripts/migrate --apply                                                                   │
+   Apply the schema migration                                                                  │
+                                                                                               │
+ This command requires approval                                                                │
+                                                                                               │
+ Do you want to proceed?                                                                       │
+ ❯ 1. Yes                                                                                      │
+   2. Yes, and don't ask again for ./scripts/migrate commands in /work/acme/widgets            │
+   3. No, and tell Claude what to do differently (esc)                                         │
+                                                                                               │

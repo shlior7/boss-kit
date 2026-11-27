@@ -1,5 +1,5 @@
 #!/bin/bash
-# watch.sh <workspaceId> <terminalId> [<branch>] [--task <id>]   the superset host plugin's watcher, started by `boss-host watch`
+# watch.sh <workspaceId> <terminalId> [<branch>] [--task <id>] [--session <claude session id>]   the superset host plugin's watcher, started by `boss-host watch`
 # (run with run_in_background; never edit while one runs)
 # The boss ALWAYS watches for done with this script, never `superset terminals wait --match`. Three facts about the screen:
 #  1. Claude Code draws the whole reply box at once, so the envelope's first line can land 48 rows above the bottom,
@@ -21,10 +21,13 @@
 # (d) The transcript read is pinned to the watched agent's own session: it is resolved from Claude Code's session
 # registry ($CLAUDE_CONFIG_DIR or ~/.claude, sessions/<pid>.json) at start and again on every poll that reads the transcript
 # (a pane registered first may be joined by the worker's): the live session in the worktree, the one started at or after the
-# terminal's createdAt among several, else the transcript that changed last. Only when none is found does it read the newest transcript of the worktree (any session's, an old
+# terminal's createdAt among several, else the transcript that changed last; never the session that runs this watcher (the boss's,
+# which may share the worktree); `--session <id>` pins it to that session's transcript and skips the registry. The baseline is
+# "<message uuid>|<sig>", so a follow-up's envelope word for word an old one still fires. Only when none is found does it read the newest transcript of the worktree (any session's, an old
 # one's envelope can fire), and says so in one stderr line. (e) `--task <id>`: an envelope whose task: is another id never fires
 # (screen or transcript); it is skipped when the last envelope is picked, so it never touches the baseline. `watch.sh --sig [--task <id>] < screen` applies the same filter.
 # Workers keep their PR draft and post a status comment ending with the marker there; the boss marks it ready. `--ready < pr-list.json` prints the numbers (tests/test-watch.sh).
+# Blocked: agent state `blocked`, or a permission prompt drawn as whole lines in the bottom 20 rows (asks); never answered.
 # Idle fallback (for a worker that asks in plain text): 9 idle polls (3 min) with an unchanged screen (digits ignored: a status-line clock ticks every minute), 135 (45 min) while the bottom lines show a background shell or monitor ("1 shell": a worker waiting on its own yarn verify:pr, 10-30 min under load); envelopes fire at once, so a long fallback costs nothing.
 # Manual mode: when the user types in the worker's own session, its prompt hook logs a `manual` event. `boss-event --manual`
 # says "new" the first time any watcher asks about that event (recorded in the boss's cache: one wake per burst, also for a
@@ -57,8 +60,10 @@ sig(){ LC_ALL=C awk -v want="$K" '/^ {21,}(│|╭|╰)/ { l[NR] = ""; next }   
 pick(){ jq -r '.[] | select(.state == "MERGED" or (.state == "OPEN" and ((.isDraft == false and $ENV.BOSS_PR_DRAFT != "0")
     or any((.comments // [])[]; .body | test("(^|\n)[ \t>`]*(<!--[ \t]*)?(BOSS|SUPERSET)_WORKER_DONE\\s+task:[ \t]*[A-Za-z0-9._-]"))))) | .number'; }
 [ "$1" = --ready ] && { pick; exit; }
-# --task <id> may sit anywhere; the rest are the positional arguments
-K=; a=(); while [ $# -gt 0 ]; do if [ "$1" = --task ]; then [ -n "${2:-}" ] || { echo "watch.sh: --task needs a task id" >&2; exit 2; }; K=$2; shift 2; else a+=("$1"); shift; fi; done; set -- ${a[@]+"${a[@]}"}
+# --task <id> and --session <id> may sit anywhere; the rest are the positional arguments
+K=; SID=; a=(); while [ $# -gt 0 ]; do case "$1" in
+  --task|--session) [ -n "${2:-}" ] || { echo "watch.sh: $1 needs a ${1#--} id" >&2; exit 2; }; [ "$1" = --task ] && K=$2 || SID=$2; shift 2;;
+  *) a+=("$1"); shift;; esac; done; set -- ${a[@]+"${a[@]}"}
 [ "$1" = --sig ] && { sig; exit; }
 W=$1; T=$2; B=$3
 # log a stage for the boss-deck; a failure here never stops the watcher
@@ -72,12 +77,19 @@ TD=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$(printf %s "$WT" | sed 's/[^A-Z
 # one; of several, the one started at or after the terminal's createdAt (closest first), then up to 5 s before it; else (a host
 # restart moves createdAt past startedAt) the one whose transcript changed last. Prints the transcript path, then a note line
 # when it chose among several; nothing when there is none. Re-run every poll (a session may register after the watcher starts).
+# The session that runs this watcher (the boss's) is never the agent's: $CLAUDE_SESSION_ID / $CLAUDE_CODE_SESSION_ID, and the
+# registry file sessions/<pid>.json of any ancestor process. A boss watching a session in its own workspace shares the worktree.
+ME=" ${CLAUDE_SESSION_ID:-} ${CLAUDE_CODE_SESSION_ID:-} "; p=$PPID
+while [ "${p:-0}" -gt 1 ]; do [ -f "${TD%/projects/*}/sessions/$p.json" ] && ME="$ME$(jq -r '.sessionId // empty' "${TD%/projects/*}/sessions/$p.json" 2>/dev/null) "
+  p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' '); done
 own(){ local c f rows pick
+  # --session <id>: that Claude session's transcript, in any project dir (the registry is not asked)
+  [ -n "$SID" ] && { f=$(ls "${TD%/projects/*}"/projects/*/"$SID".jsonl 2>/dev/null | head -1); echo "${f:-$TD/$SID.jsonl}"; return 0; }
   [ -n "$WT" ] || return 0
   c=$("$S" terminals list --workspace "$W" --host "$H" --json 2>/dev/null | jq -r --arg t "$T" '(.sessions // .)[]? | select(.terminalId == $t) | .createdAt // empty' | head -1)
   rows=$(for f in "${TD%/projects/*}"/sessions/*.json; do [ -f "$f" ] || continue
     jq -r --arg w "$WT" 'select(.cwd == $w) | "\(.pid) \(.sessionId) \(.startedAt // 0)"' "$f" 2>/dev/null; done |
-    while read -r pid sid st; do kill -0 "$pid" 2>/dev/null && [ -f "$TD/$sid.jsonl" ] && echo "$sid $st"; done)
+    while read -r pid sid st; do case "$ME" in (*" $sid "*) continue;; esac; kill -0 "$pid" 2>/dev/null && [ -f "$TD/$sid.jsonl" ] && echo "$sid $st"; done)
   [ -n "$rows" ] || return 0
   if [ "$(echo "$rows" | wc -l)" -gt 1 ]; then
     pick=$(echo "$rows" | awk -v c="${c:-0}" 'c > 0 && $2 >= c - 5000 { print ($2 >= c ? 0 : 1), ($2 >= c ? $2 - c : c - $2), $1 }' | sort -k1,1n -k2,2n | head -1 | cut -d' ' -f3)
@@ -87,11 +99,18 @@ own(){ local c f rows pick
 # resolve: set OWN from own(), and say on stderr (once per change) what it chose among several or that it found none
 OWN=?; NOTE=; NOSAY=   # OWN starts as a sentinel so the first resolve always reports
 resolve(){ local r p n; r=$(own); p=${r%%$'\n'*}; n=; case "$r" in *$'\n'*) n=${r#*$'\n'};; esac
-  if [ "$p" != "$OWN" ]; then OWN=$p; tbase=$(said | sig)   # a new session: its own baseline
+  if [ "$p" != "$OWN" ]; then OWN=$p; tbase=$(said | tsig)   # a new session: its own baseline
     [ -z "$p" ] && [ -z "$NOSAY" ] && { echo "watch.sh: could not resolve the agent's own session; reading the newest transcript in $TD (any session's)" >&2; NOSAY=1; }; fi
   [ -n "$n" ] && [ "$n" != "$NOTE" ] && echo "$n" >&2; NOTE=$n; }
+# said: the worker's last 5 reply texts, one JSON line each {u: the message's uuid, t: its text}; text prints the texts.
+# tsig: "<uuid>|<sig>" of the newest text holding an envelope, so a follow-up's envelope word for word an old one still differs.
 said(){ local f=$OWN; [ -n "$f" ] || { [ -n "$WT" ] && f=$(ls -t "$TD"/*.jsonl 2>/dev/null | head -1) && [ -n "$f" ]; } || return 0
-  tail -n 400 "$f" | jq -Rrn '[inputs | fromjson? | select(.type? == "assistant") | .message.content[]? | select(.type? == "text") | .text] | .[-5:][]' 2>/dev/null | tr -d '*`'; }
+  tail -n 400 "$f" 2>/dev/null | jq -cRn '[inputs | fromjson? | select(.type? == "assistant") | {u: (.uuid // .timestamp // ""), t: (.message.content[]? | select(.type? == "text") | .text | gsub("[*`]"; ""))}] | .[-5:][]' 2>/dev/null; }
+text(){ jq -r .t; }
+tsig(){ local j s; while IFS= read -r j; do s=$(printf %s "$j" | text | sig); [ -n "$s" ] && echo "$(printf %s "$j" | jq -r .u)|$s"; done | tail -1; }
+# a permission or security prompt in the bottom rows (Claude Code's "Do you want to proceed?" or its numbered Yes/No menu),
+# which the host may not report as blocked; each must be a whole line, so prose quoting them never counts. Never answered.
+asks(){ tail -n 20 | sed 's/││.*$//; s/│/ /g' | grep -qE '^[ ]*Do you want to [^?]*\?[ ]*$|^[ ]*(❯|>)?[ ]*1\. Yes([ ,].*)?[ ]*$'; }
 scr(){ "$S" terminals read --workspace "$W" --host "$H" --terminal "$T" --max-lines 600 --json 2>/dev/null | jq -r '.text // empty'; }
 # numbers of this branch's PRs that count as done (pick); fails when gh does
 ready(){ local j; j=$(gh pr list --head "$B" --state all --json number,isDraft,state,comments 2>/dev/null) || return 1
@@ -103,8 +122,8 @@ for i in $(seq 1 "${BOSS_WATCH_POLLS:-540}"); do
   txt=$(scr); [ -z "$txt" ] && { echo "TERMINAL GONE (session ended or host restarted)"; exit 0; }
   cur=$(echo "$txt" | sig)
   if [ -z "$cur" ] || [ "$cur" = "$base" ]; then   # not on the screen: the transcript (an envelope taller than the pane)
-    resolve; t=$(said); cur=$(echo "$t" | sig)
-    if [ -n "$cur" ] && [ "$cur" != "$tbase" ]; then txt=$t; else cur=; fi
+    resolve; j=$(said); tk=$(echo "$j" | tsig); cur=${tk#*|}
+    if [ -n "$tk" ] && [ "$tk" != "$tbase" ]; then txt=$(echo "$j" | text); else cur=; fi
   fi
   if [ -n "$cur" ]; then
     n=$(echo "$txt" | grep -nE "(BOSS|SUPERSET)_WORKER_" | tail -1 | cut -d: -f1)
@@ -124,7 +143,7 @@ for i in $(seq 1 "${BOSS_WATCH_POLLS:-540}"); do
     on) man=1;;
   esac
   st=$("$S" snapshot --host "$H" --json 2>/dev/null | jq -r --arg t "$T" '.. | objects | select(.terminalId? == $t or .id? == $t) | .agent.state // empty' | head -1)
-  if [ "$st" = blocked ]; then ev BLOCKED "blocked on input"; echo "AGENT BLOCKED ON INPUT"; echo "$txt" | tail -30 | sed 's/││.*$//'; exit 0; fi
+  if [ "$st" = blocked ] || echo "$txt" | asks; then ev BLOCKED "blocked on input"; echo "AGENT BLOCKED ON INPUT"; echo "$txt" | tail -30 | sed 's/││.*$//'; exit 0; fi
   h=$(echo "$txt" | tail -25 | tr -d 0-9 | cksum)
   if [ "$st" = idle ] && [ "$h" = "$lasth" ] && [ "$man" = 0 ]; then idle=$((idle+1)); else idle=0; fi
   lasth=$h
